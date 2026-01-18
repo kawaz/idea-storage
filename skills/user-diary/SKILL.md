@@ -5,8 +5,8 @@ description: Generate user activity diary from Claude Code history. Use when use
 
 # User Diary - Activity History Diary
 
-This is `${CLAUDE_PLUGIN_ROOT}/skills/user-diary/SKILL.md`
-Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/user-diary/scripts/`
+This is `{SKILL_DIR}/SKILL.md`
+Scripts: `{SKILL_DIR}/scripts/`
 Data: `~/.local/share/idea-storage/user-diary/`
 Source: `~/.claude/history.json`
 
@@ -72,16 +72,16 @@ session_count: {number}
 
 ```bash
 # Generate yesterday's diary
-bash ${CLAUDE_PLUGIN_ROOT}/skills/user-diary/scripts/generate.sh
+bash {SKILL_DIR}/scripts/generate.sh
 
 # Generate specific date
-bash ${CLAUDE_PLUGIN_ROOT}/skills/user-diary/scripts/generate.sh 2026-01-15
+bash {SKILL_DIR}/scripts/generate.sh 2026-01-15
 
 # List recent diaries
-bash ${CLAUDE_PLUGIN_ROOT}/skills/user-diary/scripts/list.sh -n 7
+bash {SKILL_DIR}/scripts/list.sh -n 7
 
 # Read specific diary
-bash ${CLAUDE_PLUGIN_ROOT}/skills/user-diary/scripts/read.sh 2026-01-15
+bash {SKILL_DIR}/scripts/read.sh 2026-01-15
 ```
 
 ## Launchd Integration

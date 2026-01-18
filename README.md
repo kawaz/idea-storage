@@ -44,24 +44,68 @@ AI-assisted external memory for ideas, plans, and daily reflections.
 └── *.log                   # Launchd logs
 ```
 
-## Launchd Setup (Optional)
+## Session Processor
 
-For automatic diary generation:
+Process Claude sessions to generate AI diaries:
 
 ```bash
-bash ~/.local/share/idea-storage/scripts/install-launchd.sh
+# Add eligible sessions to queue
+./scripts/idea-storage-session-processor.sh enqueue
+
+# Process one session from queue
+./scripts/idea-storage-session-processor.sh process
+
+# Check status
+./scripts/idea-storage-session-processor.sh status
+
+# Retry a failed session
+./scripts/idea-storage-session-processor.sh retry <session-id>
+
+# Clean up orphaned failed entries
+./scripts/idea-storage-session-processor.sh cleanup
 ```
 
-This installs:
-- **User diary**: Generated daily at 00:30 from history.json
-- **AI diary**: Checked hourly, generates from ended sessions by forking them
+### How It Works
 
-### How AI Diary Works
+1. `enqueue` finds sessions matching age/size criteria
+2. `process` extracts conversation with `extract-conversation.sh`
+3. Pipes conversation to `claude -p` with rule prompt
+4. If `output_mode: stdout` in rule, saves result to `data/ai-diary/YYYY/MM/DD/{session-id}.md`
 
-1. Every hour, `generate-ai-diary.sh` checks recent sessions
-2. If a session has ended (no activity for 30min) and has substantial content
-3. It forks the session with `claude --resume` and asks Claude to write a diary
-4. The diary is written from that session's context, capturing honest reflections
+### Extract Conversation Tool
+
+Standalone tool to extract readable conversation from session files:
+
+```bash
+# By session ID
+./scripts/extract-conversation.sh <session-id>
+
+# By file path
+./scripts/extract-conversation.sh ~/.claude/projects/.../session.jsonl
+
+# With character limit
+./scripts/extract-conversation.sh <session-id> 100000
+```
+
+Output includes: USER, THINKING, ASSISTANT, TOOL_USE, TOOL_RESULT, QUEUED, SUMMARY with timestamps.
+
+### Rule Configuration
+
+Place rules in `~/.config/idea-storage/rule-*.md`:
+
+```yaml
+---
+match:
+  min_lines: 100        # Minimum session lines
+  min_age: 7200         # Minimum age in seconds (2 hours)
+  # project: "*/work/*" # Optional project path filter
+output_mode: stdout     # Save output to file (omit for skill-based saving)
+priority: 0             # Higher = preferred when multiple rules match
+---
+Your prompt here...
+```
+
+See `config-examples/` for sample rules.
 
 ## Usage Examples
 

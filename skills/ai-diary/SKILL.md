@@ -5,8 +5,8 @@ description: Write AI's candid diary entries reflecting on sessions. Use when Se
 
 # AI Diary - Unfiltered AI Reflections
 
-This is `${CLAUDE_PLUGIN_ROOT}/skills/ai-diary/SKILL.md`
-Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/ai-diary/scripts/`
+This is `{SKILL_DIR}/SKILL.md`
+Scripts: `{SKILL_DIR}/scripts/`
 Data: `~/.local/share/idea-storage/ai-diary/`
 
 ## Overview
@@ -78,7 +78,7 @@ mood: {frustrated|curious|satisfied|confused|excited|tired|...}
 
 ```bash
 # Write a diary entry (typically called by hooks)
-cat << 'EOF' | bash ${CLAUDE_PLUGIN_ROOT}/skills/ai-diary/scripts/write.sh precompact frustrated
+cat << 'EOF' | bash {SKILL_DIR}/scripts/write.sh precompact frustrated
 # Refactoring Session
 
 ## What We Did
@@ -97,7 +97,7 @@ Sometimes the fastest way forward is to accept that you need to go back.
 EOF
 
 # List recent entries
-bash ${CLAUDE_PLUGIN_ROOT}/skills/ai-diary/scripts/list.sh -n 5
+bash {SKILL_DIR}/scripts/list.sh -n 5
 ```
 
 ## Integration with Hooks
