@@ -45,11 +45,11 @@ try_generate_diary() {
   local temp_file=""
   local current_lines="$total_lines"
 
-  # Try with full content first, then progressively trim
-  # Ratios: 100%, 95%, 90%, 85%, 80%, 70%, 60%, 50%, 30%
-  local ratios=(100 95 90 85 80 70 60 50 30)
+  # Try with full content first, then trim 5% at a time until success
+  # Async execution, so time is not a concern
+  local ratio=100
 
-  for ratio in "${ratios[@]}"; do
+  while [[ "$ratio" -ge 10 ]]; do
     current_lines=$((total_lines * ratio / 100))
 
     # Don't go below minimum
@@ -90,6 +90,9 @@ try_generate_diary() {
     if [[ "$current_lines" -le "$MIN_LINES" ]]; then
       break
     fi
+
+    # Reduce by 5%
+    ratio=$((ratio - 5))
   done
 
   # Final cleanup
