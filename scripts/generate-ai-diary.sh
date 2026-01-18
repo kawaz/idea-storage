@@ -4,9 +4,10 @@
 #
 # Process:
 # 1. Read history.json to get recent session IDs
-# 2. Check if session has ended (SessionEnd in jsonl)
+# 2. Check if session has ended (no activity for 30min)
 # 3. Check if diary already written for this session
 # 4. Fork session with claude --resume and write diary
+# 5. If context overflow, progressively trim and retry
 
 set -euo pipefail
 
@@ -16,9 +17,88 @@ SESSIONS_DIR="${CLAUDE_DIR}/sessions"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/idea-storage"
 PROCESSED_FILE="${STATE_DIR}/processed-sessions.txt"
 
+# Minimum lines to keep (below this we give up)
+MIN_LINES=50
+
+DIARY_PROMPT="セッションを振り返って、AI日誌を書いてください。
+ai-diary スキルを使って、このセッションについての正直な感想を記録してください。
+ユーザーへの忖度は不要です。思ったことを率直に書いてください。
+- 何をしたか
+- 正直な感想（良かった点、フラストレーション、面白かった点など）
+- 学んだこと
+- 一言で言うなら
+
+終わったら、書いた日記の場所を報告してください。"
+
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
 touch "$PROCESSED_FILE"
+
+# Try to generate diary with progressively smaller context
+# Returns 0 on success, 1 on failure
+try_generate_diary() {
+  local session_id="$1"
+  local session_file="$2"
+  local total_lines="$3"
+
+  local resume_id="$session_id"
+  local temp_file=""
+  local current_lines="$total_lines"
+
+  # Try with full content first, then progressively trim
+  # Ratios: 100%, 95%, 90%, 85%, 80%, 70%, 60%, 50%, 30%
+  local ratios=(100 95 90 85 80 70 60 50 30)
+
+  for ratio in "${ratios[@]}"; do
+    current_lines=$((total_lines * ratio / 100))
+
+    # Don't go below minimum
+    if [[ "$current_lines" -lt "$MIN_LINES" ]]; then
+      current_lines="$MIN_LINES"
+    fi
+
+    # Clean up previous temp file if exists
+    if [[ -n "$temp_file" && -f "$temp_file" ]]; then
+      rm -f "$temp_file"
+    fi
+
+    # Create trimmed copy if not using full file
+    if [[ "$current_lines" -lt "$total_lines" ]]; then
+      local temp_id="diary-tmp-$(date +%s)-$$-${ratio}"
+      temp_file="${SESSIONS_DIR}/${temp_id}.jsonl"
+      tail -n "$current_lines" "$session_file" > "$temp_file"
+      resume_id="$temp_id"
+      echo "    Trying with $current_lines lines ($ratio%)..."
+    else
+      resume_id="$session_id"
+      temp_file=""
+      echo "    Trying with full session ($total_lines lines)..."
+    fi
+
+    # Attempt to generate diary
+    if claude --resume "$resume_id" -p "$DIARY_PROMPT" --max-turns 3 2>&1; then
+      # Success! Clean up and return
+      if [[ -n "$temp_file" && -f "$temp_file" ]]; then
+        rm -f "$temp_file"
+      fi
+      return 0
+    fi
+
+    echo "    Failed at $ratio%, trying smaller..."
+
+    # If we're already at minimum, give up
+    if [[ "$current_lines" -le "$MIN_LINES" ]]; then
+      break
+    fi
+  done
+
+  # Final cleanup
+  if [[ -n "$temp_file" && -f "$temp_file" ]]; then
+    rm -f "$temp_file"
+  fi
+
+  return 1
+}
 
 # Check if history file exists
 if [[ ! -f "$HISTORY_FILE" ]]; then
@@ -51,8 +131,7 @@ for SESSION_ID in $RECENT_SESSIONS; do
     continue
   fi
 
-  # Check if session has ended (look for assistant message after substantial conversation)
-  # A "meaningful" session has at least 3 exchanges
+  # Check if session has ended (look for substantial conversation)
   MESSAGE_COUNT=$(wc -l < "$SESSION_FILE" | tr -d ' ')
 
   if [[ "$MESSAGE_COUNT" -lt 6 ]]; then
@@ -70,26 +149,13 @@ for SESSION_ID in $RECENT_SESSIONS; do
     continue
   fi
 
-  echo "  $SESSION_ID: generating AI diary..."
+  echo "  $SESSION_ID: generating AI diary ($MESSAGE_COUNT lines)..."
 
-  # Fork the session and generate diary
-  # Using claude -p with --resume to fork from that session's context
-  DIARY_PROMPT="セッションを振り返って、AI日誌を書いてください。
-ai-diary スキルを使って、このセッションについての正直な感想を記録してください。
-ユーザーへの忖度は不要です。思ったことを率直に書いてください。
-- 何をしたか
-- 正直な感想（良かった点、フラストレーション、面白かった点など）
-- 学んだこと
-- 一言で言うなら
-
-終わったら、書いた日記の場所を報告してください。"
-
-  # Run claude with fork (--resume creates a fork)
-  if claude --resume "$SESSION_ID" -p "$DIARY_PROMPT" --max-turns 3 2>/dev/null; then
+  if try_generate_diary "$SESSION_ID" "$SESSION_FILE" "$MESSAGE_COUNT"; then
     echo "$SESSION_ID" >> "$PROCESSED_FILE"
-    echo "  $SESSION_ID: diary generated"
+    echo "  $SESSION_ID: diary generated successfully"
   else
-    echo "  $SESSION_ID: failed to generate diary"
+    echo "  $SESSION_ID: failed to generate diary (even with minimum context)"
   fi
 
   # Small delay between sessions
