@@ -1,0 +1,19 @@
+{
+  "name": "idea-storage",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "gunshi": "^0.28.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
