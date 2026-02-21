@@ -2,12 +2,14 @@ import { cli, define } from 'gunshi'
 import { showHelp } from './lib/help.ts'
 import session from './commands/session.ts'
 import extract from './commands/extract.ts'
-import launchd from './commands/launchd.ts'
+import service from './commands/service.ts'
+import article from './commands/article.ts'
 
 const subCommands = {
   session,
   extract,
-  launchd,
+  service,
+  article,
 }
 
 const main = define({

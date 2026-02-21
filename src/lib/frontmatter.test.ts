@@ -136,6 +136,11 @@ describe('generateFrontmatter', () => {
     expect(result).toBe(`---\ntitle: Hello\ncount: 42\nenabled: true\n---\n`)
   })
 
+  test('skips null and undefined values', () => {
+    const result = generateFrontmatter({ a: 'hello', b: null, c: undefined, d: 42 })
+    expect(result).toBe(`---\na: hello\nd: 42\n---\n`)
+  })
+
   test('roundtrip: generate then parse simple data', () => {
     const data = { name: 'test', priority: 5, active: false }
     const generated = generateFrontmatter(data)

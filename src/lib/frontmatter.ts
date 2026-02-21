@@ -104,9 +104,10 @@ function stripInlineComment(value: string): string {
   return value
 }
 
-export function generateFrontmatter(data: Record<string, string | number | boolean>): string {
+export function generateFrontmatter(data: Record<string, unknown>): string {
   const lines = ['---']
   for (const [key, value] of Object.entries(data)) {
+    if (value == null) continue
     lines.push(`${key}: ${String(value)}`)
   }
   lines.push('---', '')
