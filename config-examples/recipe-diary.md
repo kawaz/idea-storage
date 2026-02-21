@@ -5,7 +5,6 @@ match:
   min_lines: 100                # 最低100行のセッションのみ対象（短いセッションは無視）
   # max_lines: 10000            # 最大行数（巨大セッションを除外する場合）
   min_age: 7200                 # 最低経過時間（秒）。7200 = 2時間
-  # max_age: 86400              # 最大経過時間（秒）。86400 = 24時間
   # require_session_end: true   # SessionEndイベントがあるセッションのみ対象
 # priority: 0                  # 複数マッチした場合の優先度（高い方が優先、デフォルト0）
 # on_existing: append          # 同じセッションが既にあった場合: append（追記）, separate（新規）, skip（スキップ）
