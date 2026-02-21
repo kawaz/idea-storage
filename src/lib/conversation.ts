@@ -50,6 +50,7 @@ type UserContentItem = ContentText | ContentToolResult
 interface SessionLine {
   type?: string
   timestamp?: string
+  uuid?: string
   cwd?: string
   message?: {
     role?: string
@@ -58,6 +59,10 @@ interface SessionLine {
   summary?: string
   operation?: string
   content?: string
+  forkedFrom?: {
+    sessionId: string
+    messageUuid: string
+  }
 }
 
 /**
@@ -137,6 +142,7 @@ export async function formatConversationToText(filePath: string): Promise<string
 
 /**
  * Extract session metadata from a JSONL file.
+ * フォークセッションの場合、メタデータは非フォーク行のみで計算する。
  */
 export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
   const filename = basename(filePath, '.jsonl')
@@ -149,7 +155,13 @@ export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
   let endTime: Date | undefined
   let hasEnd = false
   let userTurns = 0
-  const lineCount = await countLines(filePath)
+  let lineCount = 0
+
+  // Fork detection
+  let isForkSession = false
+  let parentSessionId = ''
+  let firstNewUuid = ''
+  let forkPhase = true // true while we're still in forked lines
 
   // File age
   const fileStat = await stat(filePath)
@@ -158,12 +170,27 @@ export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
   for await (const raw of streamSessionLines(filePath)) {
     const line = raw as SessionLine
 
-    // Extract project from first line with cwd
+    if (line.forkedFrom) {
+      isForkSession = true
+      parentSessionId = line.forkedFrom.sessionId
+      // フォーク行はスキップ（メタデータに含めない）
+      continue
+    }
+
+    // フォークフェーズ終了: 最初の非フォーク行
+    if (forkPhase && isForkSession) {
+      forkPhase = false
+      firstNewUuid = line.uuid ?? ''
+    }
+
+    lineCount++
+
+    // Extract project from first non-fork line with cwd
     if (!project && line.cwd) {
       project = line.cwd
     }
 
-    // Track timestamps
+    // Track timestamps (non-fork lines only)
     if (line.timestamp) {
       const d = new Date(line.timestamp)
       if (!Number.isNaN(d.getTime())) {
@@ -172,7 +199,7 @@ export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
       }
     }
 
-    // Count user turns
+    // Count user turns (non-fork lines only)
     if (line.type === 'user') {
       userTurns++
     }
@@ -183,7 +210,7 @@ export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
     }
   }
 
-  return {
+  const meta: SessionMeta = {
     id,
     filePath,
     project,
@@ -194,4 +221,13 @@ export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
     endTime,
     userTurns,
   }
+
+  if (isForkSession) {
+    meta.forkInfo = {
+      parentSessionId,
+      firstNewUuid,
+    }
+  }
+
+  return meta
 }

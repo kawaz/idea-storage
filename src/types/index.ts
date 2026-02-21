@@ -9,8 +9,6 @@ export interface Recipe {
     maxLines?: number
     /** seconds */
     minAge?: number
-    /** seconds */
-    maxAge?: number
     requireSessionEnd?: boolean
   }
   /** default 0 */
@@ -35,6 +33,12 @@ export interface SessionMeta {
   startTime: Date
   endTime?: Date
   userTurns: number
+  /** フォークセッションの場合に設定される */
+  forkInfo?: {
+    parentSessionId: string
+    /** フォーク後の最初の行の UUID（CSA timeline との突合用） */
+    firstNewUuid: string
+  }
 }
 
 export interface QueueEntry {
@@ -49,8 +53,6 @@ export interface Config {
   claudeDirs: string[]
   /** default 120 */
   minAgeMinutes: number
-  /** default 10080 */
-  maxAgeMinutes: number
 }
 
 export interface ConversationMessage {

@@ -387,5 +387,80 @@ describe('conversation', () => {
       const meta = await getSessionMeta(path)
       expect(meta.project).toBe('')
     })
+
+    test('forkInfo is undefined for non-fork sessions', async () => {
+      const sid = 'f6a7b8c9-d0e1-2345-fabc-456789012345'
+      const path = await writeTempFile(`${sid}.jsonl`, [
+        { type: 'user', timestamp: '2024-01-01T10:00:00.000Z', uuid: 'aaa11111-0000-0000-0000-000000000000', message: { role: 'user', content: 'Hello' }, cwd: '/tmp/project' },
+        { type: 'assistant', timestamp: '2024-01-01T10:00:05.000Z', uuid: 'bbb22222-0000-0000-0000-000000000000', message: { role: 'assistant', content: [{ type: 'text', text: 'Hi' }] } },
+      ])
+
+      const meta = await getSessionMeta(path)
+      expect(meta.forkInfo).toBeUndefined()
+      expect(meta.lineCount).toBe(2)
+      expect(meta.userTurns).toBe(1)
+    })
+
+    test('detects fork session and sets forkInfo', async () => {
+      const sid = 'a1111111-2222-3333-4444-555555555555'
+      const parentSid = 'pppppppp-pppp-pppp-pppp-pppppppppppp'
+      const path = await writeTempFile(`${sid}.jsonl`, [
+        // フォーク行（親からのコピー）
+        { type: 'user', timestamp: '2024-01-01T10:00:00.000Z', uuid: 'fork0001-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'orig0001' }, message: { role: 'user', content: 'Hello' }, cwd: '/tmp/parent-project' },
+        { type: 'assistant', timestamp: '2024-01-01T10:00:05.000Z', uuid: 'fork0002-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'orig0002' }, message: { role: 'assistant', content: [{ type: 'text', text: 'Hi' }] } },
+        { type: 'user', timestamp: '2024-01-01T10:01:00.000Z', uuid: 'fork0003-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'orig0003' }, message: { role: 'user', content: 'Parent conversation' }, cwd: '/tmp/parent-project' },
+        // フォーク後の新規行
+        { type: 'user', timestamp: '2024-01-01T11:00:00.000Z', uuid: 'new00001-0000-0000-0000-000000000000', message: { role: 'user', content: 'Fork conversation' }, cwd: '/tmp/fork-project' },
+        { type: 'assistant', timestamp: '2024-01-01T11:00:10.000Z', uuid: 'new00002-0000-0000-0000-000000000000', message: { role: 'assistant', content: [{ type: 'text', text: 'Fork reply' }] } },
+      ])
+
+      const meta = await getSessionMeta(path)
+      expect(meta.forkInfo).toBeDefined()
+      expect(meta.forkInfo!.parentSessionId).toBe(parentSid)
+      expect(meta.forkInfo!.firstNewUuid).toBe('new00001-0000-0000-0000-000000000000')
+    })
+
+    test('fork session metadata is computed from non-fork lines only', async () => {
+      const sid = 'b2222222-3333-4444-5555-666666666666'
+      const parentSid = 'qqqqqqqq-qqqq-qqqq-qqqq-qqqqqqqqqqqq'
+      const path = await writeTempFile(`${sid}.jsonl`, [
+        // フォーク行 3行
+        { type: 'user', timestamp: '2024-01-01T08:00:00.000Z', uuid: 'f0000001-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'o1' }, message: { role: 'user', content: 'Old1' }, cwd: '/tmp/old' },
+        { type: 'assistant', timestamp: '2024-01-01T08:05:00.000Z', uuid: 'f0000002-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'o2' }, message: { role: 'assistant', content: [{ type: 'text', text: 'Old reply' }] } },
+        { type: 'user', timestamp: '2024-01-01T09:00:00.000Z', uuid: 'f0000003-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'o3' }, message: { role: 'user', content: 'Old2' }, cwd: '/tmp/old' },
+        // 新規行 2行
+        { type: 'user', timestamp: '2024-01-01T12:00:00.000Z', uuid: 'n0000001-0000-0000-0000-000000000000', message: { role: 'user', content: 'New1' }, cwd: '/tmp/new' },
+        { type: 'assistant', timestamp: '2024-01-01T12:30:00.000Z', uuid: 'n0000002-0000-0000-0000-000000000000', message: { role: 'assistant', content: [{ type: 'text', text: 'New reply' }] } },
+      ])
+
+      const meta = await getSessionMeta(path)
+
+      // lineCount は非フォーク行のみ
+      expect(meta.lineCount).toBe(2)
+      // userTurns は非フォーク行のみ
+      expect(meta.userTurns).toBe(1)
+      // startTime は最初の非フォーク行のタイムスタンプ
+      expect(meta.startTime).toEqual(new Date('2024-01-01T12:00:00.000Z'))
+      // endTime は最後の非フォーク行のタイムスタンプ
+      expect(meta.endTime).toEqual(new Date('2024-01-01T12:30:00.000Z'))
+      // project は非フォーク行の cwd
+      expect(meta.project).toBe('/tmp/new')
+    })
+
+    test('fork session with only fork lines (no new lines)', async () => {
+      const sid = 'c3333333-4444-5555-6666-777777777777'
+      const parentSid = 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrrr'
+      const path = await writeTempFile(`${sid}.jsonl`, [
+        { type: 'user', timestamp: '2024-01-01T10:00:00.000Z', uuid: 'f0000001-0000-0000-0000-000000000000', forkedFrom: { sessionId: parentSid, messageUuid: 'o1' }, message: { role: 'user', content: 'Only fork' }, cwd: '/tmp/old' },
+      ])
+
+      const meta = await getSessionMeta(path)
+      // フォーク行しかない場合
+      expect(meta.forkInfo).toBeDefined()
+      expect(meta.forkInfo!.parentSessionId).toBe(parentSid)
+      expect(meta.forkInfo!.firstNewUuid).toBe('') // 新規行がない
+      expect(meta.lineCount).toBe(0)
+      expect(meta.userTurns).toBe(0)
+    })
   })
 })
