@@ -175,5 +175,37 @@ describe('plist', () => {
       expect(xml).toContain('<key>Minute</key>')
       expect(xml).toContain('<integer>45</integer>')
     })
+
+    test('includes EnvironmentVariables when specified', () => {
+      const options: PlistOptions = {
+        label: 'com.test',
+        program: '/bin/test',
+        startInterval: 60,
+        logDir: '/tmp/logs',
+        environmentVariables: {
+          PATH: '/path/to/bin',
+          HOME: '/home/user',
+        },
+      }
+      const xml = generatePlist(options)
+
+      expect(xml).toContain('<key>EnvironmentVariables</key>')
+      expect(xml).toContain('<key>PATH</key>')
+      expect(xml).toContain('<string>/path/to/bin</string>')
+      expect(xml).toContain('<key>HOME</key>')
+      expect(xml).toContain('<string>/home/user</string>')
+    })
+
+    test('does not include EnvironmentVariables when not specified', () => {
+      const options: PlistOptions = {
+        label: 'com.test',
+        program: '/bin/test',
+        startInterval: 60,
+        logDir: '/tmp/logs',
+      }
+      const xml = generatePlist(options)
+
+      expect(xml).not.toContain('<key>EnvironmentVariables</key>')
+    })
   })
 })

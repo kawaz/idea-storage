@@ -6,6 +6,7 @@ export interface PlistOptions {
   programArguments?: string[]
   startInterval?: number // seconds
   startCalendarInterval?: { Hour?: number; Minute?: number }
+  environmentVariables?: Record<string, string>
   logDir?: string // default: stateDir
 }
 
@@ -24,6 +25,17 @@ export function generatePlist(options: PlistOptions): string {
   const argsXml = args
     .map(a => `        <string>${escapeXml(a)}</string>`)
     .join('\n')
+
+  let environmentVariablesXml = ''
+  if (options.environmentVariables && Object.keys(options.environmentVariables).length > 0) {
+    const entries = Object.entries(options.environmentVariables)
+      .map(([k, v]) => `        <key>${escapeXml(k)}</key>\n        <string>${escapeXml(v)}</string>`)
+      .join('\n')
+    environmentVariablesXml = `    <key>EnvironmentVariables</key>
+    <dict>
+${entries}
+    </dict>`
+  }
 
   let intervalXml = ''
   if (options.startCalendarInterval) {
@@ -53,6 +65,7 @@ ${entries.join('\n')}
     <array>
 ${argsXml}
     </array>
+    ${environmentVariablesXml}
     ${intervalXml}
     <key>StandardOutPath</key>
     <string>${escapeXml(logDir)}/${escapeXml(options.label)}-stdout.log</string>
