@@ -36,7 +36,6 @@ describe('findMatchingRecipe', () => {
         minLines: 100,
         maxLines: 500,
         minAge: 1800,
-        maxAge: 7200,
         requireSessionEnd: true,
       },
     })
@@ -88,14 +87,6 @@ describe('findMatchingRecipe', () => {
   test('returns null when ageSec is below minAge', () => {
     const recipe = makeRecipe({
       match: { minAge: 7200 },
-    })
-    const session = makeSession({ ageSec: 3600 })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
-  })
-
-  test('returns null when ageSec is above maxAge', () => {
-    const recipe = makeRecipe({
-      match: { maxAge: 1800 },
     })
     const session = makeSession({ ageSec: 3600 })
     expect(findMatchingRecipe([recipe], session)).toBeNull()
@@ -179,9 +170,9 @@ describe('findMatchingRecipe', () => {
     expect(findMatchingRecipe([recipe], session)).toBe(recipe)
   })
 
-  test('boundary: ageSec exactly equals maxAge matches', () => {
-    const recipe = makeRecipe({ match: { maxAge: 3600 } })
-    const session = makeSession({ ageSec: 3600 })
+  test('古いセッションも maxAge 制限なくマッチする', () => {
+    const recipe = makeRecipe({ match: { minAge: 60 } })
+    const session = makeSession({ ageSec: 999999 })
     expect(findMatchingRecipe([recipe], session)).toBe(recipe)
   })
 })

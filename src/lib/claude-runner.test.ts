@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildClaudeArgs, buildClaudeEnv } from './claude-runner.ts'
+import { buildClaudeArgs, buildClaudeEnv, runClaude, ClaudeTimeoutError } from './claude-runner.ts'
 import type { ClaudeRunOptions } from './claude-runner.ts'
 
 describe('claude-runner', () => {
@@ -114,6 +114,89 @@ describe('claude-runner', () => {
           process.env.CLAUDECODE = originalEnv
         }
       }
+    })
+  })
+
+  describe('ClaudeTimeoutError', () => {
+    test('is an instance of Error', () => {
+      const err = new ClaudeTimeoutError(10000)
+      expect(err).toBeInstanceOf(Error)
+      expect(err.name).toBe('ClaudeTimeoutError')
+    })
+
+    test('contains timeoutMs in message', () => {
+      const err = new ClaudeTimeoutError(60000)
+      expect(err.message).toContain('60000')
+    })
+
+    test('exposes timeoutMs property', () => {
+      const err = new ClaudeTimeoutError(30000)
+      expect(err.timeoutMs).toBe(30000)
+    })
+  })
+
+  describe('runClaude with timeoutMs', () => {
+    test('completes normally when process finishes before timeout', async () => {
+      const result = await runClaude({
+        prompt: 'unused',
+        timeoutMs: 5000,
+        _spawnOverride: () => {
+          const proc = Bun.spawn(['echo', 'hello'], { stdout: 'pipe', stderr: 'pipe' })
+          return proc
+        },
+      })
+      expect(result.trim()).toBe('hello')
+    })
+
+    test('throws ClaudeTimeoutError when process exceeds timeout', async () => {
+      try {
+        await runClaude({
+          prompt: 'unused',
+          timeoutMs: 100,
+          _spawnOverride: () => {
+            // sleep for 10 seconds -- will be killed by timeout
+            const proc = Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+            return proc
+          },
+        })
+        expect(true).toBe(false) // should not reach here
+      } catch (err) {
+        expect(err).toBeInstanceOf(ClaudeTimeoutError)
+        expect((err as ClaudeTimeoutError).timeoutMs).toBe(100)
+      }
+    })
+
+    test('kills the child process on timeout', async () => {
+      let spawnedProc: ReturnType<typeof Bun.spawn> | null = null
+      try {
+        await runClaude({
+          prompt: 'unused',
+          timeoutMs: 100,
+          _spawnOverride: () => {
+            spawnedProc = Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+            return spawnedProc
+          },
+        })
+      } catch {
+        // expected
+      }
+      // Process should have been killed -- exitCode should be non-null after kill
+      expect(spawnedProc).not.toBeNull()
+      // Give a moment for the process to be cleaned up
+      const exitCode = await spawnedProc!.exited
+      // Killed process should have a non-zero exit code (signal)
+      expect(exitCode).not.toBe(0)
+    })
+
+    test('works without timeoutMs (no timeout)', async () => {
+      const result = await runClaude({
+        prompt: 'unused',
+        _spawnOverride: () => {
+          const proc = Bun.spawn(['echo', 'no-timeout'], { stdout: 'pipe', stderr: 'pipe' })
+          return proc
+        },
+      })
+      expect(result.trim()).toBe('no-timeout')
     })
   })
 })

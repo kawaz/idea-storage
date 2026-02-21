@@ -53,9 +53,9 @@ describe('paths', () => {
   })
 
   describe('getRecipesDir', () => {
-    test('returns configDir/recipes/', () => {
+    test('returns configDir (where recipe-*.md files live)', () => {
       process.env.XDG_CONFIG_HOME = '/tmp/test-config'
-      expect(getRecipesDir()).toBe('/tmp/test-config/idea-storage/recipes/')
+      expect(getRecipesDir()).toBe('/tmp/test-config/idea-storage/')
     })
   })
 

@@ -11,7 +11,6 @@ describe('types', () => {
         minLines: 10,
         maxLines: 1000,
         minAge: 60,
-        maxAge: 3600,
         requireSessionEnd: true,
       },
       priority: 10,
@@ -94,7 +93,6 @@ describe('types', () => {
     const config: Config = {
       claudeDirs: ['/home/user/.claude/projects'],
       minAgeMinutes: 120,
-      maxAgeMinutes: 10080,
     }
     expect(config.claudeDirs).toHaveLength(1)
     expect(config.minAgeMinutes).toBe(120)

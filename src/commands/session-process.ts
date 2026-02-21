@@ -6,11 +6,14 @@ import { loadRecipes } from '../lib/recipe.ts'
 import { getRecipesDir, getDataDir, getDoneDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { generateFrontmatter } from '../lib/frontmatter.ts'
-import { runClaude } from '../lib/claude-runner.ts'
+import { runClaude, ClaudeTimeoutError } from '../lib/claude-runner.ts'
 import { dequeue, markDone, markFailed } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, type TimelineChunk } from '../lib/chunker.ts'
+import { log, logError } from '../lib/logging.ts'
 import type { Recipe, SessionMeta } from '../types/index.ts'
+
+const csaBin = 'claude-session-analysis'
 
 async function findFirstSessionFile(claudeDirs: string[], sessionId: string): Promise<string | null> {
   for (const claudeDir of claudeDirs) {
@@ -161,6 +164,7 @@ async function processChunked(
   recipePrompt: string,
   sessionId: string,
   meta: SessionMeta,
+  timeoutMs?: number,
 ): Promise<string> {
   const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || 'unknown'}\n- Created: ${meta.startTime.toISOString()}`
 
@@ -169,19 +173,23 @@ async function processChunked(
     chunks.map(async (chunk) => {
       const chunkText = extractChunkText(convText, chunk)
       const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-      return runClaude({ prompt: sectionPrompt })
+      return runClaude({ prompt: sectionPrompt, timeoutMs })
     })
   )
 
   // 合成
   const synthesisPrompt = buildSynthesisPrompt(sectionResults, sessionInfo)
-  return runClaude({ prompt: synthesisPrompt })
+  return runClaude({ prompt: synthesisPrompt, timeoutMs })
 }
 
-export async function runProcess(): Promise<boolean> {
+export interface RunProcessOptions {
+  taskTimeoutMs?: number
+}
+
+export async function runProcess(options: RunProcessOptions = {}): Promise<boolean> {
   const entry = await dequeue()
   if (!entry) {
-    console.log('No items in queue')
+    log({ msg: 'no_items_in_queue' })
     return false
   }
 
@@ -192,7 +200,7 @@ export async function runProcess(): Promise<boolean> {
   // Find session file
   const sessionFile = await findFirstSessionFile(config.claudeDirs, sessionId)
   if (!sessionFile) {
-    console.log(`${key}: session file not found`)
+    log({ key, msg: 'session_file_not_found' })
     await markFailed(key)
     return true
   }
@@ -207,13 +215,28 @@ export async function runProcess(): Promise<boolean> {
 
   const recipe = findRecipeByName(recipes, recipeName)
   if (!recipe) {
-    console.log(`${key}: recipe '${recipeName}' not found`)
+    log({ key, msg: 'recipe_not_found', recipe: recipeName })
     await markFailed(key)
     return true
   }
 
   // Get session metadata
   const meta = await getSessionMeta(sessionFile)
+
+  // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
+  let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {}
+  try {
+    const statsProc = Bun.spawn([csaBin, 'sessions', '--format', 'jsonl', sessionId], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const statsOut = await new Response(statsProc.stdout).text()
+    await statsProc.exited
+    const line = statsOut.trim().split('\n')[0]
+    if (line) sessionStats = JSON.parse(line)
+  } catch {
+    // fallback: use meta values
+  }
 
   // Determine mode based on on_existing and done state
   let prompt = recipe.prompt
@@ -234,7 +257,7 @@ export async function runProcess(): Promise<boolean> {
   if (hasPreviousRun) {
     switch (recipe.onExisting) {
       case 'skip':
-        console.log(`${key}: skipping (already processed)`)
+        log({ key, msg: 'skip', reason: 'already_processed' })
         return true
       case 'append':
         prompt += '\n\n---\nNote: Session continued. Please append to existing entry.'
@@ -245,10 +268,12 @@ export async function runProcess(): Promise<boolean> {
     }
   }
 
-  console.log(`${key}: [${recipeName}] (${meta.lineCount} lines) @ ${meta.project || 'unknown'}`)
+  const sizeBytes = sessionStats.bytes ?? null
+  const turns = sessionStats.turns ?? meta.userTurns
+  const project = meta.project || 'unknown'
+  log({ key, msg: 'start', recipe: recipeName, sizeBytes, turns, project })
 
   // Extract conversation timeline via claude-session-analysis
-  const csaBin = 'claude-session-analysis'
   const csaProc = Bun.spawn([csaBin, 'timeline', sessionId, '--md', '--no-emoji'], {
     stdout: 'pipe',
     stderr: 'pipe',
@@ -260,13 +285,13 @@ export async function runProcess(): Promise<boolean> {
   const csaExitCode = await csaProc.exited
 
   if (csaExitCode !== 0) {
-    console.error(`${key}: claude-session-analysis failed (exit ${csaExitCode}): ${csaStderr}`)
+    logError({ key, msg: 'csa_failed', exitCode: csaExitCode, stderr: csaStderr })
     await markFailed(key)
     return true
   }
 
   if (!convText.trim()) {
-    console.log(`${key}: skipped (no conversation messages)`)
+    log({ key, msg: 'skip', reason: 'no_conversation' })
     await markDone(key, meta.lineCount)
     return true
   }
@@ -274,32 +299,32 @@ export async function runProcess(): Promise<boolean> {
   // フォークセッションの場合、タイムラインを切り詰め＋プロンプト調整
   let timelineText = convText
   if (meta.forkInfo) {
-    console.log(`${key}: fork session (parent: ${meta.forkInfo.parentSessionId})`)
+    log({ key, msg: 'fork', parent: meta.forkInfo.parentSessionId })
 
     if (!meta.forkInfo.firstNewUuid) {
-      // フォーク行のみで新規会話がないセッション
-      console.log(`${key}: skipped (fork session with no new conversation)`)
+      log({ key, msg: 'skip', reason: 'fork_no_new_conversation' })
       await markDone(key, meta.lineCount)
       return true
     }
 
     const originalLen = convText.length
     timelineText = trimTimelineForFork(convText, meta.forkInfo.firstNewUuid)
-    console.log(`${key}: trimmed timeline ${originalLen} -> ${timelineText.length} bytes`)
+    log({ key, msg: 'trimmed', from: originalLen, to: timelineText.length })
     prompt += `\n\n---\nNote: このセッションは元セッション ${meta.forkInfo.parentSessionId} からフォークされたものです。以下のタイムラインはフォーク後の新規会話のみです。`
   }
 
   // チャンク分割の判定
   const chunks = splitTimeline(timelineText)
 
+  const { taskTimeoutMs } = options
+
   try {
     let output: string
     const sessionStart = meta.startTime.toISOString()
 
     if (chunks.length > 1) {
-      // チャンク分割パス: 各チャンクを並列処理して合成
-      console.log(`${key}: チャンク分割処理 (${chunks.length} チャンク)`)
-      output = await processChunked(timelineText, chunks, prompt, sessionId, meta)
+      log({ key, msg: 'chunked', chunks: chunks.length })
+      output = await processChunked(timelineText, chunks, prompt, sessionId, meta, taskTimeoutMs)
     } else {
       // 既存の単一パス（変更なし）
       const fullPrompt = `${prompt}
@@ -312,7 +337,7 @@ export async function runProcess(): Promise<boolean> {
 
 ## 会話タイムライン
 ${timelineText}`
-      output = await runClaude({ prompt: fullPrompt, addDir: dataDir })
+      output = await runClaude({ prompt: fullPrompt, addDir: dataDir, timeoutMs: taskTimeoutMs })
     }
 
     // Generate frontmatter
@@ -325,8 +350,9 @@ ${timelineText}`
       session_end: sessionEnd,
       generated_at: generatedAt,
       recipe: recipeName,
-      source_lines: meta.lineCount,
-      user_turns: meta.userTurns,
+      user_turns: sessionStats.turns ?? meta.userTurns,
+      session_bytes: sessionStats.bytes,
+      duration_ms: sessionStats.duration_ms,
     }
     if (meta.forkInfo) {
       fmData.forked_from = meta.forkInfo.parentSessionId
@@ -343,10 +369,14 @@ ${timelineText}`
 
     await Bun.write(outputFile, fm + output)
     await markDone(key, meta.lineCount)
-    console.log(`${key}: success -> ${outputFile}`)
+    log({ key, msg: 'success', output: outputFile })
   } catch (err) {
+    if (err instanceof ClaudeTimeoutError) {
+      logError({ key, msg: 'task_timeout', timeoutMs: err.timeoutMs })
+    } else {
+      logError({ key, msg: 'failed', error: err instanceof Error ? err.message : String(err) })
+    }
     await markFailed(key)
-    console.error(`${key}: failed (${err instanceof Error ? err.message : String(err)})`)
   }
 
   return true

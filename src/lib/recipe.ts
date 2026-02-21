@@ -20,7 +20,6 @@ export async function parseRecipe(filePath: string): Promise<Recipe> {
   if (rawMatch.min_lines != null) match.minLines = Number(rawMatch.min_lines)
   if (rawMatch.max_lines != null) match.maxLines = Number(rawMatch.max_lines)
   if (rawMatch.min_age != null) match.minAge = Number(rawMatch.min_age)
-  if (rawMatch.max_age != null) match.maxAge = Number(rawMatch.max_age)
   if (rawMatch.require_session_end != null) match.requireSessionEnd = Boolean(rawMatch.require_session_end)
 
   const priority = typeof frontmatter.priority === 'number' ? frontmatter.priority : 0

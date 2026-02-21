@@ -7,6 +7,7 @@ import { getSessionMeta } from '../lib/conversation.ts'
 import { findMatchingRecipe } from '../lib/recipe-matcher.ts'
 import { enqueue, isQueued, isFailed, isDone } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
+import { log } from '../lib/logging.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
 
@@ -24,7 +25,6 @@ export async function runEnqueue(): Promise<void> {
   }
 
   const minAgeSec = config.minAgeMinutes * 60
-  const maxAgeSec = config.maxAgeMinutes * 60
 
   let count = 0
 
@@ -47,8 +47,8 @@ export async function runEnqueue(): Promise<void> {
       const filePath = join(projectsDir, relativePath)
       const meta = await getSessionMeta(filePath)
 
-      // Age check
-      if (meta.ageSec < minAgeSec || meta.ageSec > maxAgeSec) continue
+      // Age check (skip only too-young sessions; no upper limit)
+      if (meta.ageSec < minAgeSec) continue
 
       // Check each recipe
       for (const recipe of recipes) {
@@ -63,13 +63,13 @@ export async function runEnqueue(): Promise<void> {
         if (await isDone(meta.id, recipe.name, meta.lineCount)) continue
 
         await enqueue(meta.id, recipe.name)
-        console.log(`Queued: ${meta.id}.${recipe.name}`)
+        log({ msg: 'queued', key: `${meta.id}.${recipe.name}` })
         count++
       }
     }
   }
 
-  console.log(`Enqueued ${count} items`)
+  log({ msg: 'enqueue_done', count })
 }
 
 const sessionEnqueue = define({

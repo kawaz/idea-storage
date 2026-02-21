@@ -22,9 +22,8 @@ function matchesRecipe(recipe: Recipe, session: SessionMeta): boolean {
   if (match.minLines != null && session.lineCount < match.minLines) return false
   if (match.maxLines != null && session.lineCount > match.maxLines) return false
 
-  // minAge / maxAge
+  // minAge
   if (match.minAge != null && session.ageSec < match.minAge) return false
-  if (match.maxAge != null && session.ageSec > match.maxAge) return false
 
   // requireSessionEnd
   if (match.requireSessionEnd != null && match.requireSessionEnd && !session.hasEnd) return false

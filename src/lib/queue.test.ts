@@ -59,8 +59,8 @@ describe('queue', () => {
       expect(entry).toBeNull()
     })
 
-    test('returns the oldest entry and removes the file', async () => {
-      // enqueue two items with a small delay to ensure different mtimes
+    test('returns the newest entry and removes the file', async () => {
+      // enqueue two items with different mtimes
       await enqueue('sid-1', 'recipe-a', dirs)
       // Touch with older mtime to guarantee ordering
       const { utimesSync } = await import('node:fs')
@@ -71,16 +71,16 @@ describe('queue', () => {
 
       const entry = await dequeue(dirs)
       expect(entry).not.toBeNull()
-      expect(entry!.sessionId).toBe('sid-1')
-      expect(entry!.recipeName).toBe('recipe-a')
-      expect(entry!.key).toBe('sid-1.recipe-a')
+      expect(entry!.sessionId).toBe('sid-2')
+      expect(entry!.recipeName).toBe('recipe-b')
+      expect(entry!.key).toBe('sid-2.recipe-b')
 
       // File should be removed
-      const file = Bun.file(join(dirs.queueDir, 'sid-1.recipe-a'))
+      const file = Bun.file(join(dirs.queueDir, 'sid-2.recipe-b'))
       expect(await file.exists()).toBe(false)
 
-      // Second entry should still exist
-      const file2 = Bun.file(join(dirs.queueDir, 'sid-2.recipe-b'))
+      // Older entry should still exist
+      const file2 = Bun.file(join(dirs.queueDir, 'sid-1.recipe-a'))
       expect(await file2.exists()).toBe(true)
     })
 
@@ -129,6 +129,21 @@ describe('queue', () => {
 
     test('creates failedDir if it does not exist', async () => {
       await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', dirs)
+      const failedFile = Bun.file(join(dirs.failedDir, 'sid-1.diary'))
+      expect(await failedFile.exists()).toBe(true)
+    })
+
+    test('works after dequeue (queue file already removed)', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      const entry = await dequeue(dirs)
+      expect(entry).not.toBeNull()
+
+      // Queue file is already removed by dequeue
+      const queueFile = Bun.file(join(dirs.queueDir, 'sid-1.diary'))
+      expect(await queueFile.exists()).toBe(false)
+
+      // markFailed should still succeed and create the failed file
       await markFailed('sid-1.diary', dirs)
       const failedFile = Bun.file(join(dirs.failedDir, 'sid-1.diary'))
       expect(await failedFile.exists()).toBe(true)

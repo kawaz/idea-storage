@@ -24,9 +24,9 @@ export function getStateDir(): string {
   return `${join(base, APP_NAME)}/`
 }
 
-/** configDir/recipes/ */
+/** configDir (where recipe-*.md files live) */
 export function getRecipesDir(): string {
-  return `${getConfigDir()}recipes/`
+  return getConfigDir()
 }
 
 /** stateDir/queue/ */

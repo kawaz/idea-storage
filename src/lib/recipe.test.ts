@@ -13,7 +13,6 @@ describe('parseRecipe', () => {
     expect(recipe.match.minAge).toBe(7200)
     expect(recipe.match.project).toBeUndefined()
     expect(recipe.match.maxLines).toBeUndefined()
-    expect(recipe.match.maxAge).toBeUndefined()
     expect(recipe.match.requireSessionEnd).toBeUndefined()
     expect(recipe.priority).toBe(0) // default
     expect(recipe.onExisting).toBe('append') // default

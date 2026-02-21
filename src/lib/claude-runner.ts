@@ -1,8 +1,21 @@
+export class ClaudeTimeoutError extends Error {
+  readonly timeoutMs: number
+  constructor(timeoutMs: number) {
+    super(`claude process timed out after ${timeoutMs}ms`)
+    this.name = 'ClaudeTimeoutError'
+    this.timeoutMs = timeoutMs
+  }
+}
+
 export interface ClaudeRunOptions {
   prompt: string
   addDir?: string
   sessionPersistence?: boolean // default false
   dangerouslySkipPermissions?: boolean // default true
+  /** Per-task timeout in milliseconds. No timeout if omitted. */
+  timeoutMs?: number
+  /** @internal Override spawn for testing */
+  _spawnOverride?: () => ReturnType<typeof Bun.spawn>
 }
 
 export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
@@ -35,20 +48,42 @@ export function buildClaudeEnv(): Record<string, string> {
 }
 
 export async function runClaude(options: ClaudeRunOptions): Promise<string> {
-  const args = buildClaudeArgs(options)
-  const env = buildClaudeEnv()
+  const proc = options._spawnOverride
+    ? options._spawnOverride()
+    : Bun.spawn(buildClaudeArgs(options), {
+        env: buildClaudeEnv(),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
 
-  const proc = Bun.spawn(args, {
-    env,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
+  const stdoutPromise = new Response(proc.stdout).text()
+  const stderrPromise = new Response(proc.stderr).text()
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
+  if (options.timeoutMs != null) {
+    const timeoutMs = options.timeoutMs
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new ClaudeTimeoutError(timeoutMs)), timeoutMs)
+    })
 
+    try {
+      const exitCode = await Promise.race([proc.exited, timeout])
+      const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
+      if (exitCode !== 0) {
+        throw new Error(`claude exited with code ${exitCode}: ${stderr}`)
+      }
+      return stdout
+    } catch (err) {
+      if (err instanceof ClaudeTimeoutError) {
+        proc.kill()
+        // Drain streams to avoid resource leaks
+        await Promise.allSettled([stdoutPromise, stderrPromise, proc.exited])
+        throw err
+      }
+      throw err
+    }
+  }
+
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
   const exitCode = await proc.exited
 
   if (exitCode !== 0) {

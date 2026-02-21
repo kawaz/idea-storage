@@ -23,7 +23,6 @@ describe('config', () => {
       const config = await loadConfig()
       expect(config.claudeDirs).toEqual([`${process.env.HOME}/.claude`])
       expect(config.minAgeMinutes).toBe(120)
-      expect(config.maxAgeMinutes).toBe(10080)
     })
 
     test('merges partial config with defaults', async () => {
@@ -36,7 +35,6 @@ describe('config', () => {
       expect(config.minAgeMinutes).toBe(60)
       // Defaults should remain
       expect(config.claudeDirs).toEqual([`${process.env.HOME}/.claude`])
-      expect(config.maxAgeMinutes).toBe(10080)
     })
 
     test('overrides all fields when config.ts provides them', async () => {
@@ -46,13 +44,11 @@ describe('config', () => {
         `export default {
   claudeDirs: ["/home/user/.claude", "/home/user/.claude-work"],
   minAgeMinutes: 30,
-  maxAgeMinutes: 20160,
 }\n`,
       )
       const config = await loadConfig()
       expect(config.claudeDirs).toEqual(['/home/user/.claude', '/home/user/.claude-work'])
       expect(config.minAgeMinutes).toBe(30)
-      expect(config.maxAgeMinutes).toBe(20160)
     })
 
     test('handles config.ts with only claudeDirs', async () => {
@@ -64,7 +60,6 @@ describe('config', () => {
       const config = await loadConfig()
       expect(config.claudeDirs).toEqual(['/custom/.claude'])
       expect(config.minAgeMinutes).toBe(120)
-      expect(config.maxAgeMinutes).toBe(10080)
     })
   })
 })

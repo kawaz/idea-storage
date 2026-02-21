@@ -7,7 +7,6 @@ function defaultConfig(): Config {
   return {
     claudeDirs: [`${home}/.claude`],
     minAgeMinutes: 120,
-    maxAgeMinutes: 10080,
   }
 }
 
