@@ -22,10 +22,10 @@ function makeKey(sessionId: string, recipeName: string): string {
 }
 
 function parseKey(key: string): { sessionId: string; recipeName: string } {
-  const lastDot = key.lastIndexOf('.')
+  const firstDot = key.indexOf('.')
   return {
-    sessionId: key.slice(0, lastDot),
-    recipeName: key.slice(lastDot + 1),
+    sessionId: key.slice(0, firstDot),
+    recipeName: key.slice(firstDot + 1),
   }
 }
 
@@ -53,25 +53,25 @@ export async function dequeue(dirs?: QueueDirs): Promise<QueueEntry | null> {
   const files = await listFiles(d.queueDir)
   if (files.length === 0) return null
 
-  // Find the newest file by mtime (prioritize recent sessions)
-  let newest: { name: string; mtime: number } | null = null
+  // Find the oldest file by mtime (FIFO: process oldest first)
+  let oldest: { name: string; mtime: number } | null = null
   for (const name of files) {
     try {
       const s = await stat(join(d.queueDir, name))
-      if (newest === null || s.mtimeMs > newest.mtime) {
-        newest = { name, mtime: s.mtimeMs }
+      if (oldest === null || s.mtimeMs < oldest.mtime) {
+        oldest = { name, mtime: s.mtimeMs }
       }
     } catch {
       // File may have been removed concurrently
     }
   }
 
-  if (newest === null) return null
+  if (oldest === null) return null
 
-  const { sessionId, recipeName } = parseKey(newest.name)
-  await unlink(join(d.queueDir, newest.name))
+  const { sessionId, recipeName } = parseKey(oldest.name)
+  await unlink(join(d.queueDir, oldest.name))
 
-  return { sessionId, recipeName, key: newest.name }
+  return { sessionId, recipeName, key: oldest.name }
 }
 
 export async function markDone(key: string, lineCount: number, dirs?: QueueDirs): Promise<void> {

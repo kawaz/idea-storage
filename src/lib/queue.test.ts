@@ -59,29 +59,54 @@ describe('queue', () => {
       expect(entry).toBeNull()
     })
 
-    test('returns the newest entry and removes the file', async () => {
+    test('returns the oldest entry first (FIFO) and removes the file', async () => {
       // enqueue two items with different mtimes
       await enqueue('sid-1', 'recipe-a', dirs)
-      // Touch with older mtime to guarantee ordering
+      await enqueue('sid-2', 'recipe-b', dirs)
+
+      // Make sid-1 older to guarantee ordering
       const { utimesSync } = await import('node:fs')
       const oldTime = new Date(Date.now() - 10000)
       utimesSync(join(dirs.queueDir, 'sid-1.recipe-a'), oldTime, oldTime)
 
-      await enqueue('sid-2', 'recipe-b', dirs)
-
       const entry = await dequeue(dirs)
       expect(entry).not.toBeNull()
-      expect(entry!.sessionId).toBe('sid-2')
-      expect(entry!.recipeName).toBe('recipe-b')
-      expect(entry!.key).toBe('sid-2.recipe-b')
+      expect(entry!.sessionId).toBe('sid-1')
+      expect(entry!.recipeName).toBe('recipe-a')
+      expect(entry!.key).toBe('sid-1.recipe-a')
 
       // File should be removed
-      const file = Bun.file(join(dirs.queueDir, 'sid-2.recipe-b'))
+      const file = Bun.file(join(dirs.queueDir, 'sid-1.recipe-a'))
       expect(await file.exists()).toBe(false)
 
-      // Older entry should still exist
-      const file2 = Bun.file(join(dirs.queueDir, 'sid-1.recipe-a'))
+      // Newer entry should still exist
+      const file2 = Bun.file(join(dirs.queueDir, 'sid-2.recipe-b'))
       expect(await file2.exists()).toBe(true)
+    })
+
+    test('dequeues in FIFO order across multiple calls', async () => {
+      const { utimesSync } = await import('node:fs')
+
+      await enqueue('sid-1', 'recipe-a', dirs)
+      utimesSync(join(dirs.queueDir, 'sid-1.recipe-a'), new Date(1000), new Date(1000))
+
+      await enqueue('sid-2', 'recipe-b', dirs)
+      utimesSync(join(dirs.queueDir, 'sid-2.recipe-b'), new Date(2000), new Date(2000))
+
+      await enqueue('sid-3', 'recipe-c', dirs)
+      utimesSync(join(dirs.queueDir, 'sid-3.recipe-c'), new Date(3000), new Date(3000))
+
+      const first = await dequeue(dirs)
+      expect(first!.sessionId).toBe('sid-1')
+
+      const second = await dequeue(dirs)
+      expect(second!.sessionId).toBe('sid-2')
+
+      const third = await dequeue(dirs)
+      expect(third!.sessionId).toBe('sid-3')
+
+      const fourth = await dequeue(dirs)
+      expect(fourth).toBeNull()
     })
 
     test('returns null when queueDir does not exist', async () => {
@@ -92,6 +117,43 @@ describe('queue', () => {
       }
       const entry = await dequeue(nonExistDirs)
       expect(entry).toBeNull()
+    })
+  })
+
+  describe('parseKey (via enqueue/dequeue round-trip)', () => {
+    test('correctly parses recipe name containing dots', async () => {
+      await enqueue('abc-123', 'my.diary', dirs)
+
+      const entry = await dequeue(dirs)
+      expect(entry).not.toBeNull()
+      expect(entry!.sessionId).toBe('abc-123')
+      expect(entry!.recipeName).toBe('my.diary')
+      expect(entry!.key).toBe('abc-123.my.diary')
+    })
+
+    test('correctly parses recipe name with multiple dots', async () => {
+      await enqueue('def-456', 'my.special.recipe', dirs)
+
+      const entry = await dequeue(dirs)
+      expect(entry).not.toBeNull()
+      expect(entry!.sessionId).toBe('def-456')
+      expect(entry!.recipeName).toBe('my.special.recipe')
+    })
+
+    test('isDone works with dotted recipe name', async () => {
+      await markDone('abc-123.my.diary', 50, dirs)
+      expect(await isDone('abc-123', 'my.diary', 50, dirs)).toBe(true)
+    })
+
+    test('isQueued works with dotted recipe name', async () => {
+      await enqueue('abc-123', 'my.diary', dirs)
+      expect(await isQueued('abc-123', 'my.diary', dirs)).toBe(true)
+    })
+
+    test('isFailed works with dotted recipe name', async () => {
+      await enqueue('abc-123', 'my.diary', dirs)
+      await markFailed('abc-123.my.diary', dirs)
+      expect(await isFailed('abc-123', 'my.diary', dirs)).toBe(true)
     })
   })
 
