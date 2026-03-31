@@ -3,8 +3,8 @@ import { runEnqueue } from './session-enqueue.ts'
 import { runProcess } from './session-process.ts'
 import { log, logError } from '../lib/logging.ts'
 
-/** Default per-task timeout: 10 minutes */
-export const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000
+/** Default per-task timeout: 12 minutes (p99=7.2min, max observed=11.5min) */
+export const DEFAULT_TASK_TIMEOUT_MS = 12 * 60 * 1000
 
 /** Default overall timeout: 45 minutes */
 export const DEFAULT_OVERALL_TIMEOUT_MS = 45 * 60 * 1000
