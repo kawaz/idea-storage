@@ -3,7 +3,9 @@ import { join } from 'node:path'
 const APP_NAME = 'idea-storage'
 
 function home(): string {
-  return process.env.HOME ?? '/'
+  const h = process.env.HOME
+  if (!h) throw new Error('HOME environment variable is not set')
+  return h
 }
 
 /** $XDG_CONFIG_HOME/idea-storage/ or ~/.config/idea-storage/ */

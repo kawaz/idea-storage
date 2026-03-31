@@ -80,6 +80,35 @@ describe('paths', () => {
     })
   })
 
+  describe('HOME not set', () => {
+    test('throws error when HOME is not set and XDG dirs are not set', () => {
+      const savedHome = process.env.HOME
+      delete process.env.HOME
+      try {
+        expect(() => getConfigDir()).toThrow('HOME environment variable is not set')
+        expect(() => getDataDir()).toThrow('HOME environment variable is not set')
+        expect(() => getStateDir()).toThrow('HOME environment variable is not set')
+      } finally {
+        process.env.HOME = savedHome
+      }
+    })
+
+    test('does not throw when XDG dirs are set even if HOME is not set', () => {
+      const savedHome = process.env.HOME
+      delete process.env.HOME
+      process.env.XDG_CONFIG_HOME = '/tmp/test-config'
+      process.env.XDG_DATA_HOME = '/tmp/test-data'
+      process.env.XDG_STATE_HOME = '/tmp/test-state'
+      try {
+        expect(getConfigDir()).toBe('/tmp/test-config/idea-storage/')
+        expect(getDataDir()).toBe('/tmp/test-data/idea-storage/')
+        expect(getStateDir()).toBe('/tmp/test-state/idea-storage/')
+      } finally {
+        process.env.HOME = savedHome
+      }
+    })
+  })
+
   describe('trailing slash consistency', () => {
     test('all directory paths end with /', () => {
       process.env.XDG_CONFIG_HOME = '/tmp/c'

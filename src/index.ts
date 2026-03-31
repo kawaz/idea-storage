@@ -14,7 +14,7 @@ const subCommands = {
 
 const main = define({
   name: 'idea-storage',
-  description: 'idea-storage CLI',
+  description: 'Transform Claude Code session histories into articles via AI recipes',
   subCommands,
   run: async (ctx) => {
     await showHelp(ctx as Parameters<typeof showHelp>[0])
