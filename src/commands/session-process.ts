@@ -11,10 +11,14 @@ import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
 import { dequeue, markDone, markFailed } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, type TimelineChunk } from '../lib/chunker.ts'
+import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
 import { log, logError } from '../lib/logging.ts'
 import type { Recipe, SessionMeta } from '../types/index.ts'
 
 const csaBin = 'claude-session-analysis'
+
+/** CSA subprocess timeout: 5 minutes */
+export const CSA_TIMEOUT_MS = 5 * 60 * 1000
 
 async function findFirstSessionFile(claudeDirs: string[], sessionId: string): Promise<string | null> {
   for (const claudeDir of claudeDirs) {
@@ -275,15 +279,16 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
   let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {}
   try {
-    const statsProc = Bun.spawn([csaBin, 'sessions', '--format', 'jsonl', sessionId], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const statsResult = await spawnWithTimeout({
+      cmd: [csaBin, 'sessions', '--format', 'jsonl', sessionId],
+      timeoutMs: CSA_TIMEOUT_MS,
     })
-    const statsOut = await new Response(statsProc.stdout).text()
-    await statsProc.exited
-    const line = statsOut.trim().split('\n')[0]
+    const line = statsResult.stdout.trim().split('\n')[0]
     if (line) sessionStats = JSON.parse(line)
-  } catch {
+  } catch (err) {
+    if (err instanceof SpawnTimeoutError) {
+      logError({ key, msg: 'csa_stats_timeout', timeoutMs: CSA_TIMEOUT_MS })
+    }
     // fallback: use meta values
   }
 
@@ -323,20 +328,26 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   log({ key, msg: 'start', recipe: recipeName, sizeBytes, turns, project })
 
   // Extract conversation timeline via claude-session-analysis
-  const csaProc = Bun.spawn([csaBin, 'timeline', sessionId, '--md', '--no-emoji'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
-  const [convText, csaStderr] = await Promise.all([
-    new Response(csaProc.stdout).text(),
-    new Response(csaProc.stderr).text(),
-  ])
-  const csaExitCode = await csaProc.exited
+  let convText: string
+  try {
+    const csaResult = await spawnWithTimeout({
+      cmd: [csaBin, 'timeline', sessionId, '--md', '--no-emoji'],
+      timeoutMs: CSA_TIMEOUT_MS,
+    })
 
-  if (csaExitCode !== 0) {
-    logError({ key, msg: 'csa_failed', exitCode: csaExitCode, stderr: csaStderr })
-    await markFailed(key, `csa failed with exit code ${csaExitCode}`)
-    return true
+    if (csaResult.exitCode !== 0) {
+      logError({ key, msg: 'csa_failed', exitCode: csaResult.exitCode, stderr: csaResult.stderr })
+      await markFailed(key, `csa failed with exit code ${csaResult.exitCode}`)
+      return true
+    }
+    convText = csaResult.stdout
+  } catch (err) {
+    if (err instanceof SpawnTimeoutError) {
+      logError({ key, msg: 'csa_timeline_timeout', timeoutMs: CSA_TIMEOUT_MS })
+      await markFailed(key, `csa timeline timed out after ${CSA_TIMEOUT_MS}ms`)
+      return true
+    }
+    throw err
   }
 
   if (!convText.trim()) {
