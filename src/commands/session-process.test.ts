@@ -17,7 +17,7 @@ mock.module('../lib/queue.ts', () => ({
     key: 'missing-session-id.diary',
   })),
   markDone: mock(async () => {}),
-  markFailed: mock(async (key: string) => {
+  markFailed: mock(async (key: string, _reason?: string) => {
     markFailedCalls.push(key)
   }),
 }))

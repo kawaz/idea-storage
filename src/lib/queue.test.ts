@@ -152,7 +152,7 @@ describe('queue', () => {
 
     test('isFailed works with dotted recipe name', async () => {
       await enqueue('abc-123', 'my.diary', dirs)
-      await markFailed('abc-123.my.diary', dirs)
+      await markFailed('abc-123.my.diary', undefined, dirs)
       expect(await isFailed('abc-123', 'my.diary', dirs)).toBe(true)
     })
   })
@@ -180,7 +180,7 @@ describe('queue', () => {
   describe('markFailed', () => {
     test('moves file from queueDir to failedDir', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
 
       const failedFile = Bun.file(join(dirs.failedDir, 'sid-1.diary'))
       expect(await failedFile.exists()).toBe(true)
@@ -191,7 +191,7 @@ describe('queue', () => {
 
     test('creates failedDir if it does not exist', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
       const failedFile = Bun.file(join(dirs.failedDir, 'sid-1.diary'))
       expect(await failedFile.exists()).toBe(true)
     })
@@ -206,9 +206,57 @@ describe('queue', () => {
       expect(await queueFile.exists()).toBe(false)
 
       // markFailed should still succeed and create the failed file
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
       const failedFile = Bun.file(join(dirs.failedDir, 'sid-1.diary'))
       expect(await failedFile.exists()).toBe(true)
+    })
+
+    test('records retryCount: 1 on first call', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+
+      const content = await Bun.file(join(dirs.failedDir, 'sid-1.diary')).json()
+      expect(content.retryCount).toBe(1)
+    })
+
+    test('increments retryCount on subsequent calls', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+
+      const content = await Bun.file(join(dirs.failedDir, 'sid-1.diary')).json()
+      expect(content.retryCount).toBe(2)
+    })
+
+    test('records reason when provided', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', 'claude exited with code 1', dirs)
+
+      const content = await Bun.file(join(dirs.failedDir, 'sid-1.diary')).json()
+      expect(content.retryCount).toBe(1)
+      expect(content.reason).toBe('claude exited with code 1')
+    })
+
+    test('preserves reason from previous failure when incrementing', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', 'first error', dirs)
+      await markFailed('sid-1.diary', 'second error', dirs)
+
+      const content = await Bun.file(join(dirs.failedDir, 'sid-1.diary')).json()
+      expect(content.retryCount).toBe(2)
+      expect(content.reason).toBe('second error')
+    })
+
+    test('treats existing empty file as retryCount 0 (backward compat)', async () => {
+      // Simulate legacy empty failed file
+      const { mkdir } = await import('node:fs/promises')
+      await mkdir(dirs.failedDir, { recursive: true })
+      await Bun.write(join(dirs.failedDir, 'sid-1.diary'), '')
+
+      await markFailed('sid-1.diary', undefined, dirs)
+
+      const content = await Bun.file(join(dirs.failedDir, 'sid-1.diary')).json()
+      expect(content.retryCount).toBe(1)
     })
   })
 
@@ -241,21 +289,82 @@ describe('queue', () => {
   })
 
   describe('isFailed', () => {
-    test('returns true when entry is in failed', async () => {
-      await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
-      expect(await isFailed('sid-1', 'diary', dirs)).toBe(true)
+    test('returns false when failed file does not exist', async () => {
+      expect(await isFailed('sid-1', 'diary', dirs)).toBe(false)
     })
 
-    test('returns false when entry is not in failed', async () => {
-      expect(await isFailed('sid-1', 'diary', dirs)).toBe(false)
+    test('returns true when failed and mtime is recent (within retryAfterMs)', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+      // Just failed - should still be considered failed (too soon to retry)
+      expect(await isFailed('sid-1', 'diary', dirs, { retryAfterMs: 1000 })).toBe(true)
+    })
+
+    test('returns false when retryCount < maxRetries and mtime is old enough (auto-retry)', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+
+      // Set mtime to the past to simulate time passing
+      const { utimesSync } = await import('node:fs')
+      const oldTime = new Date(Date.now() - 2000)
+      utimesSync(join(dirs.failedDir, 'sid-1.diary'), oldTime, oldTime)
+
+      // retryCount=1, maxRetries=3, mtime is 2s ago, retryAfterMs=1000ms => should retry
+      expect(await isFailed('sid-1', 'diary', dirs, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)
+    })
+
+    test('returns true when retryCount >= maxRetries (permanent-failed)', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs) // retryCount=1
+      await markFailed('sid-1.diary', undefined, dirs) // retryCount=2
+      await markFailed('sid-1.diary', undefined, dirs) // retryCount=3
+
+      // Set mtime to the past
+      const { utimesSync } = await import('node:fs')
+      const oldTime = new Date(Date.now() - 100000)
+      utimesSync(join(dirs.failedDir, 'sid-1.diary'), oldTime, oldTime)
+
+      // retryCount=3, maxRetries=3 => permanent-failed, always true
+      expect(await isFailed('sid-1', 'diary', dirs, { retryAfterMs: 1, maxRetries: 3 })).toBe(true)
+    })
+
+    test('treats legacy empty file as retryCount 0 (always retryable after delay)', async () => {
+      // Simulate legacy empty failed file
+      const { mkdir } = await import('node:fs/promises')
+      await mkdir(dirs.failedDir, { recursive: true })
+      await Bun.write(join(dirs.failedDir, 'sid-1.diary'), '')
+
+      // Set mtime to the past
+      const { utimesSync } = await import('node:fs')
+      const oldTime = new Date(Date.now() - 2000)
+      utimesSync(join(dirs.failedDir, 'sid-1.diary'), oldTime, oldTime)
+
+      // retryCount=0, maxRetries=3, mtime old => should retry
+      expect(await isFailed('sid-1', 'diary', dirs, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)
+    })
+
+    test('returns true for legacy empty file when mtime is recent', async () => {
+      // Simulate legacy empty failed file
+      const { mkdir } = await import('node:fs/promises')
+      await mkdir(dirs.failedDir, { recursive: true })
+      await Bun.write(join(dirs.failedDir, 'sid-1.diary'), '')
+
+      // retryCount=0, maxRetries=3, mtime is now => too soon
+      expect(await isFailed('sid-1', 'diary', dirs, { retryAfterMs: 60000, maxRetries: 3 })).toBe(true)
+    })
+
+    test('uses default retryAfterMs and maxRetries when not specified', async () => {
+      await enqueue('sid-1', 'diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
+      // With defaults (24h, 3 retries), just-failed should return true
+      expect(await isFailed('sid-1', 'diary', dirs)).toBe(true)
     })
   })
 
   describe('retry', () => {
     test('moves file from failedDir to queueDir', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
       await retry('sid-1.diary', dirs)
 
       const queueFile = Bun.file(join(dirs.queueDir, 'sid-1.diary'))
@@ -272,7 +381,7 @@ describe('queue', () => {
       await enqueue('sid-2', 'diary', dirs)
       await markDone('sid-3.diary', 10, dirs)
       await enqueue('sid-4', 'diary', dirs)
-      await markFailed('sid-4.diary', dirs)
+      await markFailed('sid-4.diary', undefined, dirs)
 
       const status = await getStatus(dirs)
       expect(status.queued).toBe(2)
@@ -291,9 +400,9 @@ describe('queue', () => {
   describe('cleanup', () => {
     test('removes failed entries whose session no longer exists', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
       await enqueue('sid-2', 'diary', dirs)
-      await markFailed('sid-2.diary', dirs)
+      await markFailed('sid-2.diary', undefined, dirs)
 
       const isSessionExists = async (sid: string) => sid === 'sid-1'
       const removed = await cleanup(isSessionExists, dirs)
@@ -305,7 +414,7 @@ describe('queue', () => {
 
     test('returns 0 when all sessions exist', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
 
       const isSessionExists = async (_sid: string) => true
       const removed = await cleanup(isSessionExists, dirs)
@@ -320,7 +429,7 @@ describe('queue', () => {
 
     test('ignores .log files in failed directory', async () => {
       await enqueue('sid-1', 'diary', dirs)
-      await markFailed('sid-1.diary', dirs)
+      await markFailed('sid-1.diary', undefined, dirs)
       // Simulate a .log file
       await Bun.write(join(dirs.failedDir, 'sid-1.diary.log'), 'error log')
 

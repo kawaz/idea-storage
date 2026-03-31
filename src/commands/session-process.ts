@@ -230,7 +230,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   const sessionFile = await findFirstSessionFile(config.claudeDirs, sessionId)
   if (!sessionFile) {
     log({ key, msg: 'session_file_not_found' })
-    await markFailed(key)
+    await markFailed(key, 'session file not found')
     return true
   }
 
@@ -245,7 +245,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   const recipe = findRecipeByName(recipes, recipeName)
   if (!recipe) {
     log({ key, msg: 'recipe_not_found', recipe: recipeName })
-    await markFailed(key)
+    await markFailed(key, `recipe not found: ${recipeName}`)
     return true
   }
 
@@ -315,7 +315,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
 
   if (csaExitCode !== 0) {
     logError({ key, msg: 'csa_failed', exitCode: csaExitCode, stderr: csaStderr })
-    await markFailed(key)
+    await markFailed(key, `csa failed with exit code ${csaExitCode}`)
     return true
   }
 
@@ -400,12 +400,15 @@ ${timelineText}`
     await markDone(key, meta.lineCount)
     log({ key, msg: 'success', output: outputFile })
   } catch (err) {
+    const reason = err instanceof ClaudeTimeoutError
+      ? `task timeout after ${err.timeoutMs}ms`
+      : err instanceof Error ? err.message : String(err)
     if (err instanceof ClaudeTimeoutError) {
       logError({ key, msg: 'task_timeout', timeoutMs: err.timeoutMs })
     } else {
-      logError({ key, msg: 'failed', error: err instanceof Error ? err.message : String(err) })
+      logError({ key, msg: 'failed', error: reason })
     }
-    await markFailed(key)
+    await markFailed(key, reason)
   }
 
   return true
