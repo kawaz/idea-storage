@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildClaudeArgs, buildClaudeEnv, runClaude, ClaudeTimeoutError } from './claude-runner.ts'
+import { buildClaudeArgs, buildClaudeEnv, runClaude, ClaudeTimeoutError, ClaudeAbortError } from './claude-runner.ts'
 import type { ClaudeRunOptions } from './claude-runner.ts'
 
 describe('claude-runner', () => {
@@ -197,6 +197,121 @@ describe('claude-runner', () => {
         },
       })
       expect(result.trim()).toBe('no-timeout')
+    })
+  })
+
+  describe('runClaude with signal (AbortSignal)', () => {
+    test('completes normally when signal is not aborted', async () => {
+      const controller = new AbortController()
+      const result = await runClaude({
+        prompt: 'unused',
+        signal: controller.signal,
+        _spawnOverride: () => {
+          return Bun.spawn(['echo', 'ok'], { stdout: 'pipe', stderr: 'pipe' })
+        },
+      })
+      expect(result.trim()).toBe('ok')
+    })
+
+    test('throws ClaudeAbortError when signal is aborted during execution', async () => {
+      const controller = new AbortController()
+      // Abort after 50ms
+      setTimeout(() => controller.abort(), 50)
+
+      try {
+        await runClaude({
+          prompt: 'unused',
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(true).toBe(false) // should not reach here
+      } catch (err) {
+        expect(err).toBeInstanceOf(ClaudeAbortError)
+      }
+    })
+
+    test('kills the child process when signal is aborted', async () => {
+      const controller = new AbortController()
+      let spawnedProc: ReturnType<typeof Bun.spawn> | null = null
+
+      setTimeout(() => controller.abort(), 50)
+
+      try {
+        await runClaude({
+          prompt: 'unused',
+          signal: controller.signal,
+          _spawnOverride: () => {
+            spawnedProc = Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+            return spawnedProc
+          },
+        })
+      } catch {
+        // expected
+      }
+
+      expect(spawnedProc).not.toBeNull()
+      const exitCode = await spawnedProc!.exited
+      expect(exitCode).not.toBe(0)
+    })
+
+    test('throws ClaudeAbortError immediately when signal is already aborted', async () => {
+      const controller = new AbortController()
+      controller.abort()
+
+      try {
+        await runClaude({
+          prompt: 'unused',
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['echo', 'should-not-run'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(true).toBe(false) // should not reach here
+      } catch (err) {
+        expect(err).toBeInstanceOf(ClaudeAbortError)
+      }
+    })
+
+    test('timeout takes priority over signal when timeout fires first', async () => {
+      const controller = new AbortController()
+      // Signal aborts after 500ms, timeout is 100ms -- timeout fires first
+      setTimeout(() => controller.abort(), 500)
+
+      try {
+        await runClaude({
+          prompt: 'unused',
+          timeoutMs: 100,
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(true).toBe(false)
+      } catch (err) {
+        expect(err).toBeInstanceOf(ClaudeTimeoutError)
+      }
+    })
+
+    test('signal takes priority over timeout when signal fires first', async () => {
+      const controller = new AbortController()
+      // Signal aborts after 50ms, timeout is 5000ms -- signal fires first
+      setTimeout(() => controller.abort(), 50)
+
+      try {
+        await runClaude({
+          prompt: 'unused',
+          timeoutMs: 5000,
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['sleep', '10'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(true).toBe(false)
+      } catch (err) {
+        expect(err).toBeInstanceOf(ClaudeAbortError)
+      }
     })
   })
 })

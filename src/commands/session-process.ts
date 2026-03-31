@@ -6,7 +6,8 @@ import { loadRecipes } from '../lib/recipe.ts'
 import { getRecipesDir, getDataDir, getDoneDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { generateFrontmatter } from '../lib/frontmatter.ts'
-import { runClaude, ClaudeTimeoutError } from '../lib/claude-runner.ts'
+import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
+import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
 import { dequeue, markDone, markFailed } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, type TimelineChunk } from '../lib/chunker.ts'
@@ -157,29 +158,57 @@ ${sections.map((s, i) => `### --- セクション ${i + 1} ---\n${s}`).join('\n\
 /**
  * チャンク分割パスで処理する。
  * 各チャンクを並列で処理し、結果を合成する。
+ * 1つのチャンクが失敗したら AbortController で他の全チャンクをキャンセルする。
+ *
+ * @param _runClaudeOverride - テスト用: runClaude の差し替え関数
  */
-async function processChunked(
+export async function processChunked(
   convText: string,
   chunks: TimelineChunk[],
   recipePrompt: string,
   sessionId: string,
   meta: SessionMeta,
   timeoutMs?: number,
+  _runClaudeOverride?: (options: ClaudeRunOptions) => Promise<string>,
 ): Promise<string> {
+  const run = _runClaudeOverride ?? runClaude
   const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || 'unknown'}\n- Created: ${meta.startTime.toISOString()}`
 
-  // 各チャンクを並列で処理
-  const sectionResults = await Promise.all(
+  const controller = new AbortController()
+
+  // 各チャンクを並列で処理し、1つが失敗したら全てをキャンセル
+  const sectionSettled = await Promise.allSettled(
     chunks.map(async (chunk) => {
       const chunkText = extractChunkText(convText, chunk)
       const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-      return runClaude({ prompt: sectionPrompt, timeoutMs })
+      try {
+        return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal })
+      } catch (err) {
+        controller.abort()
+        throw err
+      }
     })
   )
 
+  // 結果を集約: 最初の非-abort エラーを投げ直す
+  const sectionResults: string[] = []
+  let firstError: unknown = null
+  for (const result of sectionSettled) {
+    if (result.status === 'fulfilled') {
+      sectionResults.push(result.value)
+    } else if (!(result.reason instanceof ClaudeAbortError)) {
+      // abort 以外のエラー（元々の失敗原因）を記録
+      firstError ??= result.reason
+    }
+  }
+
+  if (firstError) {
+    throw firstError
+  }
+
   // 合成
   const synthesisPrompt = buildSynthesisPrompt(sectionResults, sessionInfo)
-  return runClaude({ prompt: synthesisPrompt, timeoutMs })
+  return run({ prompt: synthesisPrompt, timeoutMs })
 }
 
 export interface RunProcessOptions {

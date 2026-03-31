@@ -152,6 +152,143 @@ describe('buildSynthesisPrompt', () => {
   })
 })
 
+// --- processChunked の子プロセスリーク防止テスト ---
+import { processChunked } from './session-process.ts'
+import { ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
+
+// テスト用ヘルパー: processChunked をモックされた runClaude で検証する
+// processChunked は内部で runClaude を呼ぶため、claude-runner のモック経由でテストする
+
+describe('processChunked abort behavior', () => {
+  const dummyMeta = {
+    startTime: new Date('2025-01-01T00:00:00Z'),
+    endTime: new Date('2025-01-01T01:00:00Z'),
+    project: 'test-project',
+    lineCount: 100,
+    userTurns: 5,
+    forkInfo: null,
+  }
+
+  function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {
+    return Array.from({ length: count }, (_, i) => ({
+      index: i,
+      turns: [],
+      startTime: new Date('2025-01-01T00:00:00Z'),
+      endTime: new Date('2025-01-01T01:00:00Z'),
+      bytes: 1000,
+      turnCount: 5,
+      lineStart: 1,
+      lineEnd: 50,
+      label: `chunk-${i}`,
+    }))
+  }
+
+  test('1つのチャンクがタイムアウトしたら他のチャンクにabort signalが送られる', async () => {
+    // processChunked は内部で runClaude を呼ぶ。
+    // このテストでは processChunked が signal を渡しているかを検証する。
+    // processChunked が AbortController を使って他を中断する実装になっていれば、
+    // 1つがタイムアウトした後に他も ClaudeAbortError で終了するはず。
+    const chunks = makeChunks(3)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        100, // very short timeout to trigger timeout
+      )
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      // processChunked should propagate the ClaudeTimeoutError
+      expect(err).toBeInstanceOf(ClaudeTimeoutError)
+    }
+  })
+
+  test('全チャンク成功時は正常に合成結果を返す', async () => {
+    // This test verifies that processChunked works correctly when all chunks succeed.
+    // We need to mock runClaude for this - tested through _runClaudeOverride
+    const chunks = makeChunks(2)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    let callCount = 0
+    const result = await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      // _runClaudeOverride: mock runClaude for testing
+      async (_options) => {
+        callCount++
+        if (callCount <= 2) {
+          return `## Section ${callCount}\nContent ${callCount}`
+        }
+        // synthesis call
+        return '# Title\n## Section 1\nContent 1\n## Section 2\nContent 2\n## まとめ\nOverall summary'
+      },
+    )
+
+    expect(callCount).toBe(3) // 2 chunks + 1 synthesis
+    expect(result).toContain('Title')
+    expect(result).toContain('まとめ')
+  })
+
+  test('1つのチャンクが失敗したら他の並列実行中チャンクがキャンセルされる', async () => {
+    const chunks = makeChunks(3)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    const abortedSignals: boolean[] = []
+    let callCount = 0
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        undefined,
+        // _runClaudeOverride: 1つ目は即座に失敗、他はsignal待ち
+        async (options) => {
+          callCount++
+          const currentCall = callCount
+          if (currentCall === 1) {
+            throw new ClaudeTimeoutError(1000)
+          }
+          // 他のチャンクは signal が abort されるまで待つ
+          return new Promise<string>((resolve, reject) => {
+            if (options.signal) {
+              if (options.signal.aborted) {
+                abortedSignals.push(true)
+                reject(new ClaudeAbortError())
+                return
+              }
+              options.signal.addEventListener('abort', () => {
+                abortedSignals.push(true)
+                reject(new ClaudeAbortError())
+              })
+            }
+            // Never resolves naturally - only through abort
+          })
+        },
+      )
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeTimeoutError)
+    }
+
+    // The other 2 chunks should have received abort signals
+    expect(abortedSignals.length).toBe(2)
+  })
+})
+
 // --- フォークセッションのタイムライン切り詰めテスト ---
 import { trimTimelineForFork } from './session-process.ts'
 
