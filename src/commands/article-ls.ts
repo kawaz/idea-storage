@@ -1,12 +1,7 @@
 import { define } from 'gunshi'
 import { getDataDir } from '../lib/paths.ts'
-import { formatSmartSize, toJSTISOString } from '../lib/format.ts'
-import { listViewEntries, sortEntries, type SortOrder, SORT_ORDERS } from './article-view.ts'
-
-function parseSortOrder(value: string | undefined): SortOrder {
-  if (value && SORT_ORDERS.includes(value as SortOrder)) return value as SortOrder
-  return 'date'
-}
+import { formatSmartSize, toJSTISOString, parseSortOrder, type SortOrder, SORT_ORDERS } from '../lib/format.ts'
+import { listViewEntries, sortEntries } from './article-view.ts'
 
 export function validateSortOrder(value: string | undefined): void {
   if (!value) return
@@ -28,7 +23,7 @@ const articleLs = define({
   },
   run: async (ctx) => {
     validateSortOrder(ctx.values.sort as string | undefined)
-    const sort = parseSortOrder(ctx.values.sort as string | undefined)
+    const sort = parseSortOrder(ctx.values.sort as string | undefined, 'date')
     const dataDir = getDataDir()
     const entries = await listViewEntries(dataDir)
     if (entries.length === 0) {

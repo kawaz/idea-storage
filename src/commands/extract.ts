@@ -1,21 +1,8 @@
 import { define } from 'gunshi'
-import { join } from 'node:path'
 import { loadConfig } from '../lib/config.ts'
 import { formatConversationToText } from '../lib/conversation.ts'
 import { exitWithError } from '../lib/errors.ts'
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-async function findSessionByUUID(claudeDirs: string[], uuid: string): Promise<string | null> {
-  for (const claudeDir of claudeDirs) {
-    const projectsDir = join(claudeDir, 'projects')
-    const glob = new Bun.Glob(`**/${uuid}.jsonl`)
-    for await (const relativePath of glob.scan(projectsDir)) {
-      return join(projectsDir, relativePath)
-    }
-  }
-  return null
-}
+import { UUID_PATTERN, findSessionFile } from '../lib/session-finder.ts'
 
 const extract = define({
   name: 'extract',
@@ -37,7 +24,7 @@ const extract = define({
     if (UUID_PATTERN.test(target)) {
       // UUID: search in claudeDirs
       const config = await loadConfig()
-      const found = await findSessionByUUID(config.claudeDirs, target)
+      const found = await findSessionFile(config.claudeDirs, target)
       if (!found) {
         exitWithError(`Session not found: ${target}`)
       }

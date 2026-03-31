@@ -13,6 +13,8 @@ import { exitWithError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, type TimelineChunk } from '../lib/chunker.ts'
 import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
 import { log, logError } from '../lib/logging.ts'
+import { formatDatePath, formatFileTimestamp } from '../lib/format.ts'
+import { findSessionFile } from '../lib/session-finder.ts'
 import type { Recipe, SessionMeta } from '../types/index.ts'
 
 const csaBin = 'claude-session-analysis'
@@ -20,31 +22,8 @@ const csaBin = 'claude-session-analysis'
 /** CSA subprocess timeout: 5 minutes */
 export const CSA_TIMEOUT_MS = 5 * 60 * 1000
 
-async function findFirstSessionFile(claudeDirs: string[], sessionId: string): Promise<string | null> {
-  for (const claudeDir of claudeDirs) {
-    const projectsDir = join(claudeDir, 'projects')
-    const glob = new Bun.Glob(`**/${sessionId}.jsonl`)
-    for await (const relativePath of glob.scan(projectsDir)) {
-      return join(projectsDir, relativePath)
-    }
-  }
-  return null
-}
-
 function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
   return recipes.find(r => r.name === name)
-}
-
-function formatDatePath(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}/${m}/${d}`
-}
-
-function formatFileTimestamp(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`
 }
 
 // --- フォークセッション用のタイムライン切り詰め ---
@@ -251,7 +230,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   const dataDir = getDataDir()
 
   // Find session file
-  const sessionFile = await findFirstSessionFile(config.claudeDirs, sessionId)
+  const sessionFile = await findSessionFile(config.claudeDirs, sessionId)
   if (!sessionFile) {
     log({ key, msg: 'session_file_not_found' })
     await markFailed(key, 'session file not found')

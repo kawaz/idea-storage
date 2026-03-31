@@ -52,3 +52,26 @@ export function formatTimestamp(date: Date): string {
   const mi = String(jst.getUTCMinutes()).padStart(2, '0')
   return `${y}/${mo}/${d}T${h}:${mi}`
 }
+
+/** Format a date as YYYY/MM/DD path */
+export function formatDatePath(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}/${m}/${d}`
+}
+
+/** Format a date as UTC compact timestamp: yyyymmddTHHMMSSZ */
+export function formatFileTimestamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`
+}
+
+export type SortOrder = 'recipe' | 'date' | 'size'
+export const SORT_ORDERS: SortOrder[] = ['recipe', 'date', 'size']
+
+/** Parse a sort order string, returning a default if invalid */
+export function parseSortOrder(value: string | undefined, defaultOrder: SortOrder = 'recipe'): SortOrder {
+  if (value && SORT_ORDERS.includes(value as SortOrder)) return value as SortOrder
+  return defaultOrder
+}

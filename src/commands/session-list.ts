@@ -3,8 +3,7 @@ import { join, basename } from 'node:path'
 import { loadConfig } from '../lib/config.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { formatAge } from '../lib/format.ts'
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
+import { UUID_JSONL_PATTERN } from '../lib/session-finder.ts'
 
 function projectName(project: string): string {
   if (!project) return '-'
@@ -29,7 +28,7 @@ export async function runList(): Promise<void> {
     try {
       for await (const relativePath of glob.scan(projectsDir)) {
         const filename = relativePath.split('/').pop() ?? ''
-        if (!UUID_PATTERN.test(filename)) continue
+        if (!UUID_JSONL_PATTERN.test(filename)) continue
 
         const filePath = join(projectsDir, relativePath)
         const meta = await getSessionMeta(filePath)

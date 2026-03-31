@@ -1,10 +1,8 @@
 import { define } from 'gunshi'
 import { join } from 'node:path'
 import { getDataDir } from '../lib/paths.ts'
-import { formatAge } from '../lib/format.ts'
-
-export type SortOrder = 'recipe' | 'date' | 'size'
-export const SORT_ORDERS: SortOrder[] = ['recipe', 'date', 'size']
+import { formatAge, parseSortOrder, type SortOrder, SORT_ORDERS } from '../lib/format.ts'
+export { type SortOrder, SORT_ORDERS } from '../lib/format.ts'
 
 export interface ViewEntry {
   fullPath: string
@@ -76,11 +74,6 @@ export function formatViewEntry(entry: ViewEntry, maxAgeLen: number, maxSizeLen:
   const age = formatAgeFromDate(entry.mtime).padStart(maxAgeLen)
   const size = formatSizeKB(entry.sizeBytes).padStart(maxSizeLen)
   return `${entry.fullPath}\t${mtimeIso}\t${age}  ${size}  ${entry.relativePath}`
-}
-
-function parseSortOrder(value: string | undefined): SortOrder {
-  if (value && SORT_ORDERS.includes(value as SortOrder)) return value as SortOrder
-  return 'recipe'
 }
 
 const view = define({
