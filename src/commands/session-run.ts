@@ -54,7 +54,7 @@ const sessionRun = define({
       await runWithOverallTimeout(overallTimeoutMs, async (signal) => {
         await runEnqueue()
 
-        while (!signal.aborted && await runProcess({ taskTimeoutMs })) {
+        while (!signal.aborted && await runProcess({ taskTimeoutMs, signal })) {
           // continue processing
         }
       })

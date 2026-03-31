@@ -289,6 +289,123 @@ describe('processChunked abort behavior', () => {
   })
 })
 
+// --- processChunked の外部 signal 連携テスト ---
+
+describe('processChunked external signal propagation', () => {
+  const dummyMeta = {
+    startTime: new Date('2025-01-01T00:00:00Z'),
+    endTime: new Date('2025-01-01T01:00:00Z'),
+    project: 'test-project',
+    lineCount: 100,
+    userTurns: 5,
+    forkInfo: null,
+  }
+
+  function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {
+    return Array.from({ length: count }, (_, i) => ({
+      index: i,
+      turns: [],
+      startTime: new Date('2025-01-01T00:00:00Z'),
+      endTime: new Date('2025-01-01T01:00:00Z'),
+      bytes: 1000,
+      turnCount: 5,
+      lineStart: 1,
+      lineEnd: 50,
+      label: `chunk-${i}`,
+    }))
+  }
+
+  test('外部signalがabortされるとprocessChunked内のrunClaude呼び出しもabortされる', async () => {
+    const chunks = makeChunks(2)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    const externalController = new AbortController()
+    const receivedSignals: AbortSignal[] = []
+
+    // 50ms後に外部signalをabort
+    setTimeout(() => externalController.abort(), 50)
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        undefined,
+        async (options) => {
+          if (options.signal) {
+            receivedSignals.push(options.signal)
+          }
+          // signalがabortされるまで待つ
+          return new Promise<string>((resolve, reject) => {
+            if (options.signal?.aborted) {
+              reject(new ClaudeAbortError())
+              return
+            }
+            options.signal?.addEventListener('abort', () => {
+              reject(new ClaudeAbortError())
+            })
+          })
+        },
+        externalController.signal,
+      )
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeAbortError)
+    }
+
+    // 2つのチャンクの runClaude 呼び出しに signal が渡されていること
+    // 全チャンクが abort された場合は合成フェーズに進まず即座に ClaudeAbortError を投げる
+    expect(receivedSignals.length).toBe(2)
+    // 全ての signal が abort 済みであること
+    for (const sig of receivedSignals) {
+      expect(sig.aborted).toBe(true)
+    }
+  })
+
+  test('外部signalがabortされると合成フェーズもキャンセルされる', async () => {
+    const chunks = makeChunks(1)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    const externalController = new AbortController()
+    let callCount = 0
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        undefined,
+        async (options) => {
+          callCount++
+          if (callCount === 1) {
+            // チャンク処理は成功
+            return '## Section 1\nContent'
+          }
+          // 合成フェーズ前に外部signalをabort
+          externalController.abort()
+          // signal が abort されていれば ClaudeAbortError が期待される
+          if (options.signal?.aborted) {
+            throw new ClaudeAbortError()
+          }
+          return 'should not reach here'
+        },
+        externalController.signal,
+      )
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeAbortError)
+    }
+
+    expect(callCount).toBe(2) // チャンク1回 + 合成1回
+  })
+})
+
 // --- フォークセッションのタイムライン切り詰めテスト ---
 import { trimTimelineForFork } from './session-process.ts'
 

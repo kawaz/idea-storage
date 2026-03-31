@@ -170,11 +170,21 @@ export async function processChunked(
   meta: SessionMeta,
   timeoutMs?: number,
   _runClaudeOverride?: (options: ClaudeRunOptions) => Promise<string>,
+  externalSignal?: AbortSignal,
 ): Promise<string> {
   const run = _runClaudeOverride ?? runClaude
   const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || 'unknown'}\n- Created: ${meta.startTime.toISOString()}`
 
   const controller = new AbortController()
+
+  // 外部 signal が abort されたら内部の controller も abort する
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort()
+    } else {
+      externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
+    }
+  }
 
   // 各チャンクを並列で処理し、1つが失敗したら全てをキャンセル
   const sectionSettled = await Promise.allSettled(
@@ -193,10 +203,13 @@ export async function processChunked(
   // 結果を集約: 最初の非-abort エラーを投げ直す
   const sectionResults: string[] = []
   let firstError: unknown = null
+  let hasAbortError = false
   for (const result of sectionSettled) {
     if (result.status === 'fulfilled') {
       sectionResults.push(result.value)
-    } else if (!(result.reason instanceof ClaudeAbortError)) {
+    } else if (result.reason instanceof ClaudeAbortError) {
+      hasAbortError = true
+    } else {
       // abort 以外のエラー（元々の失敗原因）を記録
       firstError ??= result.reason
     }
@@ -206,13 +219,20 @@ export async function processChunked(
     throw firstError
   }
 
-  // 合成
+  // 全チャンクが abort された場合（外部 signal による中断）
+  if (sectionResults.length === 0 && hasAbortError) {
+    throw new ClaudeAbortError()
+  }
+
+  // 合成 (外部signalも渡す)
   const synthesisPrompt = buildSynthesisPrompt(sectionResults, sessionInfo)
-  return run({ prompt: synthesisPrompt, timeoutMs })
+  return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal })
 }
 
 export interface RunProcessOptions {
   taskTimeoutMs?: number
+  /** AbortSignal from the overall timeout. Propagated to runClaude calls. */
+  signal?: AbortSignal
 }
 
 export async function runProcess(options: RunProcessOptions = {}): Promise<boolean> {
@@ -345,7 +365,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   // チャンク分割の判定
   const chunks = splitTimeline(timelineText)
 
-  const { taskTimeoutMs } = options
+  const { taskTimeoutMs, signal } = options
 
   try {
     let output: string
@@ -353,7 +373,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
 
     if (chunks.length > 1) {
       log({ key, msg: 'chunked', chunks: chunks.length })
-      output = await processChunked(timelineText, chunks, prompt, sessionId, meta, taskTimeoutMs)
+      output = await processChunked(timelineText, chunks, prompt, sessionId, meta, taskTimeoutMs, undefined, signal)
     } else {
       // 既存の単一パス（変更なし）
       const fullPrompt = `${prompt}
@@ -366,7 +386,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
 
 ## 会話タイムライン
 ${timelineText}`
-      output = await runClaude({ prompt: fullPrompt, addDir: dataDir, timeoutMs: taskTimeoutMs })
+      output = await runClaude({ prompt: fullPrompt, addDir: dataDir, timeoutMs: taskTimeoutMs, signal })
     }
 
     // Generate frontmatter

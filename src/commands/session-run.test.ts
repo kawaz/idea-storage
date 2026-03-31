@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, mock } from 'bun:test'
 import { runWithOverallTimeout, OverallTimeoutError } from './session-run.ts'
 
 describe('OverallTimeoutError', () => {
@@ -63,5 +63,38 @@ describe('runWithOverallTimeout', () => {
     })
     expect(capturedSignal).not.toBeNull()
     expect(capturedSignal!.aborted).toBe(false)
+  })
+})
+
+describe('session run: signal propagation to runProcess', () => {
+  test('runWithOverallTimeout callback receives signal that can be passed to runProcess', async () => {
+    // This test verifies the contract: the signal from runWithOverallTimeout
+    // should be passable to runProcess as part of RunProcessOptions.
+    // The actual wiring test is in session-process.test.ts.
+    let receivedSignal: AbortSignal | null = null
+    await runWithOverallTimeout(5000, async (signal) => {
+      receivedSignal = signal
+      expect(signal).toBeInstanceOf(AbortSignal)
+      expect(signal.aborted).toBe(false)
+    })
+    expect(receivedSignal).not.toBeNull()
+  })
+
+  test('signal is aborted when timeout fires, allowing runProcess to be cancelled', async () => {
+    let signalAbortedDuringWork = false
+    try {
+      await runWithOverallTimeout(50, async (signal) => {
+        // Simulate a loop like session run does
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => {
+            signalAbortedDuringWork = true
+            resolve()
+          })
+        })
+      })
+    } catch (err) {
+      expect(err).toBeInstanceOf(OverallTimeoutError)
+    }
+    expect(signalAbortedDuringWork).toBe(true)
   })
 })
