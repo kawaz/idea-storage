@@ -3,22 +3,28 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-// Track markFailed calls
-const markFailedCalls: string[] = []
+// Track markFailed / markDone calls
+const markFailedCalls: Array<{ key: string; reason?: string }> = []
+const markDoneCalls: string[] = []
 
 let claudeDir: string
 let tempDir: string
 
+// Dynamic dequeue result (can be overridden per test)
+let dequeueResult: { sessionId: string; recipeName: string; key: string } | null = {
+  sessionId: 'missing-session-id',
+  recipeName: 'diary',
+  key: 'missing-session-id.diary',
+}
+
 // Mock modules before importing runProcess
 mock.module('../lib/queue.ts', () => ({
-  dequeue: mock(async () => ({
-    sessionId: 'missing-session-id',
-    recipeName: 'diary',
-    key: 'missing-session-id.diary',
-  })),
-  markDone: mock(async () => {}),
-  markFailed: mock(async (key: string, _reason?: string) => {
-    markFailedCalls.push(key)
+  dequeue: mock(async () => dequeueResult),
+  markDone: mock(async (key: string) => {
+    markDoneCalls.push(key)
+  }),
+  markFailed: mock(async (key: string, reason?: string) => {
+    markFailedCalls.push({ key, reason })
   }),
 }))
 
@@ -32,6 +38,12 @@ mock.module('../lib/config.ts', () => ({
 describe('session-process', () => {
   beforeEach(async () => {
     markFailedCalls.length = 0
+    markDoneCalls.length = 0
+    dequeueResult = {
+      sessionId: 'missing-session-id',
+      recipeName: 'diary',
+      key: 'missing-session-id.diary',
+    }
     tempDir = await mkdtemp(join(tmpdir(), 'session-process-test-'))
     claudeDir = join(tempDir, 'claude')
     // Create projects dir so Bun.Glob.scan doesn't throw
@@ -50,7 +62,28 @@ describe('session-process', () => {
     const { runProcess } = await import('./session-process.ts')
     await runProcess()
 
-    expect(markFailedCalls).toContain('missing-session-id.diary')
+    expect(markFailedCalls.map(c => c.key)).toContain('missing-session-id.diary')
+  })
+
+  test('calls markFailed with empty_session when session file is empty (0 lines)', async () => {
+    const sessionId = '00000000-0000-0000-0000-000000000000'
+    const key = `${sessionId}.diary`
+    dequeueResult = { sessionId, recipeName: 'diary', key }
+
+    // Create an empty session JSONL file (0 bytes)
+    const projectDir = join(claudeDir, 'projects', 'test-project')
+    await mkdir(projectDir, { recursive: true })
+    await Bun.write(join(projectDir, `${sessionId}.jsonl`), '')
+
+    const { runProcess } = await import('./session-process.ts')
+    await runProcess()
+
+    // Should markFailed with reason containing "empty"
+    const failedEntry = markFailedCalls.find(c => c.key === key)
+    expect(failedEntry).toBeDefined()
+    expect(failedEntry!.reason).toContain('empty')
+    // Should NOT have called markDone
+    expect(markDoneCalls).not.toContain(key)
   })
 })
 

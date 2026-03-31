@@ -255,6 +255,13 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   // Get session metadata
   const meta = await getSessionMeta(sessionFile)
 
+  // Early skip for empty session files (0 lines = no parseable JSONL content)
+  if (meta.lineCount === 0) {
+    log({ key, msg: 'empty_session' })
+    await markFailed(key, 'empty session (0 lines)')
+    return true
+  }
+
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
   let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {}
   try {
