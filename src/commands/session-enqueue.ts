@@ -7,6 +7,7 @@ import { getSessionMeta } from '../lib/conversation.ts'
 import { findMatchingRecipe } from '../lib/recipe-matcher.ts'
 import { enqueue, isQueued, isFailed, isDone } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
+import { dirExists } from '../lib/dir-exists.ts'
 import { log } from '../lib/logging.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
@@ -32,13 +33,7 @@ export async function runEnqueue(): Promise<void> {
     const projectsDir = join(claudeDir, 'projects')
     const glob = new Bun.Glob('**/*.jsonl')
 
-    let scannable = true
-    try {
-      await Bun.file(projectsDir).exists()
-    } catch {
-      scannable = false
-    }
-    if (!scannable) continue
+    if (!(await dirExists(projectsDir))) continue
 
     for await (const relativePath of glob.scan(projectsDir)) {
       const filename = relativePath.split('/').pop() ?? ''
