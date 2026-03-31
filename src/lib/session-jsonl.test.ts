@@ -92,6 +92,55 @@ describe('session-jsonl', () => {
 
       expect(nums).toEqual([1, 2, 3])
     })
+
+    test('skips broken JSON lines and continues processing', async () => {
+      const path = await writeTempFile('broken-middle.jsonl', [
+        '{"n":1}',
+        '{"n":2, broken',
+        '{"n":3}',
+      ].join('\n'))
+
+      const lines: unknown[] = []
+      for await (const line of streamSessionLines(path)) {
+        lines.push(line)
+      }
+
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toEqual({ n: 1 })
+      expect(lines[1]).toEqual({ n: 3 })
+    })
+
+    test('skips truncated last line (incomplete write)', async () => {
+      const path = await writeTempFile('truncated-last.jsonl', [
+        '{"n":1}',
+        '{"n":2}',
+        '{"n":3, "data": "incom',
+      ].join('\n'))
+
+      const lines: unknown[] = []
+      for await (const line of streamSessionLines(path)) {
+        lines.push(line)
+      }
+
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toEqual({ n: 1 })
+      expect(lines[1]).toEqual({ n: 2 })
+    })
+
+    test('handles file where all lines are broken JSON', async () => {
+      const path = await writeTempFile('all-broken.jsonl', [
+        '{broken1',
+        'not json at all',
+        '{"unclosed": true',
+      ].join('\n'))
+
+      const lines: unknown[] = []
+      for await (const line of streamSessionLines(path)) {
+        lines.push(line)
+      }
+
+      expect(lines).toHaveLength(0)
+    })
   })
 
   describe('countLines', () => {

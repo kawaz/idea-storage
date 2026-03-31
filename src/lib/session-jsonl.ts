@@ -23,7 +23,11 @@ export async function* streamSessionLines(filePath: string): AsyncGenerator<unkn
     for (const line of lines) {
       const trimmed = line.trim()
       if (trimmed.length === 0) continue
-      yield JSON.parse(trimmed) as unknown
+      try {
+        yield JSON.parse(trimmed) as unknown
+      } catch {
+        // Skip broken JSON lines silently (e.g. truncated writes)
+      }
     }
   }
 
@@ -31,7 +35,11 @@ export async function* streamSessionLines(filePath: string): AsyncGenerator<unkn
   buffer += decoder.decode()
   const trimmed = buffer.trim()
   if (trimmed.length > 0) {
-    yield JSON.parse(trimmed) as unknown
+    try {
+      yield JSON.parse(trimmed) as unknown
+    } catch {
+      // Skip broken last line silently (e.g. incomplete write)
+    }
   }
 }
 
