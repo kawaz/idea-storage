@@ -79,16 +79,19 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
     await Promise.allSettled([stdoutPromise, stderrPromise, proc.exited])
   }
 
-  // Build race competitors
+  // Build race competitors with cleanup support
   const racePromises: Promise<number | never>[] = [proc.exited]
+  const cleanups: (() => void)[] = []
 
   if (options.timeoutMs != null) {
     const timeoutMs = options.timeoutMs
+    let timerId: ReturnType<typeof setTimeout>
     racePromises.push(
       new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new ClaudeTimeoutError(timeoutMs)), timeoutMs)
+        timerId = setTimeout(() => reject(new ClaudeTimeoutError(timeoutMs)), timeoutMs)
       }),
     )
+    cleanups.push(() => clearTimeout(timerId))
   }
 
   if (options.signal) {
@@ -99,21 +102,32 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
           reject(new ClaudeAbortError())
           return
         }
-        signal.addEventListener('abort', () => reject(new ClaudeAbortError()), { once: true })
+        const handler = () => reject(new ClaudeAbortError())
+        signal.addEventListener('abort', handler, { once: true })
+        cleanups.push(() => signal.removeEventListener('abort', handler))
       }),
     )
+  }
+
+  /** Run all registered cleanups to prevent timer/listener leaks */
+  function runCleanups(): void {
+    for (const cleanup of cleanups) {
+      cleanup()
+    }
   }
 
   // If we have timeout or signal, race them
   if (racePromises.length > 1) {
     try {
       const exitCode = await Promise.race(racePromises)
+      runCleanups()
       const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
       if (exitCode !== 0) {
         throw new Error(`claude exited with code ${exitCode}: ${stderr}`)
       }
       return stdout
     } catch (err) {
+      runCleanups()
       if (err instanceof ClaudeTimeoutError || err instanceof ClaudeAbortError) {
         await killAndDrain()
         throw err

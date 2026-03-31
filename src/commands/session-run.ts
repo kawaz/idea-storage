@@ -1,6 +1,9 @@
 import { define } from 'gunshi'
+import { join } from 'node:path'
 import { runEnqueue } from './session-enqueue.ts'
 import { runProcess } from './session-process.ts'
+import { acquireLock } from '../lib/lockfile.ts'
+import { getStateDir } from '../lib/paths.ts'
 import { log, logError } from '../lib/logging.ts'
 
 /** Default per-task timeout: 12 minutes (p99=7.2min, max observed=11.5min) */
@@ -30,16 +33,19 @@ export async function runWithOverallTimeout(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
+  let abortHandler: (() => void) | null = null
   try {
     const work = fn(controller.signal)
     const timeout = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener('abort', () => {
-        reject(new OverallTimeoutError(timeoutMs))
-      })
+      abortHandler = () => reject(new OverallTimeoutError(timeoutMs))
+      controller.signal.addEventListener('abort', abortHandler)
     })
     await Promise.race([work, timeout])
   } finally {
     clearTimeout(timer)
+    if (abortHandler) {
+      controller.signal.removeEventListener('abort', abortHandler)
+    }
   }
 }
 
@@ -47,6 +53,13 @@ const sessionRun = define({
   name: 'run',
   description: 'Enqueue sessions then process until queue is empty',
   run: async () => {
+    const lockPath = join(getStateDir(), 'session-run.lock')
+    const release = await acquireLock(lockPath)
+    if (!release) {
+      log({ msg: 'lock_held', lockPath })
+      process.exit(0)
+    }
+
     const overallTimeoutMs = DEFAULT_OVERALL_TIMEOUT_MS
     const taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS
 
@@ -64,6 +77,8 @@ const sessionRun = define({
         process.exit(1)
       }
       throw err
+    } finally {
+      await release()
     }
   },
 })

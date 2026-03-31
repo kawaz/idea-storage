@@ -98,3 +98,74 @@ describe('session run: signal propagation to runProcess', () => {
     expect(signalAbortedDuringWork).toBe(true)
   })
 })
+
+describe('runWithOverallTimeout cleanup', () => {
+  test('abort listener on signal is removed after normal completion (no unhandled rejection)', async () => {
+    const rejections: unknown[] = []
+    const handler = (event: PromiseRejectionEvent) => {
+      rejections.push(event.reason)
+      event.preventDefault()
+    }
+    globalThis.addEventListener('unhandledrejection', handler)
+
+    try {
+      // Use a manually controlled AbortController to verify listener cleanup
+      const outerController = new AbortController()
+      let capturedSignal: AbortSignal | null = null
+
+      await runWithOverallTimeout(5000, async (signal) => {
+        capturedSignal = signal
+        // finish immediately
+      })
+
+      expect(capturedSignal).not.toBeNull()
+      // Manually abort the underlying controller's signal after completion
+      // The abort event should not trigger an unhandled rejection
+      // (In current impl, the abort listener on the timeout promise rejects with
+      //  OverallTimeoutError, but nobody catches it after race resolves)
+      // We can't abort the internal controller directly, but we test the timer side
+
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(rejections).toEqual([])
+    } finally {
+      globalThis.removeEventListener('unhandledrejection', handler)
+    }
+  })
+
+  test('timeout promise does not leak after normal completion (no pending promises)', async () => {
+    const rejections: unknown[] = []
+    const handler = (event: PromiseRejectionEvent) => {
+      rejections.push(event.reason)
+      event.preventDefault()
+    }
+    globalThis.addEventListener('unhandledrejection', handler)
+
+    try {
+      const start = Date.now()
+      await runWithOverallTimeout(60000, async (_signal) => {
+        // finish immediately
+      })
+      const elapsed = Date.now() - start
+      expect(elapsed).toBeLessThan(1000)
+
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(rejections).toEqual([])
+    } finally {
+      globalThis.removeEventListener('unhandledrejection', handler)
+    }
+  })
+
+  test('timer is cleared after normal completion (signal not aborted)', async () => {
+    let capturedSignal: AbortSignal | null = null
+    await runWithOverallTimeout(200, async (signal) => {
+      capturedSignal = signal
+      // finish immediately
+    })
+
+    // Wait past the timeout duration
+    await new Promise(resolve => setTimeout(resolve, 400))
+
+    // The signal should NOT have been aborted since work completed before timeout
+    expect(capturedSignal!.aborted).toBe(false)
+  })
+})

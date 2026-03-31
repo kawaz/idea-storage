@@ -314,4 +314,91 @@ describe('claude-runner', () => {
       }
     })
   })
+
+  describe('runClaude timer/promise cleanup', () => {
+    test('timeout timer is cleared after normal completion (no unhandled rejection)', async () => {
+      // Track unhandled rejections during this test
+      const rejections: unknown[] = []
+      const handler = (event: PromiseRejectionEvent) => {
+        rejections.push(event.reason)
+        event.preventDefault()
+      }
+      globalThis.addEventListener('unhandledrejection', handler)
+
+      try {
+        // Use a short timeout so the timer would fire quickly if not cleared
+        const result = await runClaude({
+          prompt: 'unused',
+          timeoutMs: 200,
+          _spawnOverride: () => {
+            return Bun.spawn(['echo', 'fast'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(result.trim()).toBe('fast')
+
+        // Wait longer than the timeout to ensure no unhandled rejection fires
+        await new Promise(resolve => setTimeout(resolve, 400))
+        expect(rejections).toEqual([])
+      } finally {
+        globalThis.removeEventListener('unhandledrejection', handler)
+      }
+    })
+
+    test('abort listener is cleaned up after normal completion (no unhandled rejection)', async () => {
+      const rejections: unknown[] = []
+      const handler = (event: PromiseRejectionEvent) => {
+        rejections.push(event.reason)
+        event.preventDefault()
+      }
+      globalThis.addEventListener('unhandledrejection', handler)
+
+      try {
+        const controller = new AbortController()
+        const result = await runClaude({
+          prompt: 'unused',
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['echo', 'done'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(result.trim()).toBe('done')
+
+        // Aborting after completion should not cause unhandled rejection
+        controller.abort()
+        await new Promise(resolve => setTimeout(resolve, 50))
+        expect(rejections).toEqual([])
+      } finally {
+        globalThis.removeEventListener('unhandledrejection', handler)
+      }
+    })
+
+    test('both timeout timer and abort listener are cleaned up after normal completion', async () => {
+      const rejections: unknown[] = []
+      const handler = (event: PromiseRejectionEvent) => {
+        rejections.push(event.reason)
+        event.preventDefault()
+      }
+      globalThis.addEventListener('unhandledrejection', handler)
+
+      try {
+        const controller = new AbortController()
+        const result = await runClaude({
+          prompt: 'unused',
+          timeoutMs: 200,
+          signal: controller.signal,
+          _spawnOverride: () => {
+            return Bun.spawn(['echo', 'both'], { stdout: 'pipe', stderr: 'pipe' })
+          },
+        })
+        expect(result.trim()).toBe('both')
+
+        // Trigger both: abort the signal and wait past the timeout
+        controller.abort()
+        await new Promise(resolve => setTimeout(resolve, 400))
+        expect(rejections).toEqual([])
+      } finally {
+        globalThis.removeEventListener('unhandledrejection', handler)
+      }
+    })
+  })
 })
