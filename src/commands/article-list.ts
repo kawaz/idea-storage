@@ -131,6 +131,26 @@ export function parseSortKeys(value: string | undefined): SortKey[] {
   return keys.length > 0 ? keys : ['start']
 }
 
+export function validateSortKeys(value: string | undefined): void {
+  if (!value) return
+  const keys = value.split(',').map(s => s.trim())
+  const invalid = keys.filter(k => k && !isSortKey(k))
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid sort key: ${invalid.join(', ')}. Valid keys: ${VALID_SORT_KEYS.join(', ')}`,
+    )
+  }
+}
+
+export function validateRegex(pattern: string, label: string): RegExp {
+  try {
+    return new RegExp(pattern)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new Error(`Invalid regular expression for ${label}: "${pattern}" - ${msg}`)
+  }
+}
+
 export function sortEntries(entries: ListEntry[], sortKeys: SortKey[]): void {
   entries.sort((a, b) => {
     for (const key of sortKeys) {
@@ -338,6 +358,7 @@ const articleList = define({
     },
   },
   run: async (ctx) => {
+    validateSortKeys(ctx.values.sort as string | undefined)
     const sortKeys = parseSortKeys(ctx.values.sort as string | undefined)
     const rulePattern = ctx.values.rule as string | undefined
     const pathPattern = ctx.values.path as string | undefined
@@ -350,13 +371,13 @@ const articleList = define({
 
     // Phase 2: recipe だけで判定できるフィルタを先に適用（CSA 不要）
     if (rulePattern) {
-      const re = new RegExp(rulePattern)
+      const re = validateRegex(rulePattern, 'rule')
       articles = articles.filter(a => re.test(a.recipe))
     }
     // positional のうち recipe だけで全マッチするものを先に適用
     let pathRegexes: RegExp[] = []
     if (positional.length > 0) {
-      const regexes = positional.map(p => new RegExp(p))
+      const regexes = positional.map(p => validateRegex(p, 'positional'))
       const recipeValues = new Set(articles.map(a => a.recipe))
       const recipeOnly: RegExp[] = []
       for (const re of regexes) {
@@ -385,7 +406,7 @@ const articleList = define({
       entries = await enrichArticles(articles)
       // path フィルタ適用
       if (pathPattern) {
-        const re = new RegExp(pathPattern)
+        const re = validateRegex(pathPattern, 'path')
         entries = entries.filter(e => {
           const { matchPath } = parseProject(e.project)
           return re.test(matchPath)

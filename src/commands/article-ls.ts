@@ -8,6 +8,15 @@ function parseSortOrder(value: string | undefined): SortOrder {
   return 'date'
 }
 
+export function validateSortOrder(value: string | undefined): void {
+  if (!value) return
+  if (!SORT_ORDERS.includes(value as SortOrder)) {
+    throw new Error(
+      `Invalid sort order: ${value}. Valid values: ${SORT_ORDERS.join(', ')}`,
+    )
+  }
+}
+
 const articleLs = define({
   name: 'ls',
   description: 'List articles (plain output)',
@@ -18,6 +27,7 @@ const articleLs = define({
     },
   },
   run: async (ctx) => {
+    validateSortOrder(ctx.values.sort as string | undefined)
     const sort = parseSortOrder(ctx.values.sort as string | undefined)
     const dataDir = getDataDir()
     const entries = await listViewEntries(dataDir)

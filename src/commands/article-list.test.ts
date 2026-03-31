@@ -5,8 +5,10 @@ import {
   formatTimestamp,
   parseProject,
   parseSortKeys,
+  validateSortKeys,
   sortEntries,
   stripAnsi,
+  validateRegex,
 } from './article-list.ts'
 
 describe('article-list', () => {
@@ -227,6 +229,23 @@ describe('article-list', () => {
     test('defaults to start when all keys are invalid', () => {
       expect(parseSortKeys('foo,bar')).toEqual(['start'])
     })
+  })
+
+  describe('validateSortKeys', () => {
+    test('does not throw for valid keys', () => {
+      expect(() => validateSortKeys('start')).not.toThrow()
+      expect(() => validateSortKeys('start,end,duration')).not.toThrow()
+      expect(() => validateSortKeys(undefined)).not.toThrow()
+    })
+
+    test('throws for invalid keys with available keys in message', () => {
+      expect(() => validateSortKeys('foo')).toThrow(/invalid sort key.*foo/i)
+      expect(() => validateSortKeys('foo')).toThrow(/start.*end.*duration.*turn.*rule/)
+    })
+
+    test('throws for mixed valid/invalid keys listing only invalid ones', () => {
+      expect(() => validateSortKeys('start,bogus')).toThrow(/bogus/)
+    })
 
     test('accepts all valid keys', () => {
       expect(parseSortKeys('start,end,duration,turn,rule')).toEqual([
@@ -325,6 +344,22 @@ describe('article-list', () => {
       expect(entries[0]!.sessionEnd!.getHours()).toBe(3)
       expect(entries[1]!.sessionEnd!.getHours()).toBe(2)
       expect(entries[2]!.sessionEnd!.getHours()).toBe(1)
+    })
+  })
+
+  describe('validateRegex', () => {
+    test('returns RegExp for valid pattern', () => {
+      const re = validateRegex('foo.*bar', 'test')
+      expect(re).toBeInstanceOf(RegExp)
+      expect(re.test('fooXbar')).toBe(true)
+    })
+
+    test('throws for invalid regex with user-friendly message', () => {
+      expect(() => validateRegex('[invalid', 'rule')).toThrow(/invalid regular expression.*rule/i)
+    })
+
+    test('includes the original pattern in error message', () => {
+      expect(() => validateRegex('(unclosed', 'path')).toThrow(/\(unclosed/)
     })
   })
 

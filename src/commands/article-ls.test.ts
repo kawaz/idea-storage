@@ -1,7 +1,22 @@
 import { describe, test, expect } from 'bun:test'
 import { toJSTISOString, formatSmartSize } from '../lib/format.ts'
+import { validateSortOrder } from './article-ls.ts'
 
 describe('article-ls', () => {
+  describe('validateSortOrder', () => {
+    test('does not throw for valid sort orders', () => {
+      expect(() => validateSortOrder('recipe')).not.toThrow()
+      expect(() => validateSortOrder('date')).not.toThrow()
+      expect(() => validateSortOrder('size')).not.toThrow()
+      expect(() => validateSortOrder(undefined)).not.toThrow()
+    })
+
+    test('throws for invalid sort order with available values in message', () => {
+      expect(() => validateSortOrder('bogus')).toThrow(/invalid sort order.*bogus/i)
+      expect(() => validateSortOrder('bogus')).toThrow(/recipe.*date.*size/)
+    })
+  })
+
   describe('toJSTISOString', () => {
     test('formats UTC midnight as JST 09:00', () => {
       const date = new Date('2026-03-07T00:00:00Z')
