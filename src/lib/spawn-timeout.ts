@@ -33,8 +33,9 @@ export async function spawnWithTimeout(options: SpawnWithTimeoutOptions): Promis
   const stdoutPromise = new Response(proc.stdout).text()
   const stderrPromise = new Response(proc.stderr).text()
 
+  let timerId: ReturnType<typeof setTimeout>
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new SpawnTimeoutError(timeoutMs)), timeoutMs)
+    timerId = setTimeout(() => reject(new SpawnTimeoutError(timeoutMs)), timeoutMs)
   })
 
   try {
@@ -49,5 +50,7 @@ export async function spawnWithTimeout(options: SpawnWithTimeoutOptions): Promis
       throw err
     }
     throw err
+  } finally {
+    clearTimeout(timerId!)
   }
 }
