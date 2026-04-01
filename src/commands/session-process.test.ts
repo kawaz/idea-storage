@@ -185,14 +185,14 @@ describe('buildSynthesisPrompt', () => {
   })
 })
 
-// --- processChunked の子プロセスリーク防止テスト ---
+// --- processChunked のユニットテスト ---
 import { processChunked } from './session-process.ts'
 import { ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
 
 // テスト用ヘルパー: processChunked をモックされた runClaude で検証する
-// processChunked は内部で runClaude を呼ぶため、claude-runner のモック経由でテストする
+// processChunked は内部で runClaude を呼ぶため、_runClaudeOverride 経由でテストする
 
-describe('processChunked abort behavior', () => {
+describe('processChunked', () => {
   const dummyMeta = {
     startTime: new Date('2025-01-01T00:00:00Z'),
     endTime: new Date('2025-01-01T01:00:00Z'),
@@ -202,13 +202,13 @@ describe('processChunked abort behavior', () => {
     forkInfo: null,
   }
 
-  function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {
+  function makeChunks(count: number, bytesEach = 1000): import('../lib/chunker.ts').TimelineChunk[] {
     return Array.from({ length: count }, (_, i) => ({
       index: i,
       turns: [],
       startTime: new Date('2025-01-01T00:00:00Z'),
       endTime: new Date('2025-01-01T01:00:00Z'),
-      bytes: 1000,
+      bytes: bytesEach,
       turnCount: 5,
       lineStart: 1,
       lineEnd: 50,
@@ -216,34 +216,7 @@ describe('processChunked abort behavior', () => {
     }))
   }
 
-  test('1つのチャンクがタイムアウトしたら他のチャンクにabort signalが送られる', async () => {
-    // processChunked は内部で runClaude を呼ぶ。
-    // このテストでは processChunked が signal を渡しているかを検証する。
-    // processChunked が AbortController を使って他を中断する実装になっていれば、
-    // 1つがタイムアウトした後に他も ClaudeAbortError で終了するはず。
-    const chunks = makeChunks(3)
-    const convText = 'dummy timeline text'
-    const recipePrompt = 'test prompt'
-
-    try {
-      await processChunked(
-        convText,
-        chunks,
-        recipePrompt,
-        'test-session-id',
-        dummyMeta,
-        100, // very short timeout to trigger timeout
-      )
-      expect(true).toBe(false) // should not reach here
-    } catch (err) {
-      // processChunked should propagate the ClaudeTimeoutError
-      expect(err).toBeInstanceOf(ClaudeTimeoutError)
-    }
-  })
-
   test('全チャンク成功時は正常に合成結果を返す', async () => {
-    // This test verifies that processChunked works correctly when all chunks succeed.
-    // We need to mock runClaude for this - tested through _runClaudeOverride
     const chunks = makeChunks(2)
     const convText = 'dummy timeline text'
     const recipePrompt = 'test prompt'
@@ -256,7 +229,6 @@ describe('processChunked abort behavior', () => {
       'test-session-id',
       dummyMeta,
       undefined,
-      // _runClaudeOverride: mock runClaude for testing
       async (_options) => {
         callCount++
         if (callCount <= 2) {
@@ -272,13 +244,103 @@ describe('processChunked abort behavior', () => {
     expect(result).toContain('まとめ')
   })
 
-  test('1つのチャンクが失敗したら他の並列実行中チャンクがキャンセルされる', async () => {
+  test('1チャンク失敗 → リトライ成功で合成まで完了する', async () => {
     const chunks = makeChunks(3)
     const convText = 'dummy timeline text'
     const recipePrompt = 'test prompt'
 
-    const abortedSignals: boolean[] = []
-    let callCount = 0
+    // 各チャンクの呼び出し回数を追跡（promptの内容でチャンクを特定）
+    const callLog: string[] = []
+    let chunk1FailCount = 0
+
+    const result = await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      async (options) => {
+        const prompt = options.prompt
+        // チャンク処理かsynthesisかを判定
+        if (prompt.includes('セクション一覧')) {
+          callLog.push('synthesis')
+          return '# Title\n## まとめ\nSummary'
+        }
+        // chunk-1 の処理を特定（チャンク情報にindex+1が含まれる）
+        if (prompt.includes('チャンク: 2/')) {
+          chunk1FailCount++
+          if (chunk1FailCount === 1) {
+            callLog.push('chunk1-fail')
+            throw new Error('API error')
+          }
+          callLog.push('chunk1-retry-success')
+          return '## Section 2\nRetried content'
+        }
+        callLog.push('chunk-success')
+        return '## Section\nContent'
+      },
+    )
+
+    // chunk0成功, chunk1失敗→リトライ成功, chunk2成功, synthesis
+    expect(callLog).toContain('chunk1-fail')
+    expect(callLog).toContain('chunk1-retry-success')
+    expect(callLog).toContain('synthesis')
+    expect(result).toContain('Title')
+  })
+
+  test('1チャンク失敗 → リトライも失敗 → 分割なしフォールバック成功', async () => {
+    // convText が maxChunkBytes(35000) 以内なので分割なしフォールバックが可能
+    const convText = 'short timeline text'
+    const chunks = makeChunks(2, 500)
+    const recipePrompt = 'test prompt'
+
+    let chunk0FailCount = 0
+    const callLog: string[] = []
+
+    const result = await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      async (options) => {
+        const prompt = options.prompt
+        if (prompt.includes('セクション一覧')) {
+          callLog.push('synthesis')
+          return '# Synthesis result'
+        }
+        // chunk-0（チャンク: 1/）を常に失敗させる
+        if (prompt.includes('チャンク: 1/')) {
+          chunk0FailCount++
+          callLog.push(`chunk0-fail-${chunk0FailCount}`)
+          throw new Error('persistent API error')
+        }
+        // 分割なしフォールバック（チャンク情報を含まない）
+        if (!prompt.includes('チャンク:')) {
+          callLog.push('fallback-unsplit')
+          return '# Fallback result\nFull content'
+        }
+        callLog.push('chunk-success')
+        return '## Section\nContent'
+      },
+    )
+
+    // chunk0: 初回失敗 + リトライ失敗 = 2回、その後 fallback-unsplit
+    expect(chunk0FailCount).toBe(2)
+    expect(callLog).toContain('fallback-unsplit')
+    // synthesis はスキップされる（1チャンクなので不要）
+    expect(callLog).not.toContain('synthesis')
+    expect(result).toContain('Fallback result')
+  })
+
+  test('全チャンク失敗 → リトライ失敗 → 分割なしフォールバック失敗 → 例外', async () => {
+    const convText = 'short timeline text'
+    const chunks = makeChunks(2, 500)
+    const recipePrompt = 'test prompt'
+
+    const callLog: string[] = []
 
     try {
       await processChunked(
@@ -288,37 +350,96 @@ describe('processChunked abort behavior', () => {
         'test-session-id',
         dummyMeta,
         undefined,
-        // _runClaudeOverride: 1つ目は即座に失敗、他はsignal待ち
         async (options) => {
-          callCount++
-          const currentCall = callCount
-          if (currentCall === 1) {
-            throw new ClaudeTimeoutError(1000)
+          const prompt = options.prompt
+          if (!prompt.includes('チャンク:')) {
+            callLog.push('fallback-unsplit-fail')
+            throw new Error('fallback also failed')
           }
-          // 他のチャンクは signal が abort されるまで待つ
-          return new Promise<string>((resolve, reject) => {
-            if (options.signal) {
-              if (options.signal.aborted) {
-                abortedSignals.push(true)
-                reject(new ClaudeAbortError())
-                return
-              }
-              options.signal.addEventListener('abort', () => {
-                abortedSignals.push(true)
-                reject(new ClaudeAbortError())
-              })
-            }
-            // Never resolves naturally - only through abort
-          })
+          callLog.push('chunk-fail')
+          throw new Error('API error')
         },
       )
       expect(true).toBe(false) // should not reach here
     } catch (err) {
-      expect(err).toBeInstanceOf(ClaudeTimeoutError)
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toBe('fallback also failed')
     }
 
-    // The other 2 chunks should have received abort signals
-    expect(abortedSignals.length).toBe(2)
+    // 初回2チャンク + リトライ2チャンク + フォールバック1回
+    const chunkFails = callLog.filter(l => l === 'chunk-fail').length
+    expect(chunkFails).toBe(4) // 2 initial + 2 retries
+    expect(callLog).toContain('fallback-unsplit-fail')
+  })
+
+  test('全チャンク失敗 → テキストが大きい場合はフォールバックをスキップして例外', async () => {
+    const convText = 'x'.repeat(40000) // maxChunkBytes(35000)を超える
+    const chunks = makeChunks(2, 20000)
+    const recipePrompt = 'test prompt'
+
+    const callLog: string[] = []
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        undefined,
+        async (_options) => {
+          callLog.push('chunk-fail')
+          throw new Error('API error')
+        },
+      )
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toBe('API error')
+    }
+
+    // 初回2チャンク + リトライ2チャンク = 4回、フォールバックなし
+    expect(callLog.length).toBe(4)
+    expect(callLog.every(l => l === 'chunk-fail')).toBe(true)
+  })
+
+  test('一部チャンク成功 + 失敗チャンクのリトライ成功 → 成功結果が保持される', async () => {
+    const chunks = makeChunks(3)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    let chunk2CallCount = 0
+    const sectionResults: string[] = []
+
+    const result = await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      async (options) => {
+        const prompt = options.prompt
+        if (prompt.includes('セクション一覧')) {
+          return '# Synthesized\n## まとめ\nAll good'
+        }
+        if (prompt.includes('チャンク: 3/')) {
+          chunk2CallCount++
+          if (chunk2CallCount === 1) {
+            throw new Error('transient error')
+          }
+          return '## Section 3\nRetried chunk 3'
+        }
+        // chunk 0, 1 は常に成功
+        const match = prompt.match(/チャンク: (\d+)\//)
+        const idx = match ? match[1] : '?'
+        return `## Section ${idx}\nOriginal content ${idx}`
+      },
+    )
+
+    // chunk2 はリトライで成功、他は初回成功
+    expect(chunk2CallCount).toBe(2)
+    expect(result).toContain('Synthesized')
   })
 })
 
@@ -390,7 +511,6 @@ describe('processChunked external signal propagation', () => {
     }
 
     // 2つのチャンクの runClaude 呼び出しに signal が渡されていること
-    // 全チャンクが abort された場合は合成フェーズに進まず即座に ClaudeAbortError を投げる
     expect(receivedSignals.length).toBe(2)
     // 全ての signal が abort 済みであること
     for (const sig of receivedSignals) {
@@ -436,6 +556,36 @@ describe('processChunked external signal propagation', () => {
     }
 
     expect(callCount).toBe(2) // チャンク1回 + 合成1回
+  })
+
+  test('外部signalがabort済みの場合、リトライやフォールバックをスキップして即座にClaudeAbortError', async () => {
+    const chunks = makeChunks(2)
+    const convText = 'short text'
+    const recipePrompt = 'test prompt'
+
+    const externalController = new AbortController()
+    externalController.abort() // 事前にabort
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        'test-session-id',
+        dummyMeta,
+        undefined,
+        async (options) => {
+          if (options.signal?.aborted) {
+            throw new ClaudeAbortError()
+          }
+          return '## Section\nContent'
+        },
+        externalController.signal,
+      )
+      expect(true).toBe(false)
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeAbortError)
+    }
   })
 })
 

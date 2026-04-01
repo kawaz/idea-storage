@@ -10,7 +10,7 @@ import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-r
 import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
 import { dequeue, markDone, markFailed } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
-import { splitTimeline, extractChunkText, type TimelineChunk } from '../lib/chunker.ts'
+import { splitTimeline, extractChunkText, DEFAULT_MAX_CHUNK_BYTES, type TimelineChunk } from '../lib/chunker.ts'
 import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
 import { log, logError } from '../lib/logging.ts'
 import { formatDatePath, formatFileTimestamp } from '../lib/format.ts'
@@ -141,7 +141,12 @@ ${sections.map((s, i) => `### --- セクション ${i + 1} ---\n${s}`).join('\n\
 /**
  * チャンク分割パスで処理する。
  * 各チャンクを並列で処理し、結果を合成する。
- * 1つのチャンクが失敗したら AbortController で他の全チャンクをキャンセルする。
+ *
+ * フォールバック戦略:
+ * 1. 全チャンクを並列実行
+ * 2. 失敗チャンクがあれば1回リトライ
+ * 3. まだ失敗があり、全体サイズが maxChunkBytes 以内なら分割なしで1回再試行
+ * 4. それでも失敗なら例外を投げる
  *
  * @param _runClaudeOverride - テスト用: runClaude の差し替え関数
  */
@@ -169,46 +174,94 @@ export async function processChunked(
     }
   }
 
-  // 各チャンクを並列で処理し、1つが失敗したら全てをキャンセル
+  // --- Step 1: 全チャンクを並列実行 ---
   const sectionSettled = await Promise.allSettled(
     chunks.map(async (chunk) => {
       const chunkText = extractChunkText(convText, chunk)
       const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-      try {
-        return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal })
-      } catch (err) {
-        controller.abort()
-        throw err
-      }
+      return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal })
     })
   )
 
-  // 結果を集約: 最初の非-abort エラーを投げ直す
-  const sectionResults: string[] = []
-  let firstError: unknown = null
+  // 結果を集約: index をキーにした Map で管理
+  const sectionResults = new Map<number, string>()
+  const failedIndices: number[] = []
   let hasAbortError = false
-  for (const result of sectionSettled) {
+
+  for (let i = 0; i < sectionSettled.length; i++) {
+    const result = sectionSettled[i]!
     if (result.status === 'fulfilled') {
-      sectionResults.push(result.value)
+      sectionResults.set(i, result.value)
     } else if (result.reason instanceof ClaudeAbortError) {
       hasAbortError = true
     } else {
-      // abort 以外のエラー（元々の失敗原因）を記録
-      firstError ??= result.reason
+      failedIndices.push(i)
     }
   }
 
-  if (firstError) {
-    throw firstError
-  }
-
-  // 全チャンクが abort された場合（外部 signal による中断）
-  if (sectionResults.length === 0 && hasAbortError) {
+  // 外部 signal による中断: リトライやフォールバックをスキップ
+  if (hasAbortError && sectionResults.size === 0) {
     throw new ClaudeAbortError()
   }
 
-  // 合成 (外部signalも渡す)
-  const synthesisPrompt = buildSynthesisPrompt(sectionResults, sessionInfo)
+  // --- Step 2: 失敗チャンクを1回リトライ ---
+  let lastError: unknown = null
+
+  if (failedIndices.length > 0) {
+    log({ msg: 'chunk_retry', failedChunks: failedIndices.length, totalChunks: chunks.length })
+
+    const retrySettled = await Promise.allSettled(
+      failedIndices.map(async (idx) => {
+        const chunk = chunks[idx]!
+        const chunkText = extractChunkText(convText, chunk)
+        const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
+        return { idx, result: await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal }) }
+      })
+    )
+
+    const stillFailedIndices: number[] = []
+    for (const settled of retrySettled) {
+      if (settled.status === 'fulfilled') {
+        sectionResults.set(settled.value.idx, settled.value.result)
+      } else {
+        lastError = settled.reason
+        // リトライ結果から失敗したindexを特定
+        // Promise.allSettled は入力と同じ順序なので、failedIndices[i] で追跡
+        stillFailedIndices.push(failedIndices[retrySettled.indexOf(settled)]!)
+      }
+    }
+
+    // --- Step 3: まだ失敗があり、全体サイズが許容内なら分割なしフォールバック ---
+    if (stillFailedIndices.length > 0) {
+      const totalBytes = new TextEncoder().encode(convText).length
+      if (totalBytes <= DEFAULT_MAX_CHUNK_BYTES) {
+        log({ msg: 'fallback_unsplit', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
+        try {
+          const fullPrompt = `${recipePrompt}
+
+---
+## セッション情報
+${sessionInfo}
+
+## 会話タイムライン
+${convText}`
+          const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal })
+          // 分割なしフォールバック成功: synthesis 不要（1チャンク相当）
+          return result
+        } catch (err) {
+          // Step 4: それでもダメなら例外を投げる
+          throw err
+        }
+      } else {
+        log({ msg: 'fallback_unsplit_skipped', reason: 'text_too_large', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
+        throw lastError
+      }
+    }
+  }
+
+  // 全チャンク成功: 合成 (外部signalも渡す)
+  const orderedResults = chunks.map((_, i) => sectionResults.get(i)!)
+  const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo)
   return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal })
 }
 

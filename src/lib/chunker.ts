@@ -52,7 +52,7 @@ export interface SplitOptions {
 
 const TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\s+([A-Za-z])([0-9a-f]+)/
 
-const DEFAULT_MAX_CHUNK_BYTES = 35000
+export const DEFAULT_MAX_CHUNK_BYTES = 35000
 const DEFAULT_MIN_CHUNK_BYTES = 8192
 const DEFAULT_MAX_CHUNKS = 8
 
