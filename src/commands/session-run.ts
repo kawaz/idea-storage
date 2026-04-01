@@ -4,7 +4,7 @@ import { runEnqueue } from './session-enqueue.ts'
 import { runProcess } from './session-process.ts'
 import { acquireLock } from '../lib/lockfile.ts'
 import { getStateDir } from '../lib/paths.ts'
-import { exitWithError } from '../lib/errors.ts'
+import { CliError } from '../lib/errors.ts'
 import { log, logError } from '../lib/logging.ts'
 
 /** Default per-task timeout: 25 minutes (generous margin; no need to rush) */
@@ -81,14 +81,14 @@ const sessionRun = define({
     // Check required external commands before doing anything
     const depErrors = checkDependencies()
     if (depErrors.length > 0) {
-      exitWithError(depErrors.join('\n'))
+      throw new CliError(depErrors.join('\n'))
     }
 
     const lockPath = join(getStateDir(), 'session-run.lock')
     const release = await acquireLock(lockPath)
     if (!release) {
       log({ msg: 'lock_held', lockPath })
-      process.exit(0)
+      return
     }
 
     const overallTimeoutMs = DEFAULT_OVERALL_TIMEOUT_MS
@@ -105,9 +105,13 @@ const sessionRun = define({
     } catch (err) {
       if (err instanceof OverallTimeoutError) {
         logError({ msg: 'overall_timeout', timeoutMs: overallTimeoutMs })
-        process.exit(1)
+        process.exitCode = 1
+      } else if (err instanceof CliError) {
+        console.error(`Error: ${err.message}`)
+        process.exitCode = err.exitCode
+      } else {
+        throw err
       }
-      throw err
     } finally {
       await release()
     }

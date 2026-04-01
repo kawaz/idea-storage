@@ -6,7 +6,7 @@ import { getRecipesDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { findMatchingRecipe } from '../lib/recipe-matcher.ts'
 import { enqueue, loadQueueState, isFailedByState } from '../lib/queue.ts'
-import { exitWithError } from '../lib/errors.ts'
+import { CliError } from '../lib/errors.ts'
 import { dirExists } from '../lib/dir-exists.ts'
 import { log } from '../lib/logging.ts'
 import { UUID_JSONL_PATTERN } from '../lib/session-finder.ts'
@@ -17,11 +17,11 @@ export async function runEnqueue(): Promise<void> {
   try {
     recipes = await loadRecipes(getRecipesDir())
   } catch {
-    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
+    throw new CliError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   if (recipes.length === 0) {
-    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
+    throw new CliError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   const minAgeSec = config.minAgeMinutes * 60

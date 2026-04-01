@@ -110,23 +110,15 @@ describe('session-process', () => {
     })
     await Bun.write(join(projectDir, `${sessionId}.jsonl`), jsonlLine + '\n')
 
-    const originalExit = process.exit
-    const originalError = console.error
-    let errorOutput = ''
-
-    process.exit = (() => { throw new Error('process.exit called') }) as never
-    console.error = (msg: string) => { errorOutput = msg }
-
+    const { runProcess } = await import('./session-process.ts')
     try {
-      const { runProcess } = await import('./session-process.ts')
-      await runProcess().catch(() => {})
-    } finally {
-      process.exit = originalExit
-      console.error = originalError
+      await runProcess()
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toContain('recipe-*.md')
+      expect((err as Error).message).toContain('config-examples/')
     }
-
-    expect(errorOutput).toContain('recipe-*.md')
-    expect(errorOutput).toContain('config-examples/')
   })
 
   test('calls markFailed with empty_session when session file is empty (0 lines)', async () => {

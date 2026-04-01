@@ -321,80 +321,48 @@ describe('session-enqueue', () => {
     expect(keys).toContain(`${session2}.review`)
   })
 
-  test('レシピが空の場合は process.exit(1) が呼ばれる', async () => {
+  test('レシピが空の場合は CliError を throw する（process.exit しない）', async () => {
     mockRecipes = []
 
-    const mockExit = mock(() => { throw new Error('process.exit called') })
-    const originalExit = process.exit
-    process.exit = mockExit as unknown as typeof process.exit
-
-    try {
-      const { runEnqueue } = await import('./session-enqueue.ts')
-      await expect(runEnqueue()).rejects.toThrow('process.exit called')
-      expect(mockExit).toHaveBeenCalled()
-    } finally {
-      process.exit = originalExit
-    }
+    const { runEnqueue } = await import('./session-enqueue.ts')
+    const { CliError } = await import('../lib/errors.ts')
+    await expect(runEnqueue()).rejects.toThrow(CliError)
   })
 
-  test('レシピディレクトリが存在しない場合は process.exit(1) が呼ばれる', async () => {
+  test('レシピディレクトリが存在しない場合は CliError を throw する（process.exit しない）', async () => {
     mockRecipesThrow = true
 
-    const mockExit = mock(() => { throw new Error('process.exit called') })
-    const originalExit = process.exit
-    process.exit = mockExit as unknown as typeof process.exit
-
-    try {
-      const { runEnqueue } = await import('./session-enqueue.ts')
-      await expect(runEnqueue()).rejects.toThrow('process.exit called')
-      expect(mockExit).toHaveBeenCalled()
-    } finally {
-      process.exit = originalExit
-    }
+    const { runEnqueue } = await import('./session-enqueue.ts')
+    const { CliError } = await import('../lib/errors.ts')
+    await expect(runEnqueue()).rejects.toThrow(CliError)
   })
 
   test('レシピが空の場合のエラーメッセージに次のアクション案内が含まれる', async () => {
     mockRecipes = []
 
-    const originalExit = process.exit
-    const originalError = console.error
-    let errorOutput = ''
-
-    process.exit = (() => { throw new Error('process.exit called') }) as never
-    console.error = (msg: string) => { errorOutput = msg }
-
+    const { runEnqueue } = await import('./session-enqueue.ts')
     try {
-      const { runEnqueue } = await import('./session-enqueue.ts')
-      await runEnqueue().catch(() => {})
-    } finally {
-      process.exit = originalExit
-      console.error = originalError
+      await runEnqueue()
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toContain('recipe-*.md')
+      expect((err as Error).message).toContain('config-examples/')
     }
-
-    expect(errorOutput).toContain('recipe-*.md')
-    expect(errorOutput).toContain('config-examples/')
   })
 
   test('レシピディレクトリが存在しない場合のエラーメッセージに次のアクション案内が含まれる', async () => {
     mockRecipesThrow = true
 
-    const originalExit = process.exit
-    const originalError = console.error
-    let errorOutput = ''
-
-    process.exit = (() => { throw new Error('process.exit called') }) as never
-    console.error = (msg: string) => { errorOutput = msg }
-
+    const { runEnqueue } = await import('./session-enqueue.ts')
     try {
-      const { runEnqueue } = await import('./session-enqueue.ts')
-      await runEnqueue().catch(() => {})
-    } finally {
-      process.exit = originalExit
-      console.error = originalError
+      await runEnqueue()
+      expect(true).toBe(false) // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toContain('recipe-*.md')
+      expect((err as Error).message).toContain('config-examples/')
     }
-
-    expect(errorOutput).toContain('recipe-*.md')
-    expect(errorOutput).toContain('config-examples/')
   })
 
   test('複数のclaudeDirsを走査する', async () => {

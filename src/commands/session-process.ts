@@ -9,7 +9,7 @@ import { generateFrontmatter } from '../lib/frontmatter.ts'
 import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
 import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
 import { dequeue, markDone, markFailed } from '../lib/queue.ts'
-import { exitWithError } from '../lib/errors.ts'
+import { CliError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, DEFAULT_MAX_CHUNK_BYTES, type TimelineChunk } from '../lib/chunker.ts'
 import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
 import { log, logError } from '../lib/logging.ts'
@@ -303,7 +303,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   try {
     recipes = await loadRecipes(getRecipesDir())
   } catch {
-    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
+    throw new CliError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   const recipe = findRecipeByName(recipes, recipeName)

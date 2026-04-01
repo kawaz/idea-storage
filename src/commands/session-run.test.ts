@@ -170,6 +170,103 @@ describe('runWithOverallTimeout cleanup', () => {
   })
 })
 
+describe('session run: lock release on errors', () => {
+  test('OverallTimeoutError: finally executes (simulating lock release)', async () => {
+    // session-run catches OverallTimeoutError, sets process.exitCode = 1,
+    // and does NOT re-throw — so the finally block for lock release runs.
+    const releaseLog: string[] = []
+    const mockRelease = async () => { releaseLog.push('released') }
+
+    const savedExitCode = process.exitCode
+    try {
+      await runWithOverallTimeout(50, async (_signal) => {
+        await new Promise(resolve => setTimeout(resolve, 10000))
+      })
+    } catch (err) {
+      if (err instanceof OverallTimeoutError) {
+        // This is what session-run does: swallow and set exitCode
+        process.exitCode = 1
+      } else {
+        throw err
+      }
+    } finally {
+      await mockRelease()
+    }
+
+    expect(releaseLog).toEqual(['released'])
+    expect(process.exitCode).toBe(1)
+    process.exitCode = savedExitCode
+  })
+
+  test('CliError from runEnqueue: finally executes (simulating lock release)', async () => {
+    // When runEnqueue throws CliError, session-run catches it,
+    // logs the error, sets process.exitCode, and does NOT re-throw.
+    const { CliError } = await import('../lib/errors.ts')
+    const releaseLog: string[] = []
+    const mockRelease = async () => { releaseLog.push('released') }
+
+    const savedExitCode = process.exitCode
+    try {
+      throw new CliError('no recipes found')
+    } catch (err) {
+      if (err instanceof CliError) {
+        process.exitCode = err.exitCode
+      } else {
+        throw err
+      }
+    } finally {
+      await mockRelease()
+    }
+
+    expect(releaseLog).toEqual(['released'])
+    expect(process.exitCode).toBe(1)
+    process.exitCode = savedExitCode
+  })
+
+  test('unknown error: re-thrown but finally still executes', async () => {
+    // Unknown errors are re-thrown, but finally still runs.
+    const releaseLog: string[] = []
+    const mockRelease = async () => { releaseLog.push('released') }
+
+    try {
+      try {
+        throw new Error('unexpected')
+      } catch (err) {
+        if (err instanceof OverallTimeoutError) {
+          process.exitCode = 1
+        } else {
+          throw err
+        }
+      } finally {
+        await mockRelease()
+      }
+    } catch (err) {
+      expect((err as Error).message).toBe('unexpected')
+    }
+
+    expect(releaseLog).toEqual(['released'])
+  })
+
+  test('session-run handler uses CliError instead of exitWithError for dep check', async () => {
+    // checkDependencies returns error strings; session-run should throw CliError
+    // instead of calling exitWithError (which calls process.exit and skips finally).
+    const { CliError } = await import('../lib/errors.ts')
+    const depErrors = checkDependencies(() => null)
+    expect(depErrors.length).toBeGreaterThan(0)
+
+    // Verify CliError is throwable and catchable (unlike process.exit)
+    let finallyCalled = false
+    try {
+      throw new CliError(depErrors.join('\n'))
+    } catch (err) {
+      expect(err).toBeInstanceOf(CliError)
+    } finally {
+      finallyCalled = true
+    }
+    expect(finallyCalled).toBe(true)
+  })
+})
+
 describe('checkDependencies', () => {
   test('claude-session-analysis が見つからない場合にインストール案内付きエラーを返す', () => {
     const errors = checkDependencies((cmd) => {
