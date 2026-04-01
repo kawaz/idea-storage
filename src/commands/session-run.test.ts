@@ -1,5 +1,5 @@
 import { describe, expect, test, mock } from 'bun:test'
-import { runWithOverallTimeout, OverallTimeoutError } from './session-run.ts'
+import { runWithOverallTimeout, OverallTimeoutError, checkDependencies } from './session-run.ts'
 
 describe('OverallTimeoutError', () => {
   test('is an instance of Error', () => {
@@ -167,5 +167,41 @@ describe('runWithOverallTimeout cleanup', () => {
 
     // The signal should NOT have been aborted since work completed before timeout
     expect(capturedSignal!.aborted).toBe(false)
+  })
+})
+
+describe('checkDependencies', () => {
+  test('claude-session-analysis が見つからない場合にインストール案内付きエラーを返す', () => {
+    const errors = checkDependencies((cmd) => {
+      if (cmd === 'claude-session-analysis') return null
+      return `/usr/local/bin/${cmd}`
+    })
+
+    expect(errors.length).toBeGreaterThanOrEqual(1)
+    const csaError = errors.find(e => e.includes('claude-session-analysis'))
+    expect(csaError).toBeDefined()
+    expect(csaError).toContain('npm i -g claude-session-analysis')
+  })
+
+  test('claude が見つからない場合にインストール案内付きエラーを返す', () => {
+    const errors = checkDependencies((cmd) => {
+      if (cmd === 'claude') return null
+      return `/usr/local/bin/${cmd}`
+    })
+
+    expect(errors.length).toBeGreaterThanOrEqual(1)
+    const claudeError = errors.find(e => e.includes('claude'))
+    expect(claudeError).toBeDefined()
+    expect(claudeError).toContain('@anthropic-ai/claude-code')
+  })
+
+  test('両方見つからない場合に2つのエラーを返す', () => {
+    const errors = checkDependencies(() => null)
+    expect(errors).toHaveLength(2)
+  })
+
+  test('両方見つかる場合は空配列を返す', () => {
+    const errors = checkDependencies((cmd) => `/usr/local/bin/${cmd}`)
+    expect(errors).toHaveLength(0)
   })
 })

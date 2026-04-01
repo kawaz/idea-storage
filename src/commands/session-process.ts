@@ -302,7 +302,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   try {
     recipes = await loadRecipes(getRecipesDir())
   } catch {
-    exitWithError(`No recipes found in ${getRecipesDir()}`)
+    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   const recipe = findRecipeByName(recipes, recipeName)

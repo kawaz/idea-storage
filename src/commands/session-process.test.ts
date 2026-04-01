@@ -35,10 +35,30 @@ mock.module('../lib/config.ts', () => ({
   loadConfig: mock(async () => loadConfigResult),
 }))
 
+// Control recipe loading behavior
+let mockRecipesThrow = false
+let mockRecipes: Array<{ name: string; filePath: string; match: Record<string, unknown>; priority: number; onExisting: string; prompt: string }> = []
+
+mock.module('../lib/recipe.ts', () => ({
+  loadRecipes: mock(async () => {
+    if (mockRecipesThrow) throw new Error('no recipes dir')
+    return mockRecipes
+  }),
+}))
+
 describe('session-process', () => {
   beforeEach(async () => {
     markFailedCalls.length = 0
     markDoneCalls.length = 0
+    mockRecipesThrow = false
+    mockRecipes = [{
+      name: 'diary',
+      filePath: '/tmp/recipe-diary.md',
+      match: {},
+      priority: 0,
+      onExisting: 'append',
+      prompt: 'Write a diary',
+    }]
     dequeueResult = {
       sessionId: 'missing-session-id',
       recipeName: 'diary',
@@ -63,6 +83,50 @@ describe('session-process', () => {
     await runProcess()
 
     expect(markFailedCalls.map(c => c.key)).toContain('missing-session-id.diary')
+  })
+
+  test('レシピが見つからない場合のエラーメッセージに次のアクション案内が含まれる', async () => {
+    mockRecipesThrow = true
+
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    dequeueResult = {
+      sessionId,
+      recipeName: 'diary',
+      key: `${sessionId}.diary`,
+    }
+
+    // Create a session file so it gets past the session-not-found check
+    const projectDir = join(claudeDir, 'projects', 'test-project')
+    await mkdir(projectDir, { recursive: true })
+    const now = Date.now()
+    const ageMs = 3 * 60 * 60 * 1000
+    const sessionStart = new Date(now - ageMs).toISOString()
+    const jsonlLine = JSON.stringify({
+      type: 'user',
+      timestamp: sessionStart,
+      uuid: `${sessionId.slice(0, 8)}-line-0001`,
+      cwd: '/tmp/test-project',
+      message: { role: 'user', content: 'Hello' },
+    })
+    await Bun.write(join(projectDir, `${sessionId}.jsonl`), jsonlLine + '\n')
+
+    const originalExit = process.exit
+    const originalError = console.error
+    let errorOutput = ''
+
+    process.exit = (() => { throw new Error('process.exit called') }) as never
+    console.error = (msg: string) => { errorOutput = msg }
+
+    try {
+      const { runProcess } = await import('./session-process.ts')
+      await runProcess().catch(() => {})
+    } finally {
+      process.exit = originalExit
+      console.error = originalError
+    }
+
+    expect(errorOutput).toContain('recipe-*.md')
+    expect(errorOutput).toContain('config-examples/')
   })
 
   test('calls markFailed with empty_session when session file is empty (0 lines)', async () => {
