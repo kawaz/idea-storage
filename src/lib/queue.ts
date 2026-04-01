@@ -22,6 +22,17 @@ export interface QueueDirs {
   failedDir: string
 }
 
+export interface QueueStateFailedEntry {
+  meta: FailedMeta
+  mtimeMs: number
+}
+
+export interface QueueState {
+  queued: Set<string>
+  done: Map<string, { lineCount: number }>
+  failed: Map<string, QueueStateFailedEntry>
+}
+
 function defaultDirs(): QueueDirs {
   return {
     queueDir: getQueueDir(),
@@ -247,4 +258,71 @@ export async function cleanup(
   }
 
   return removed
+}
+
+export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
+  const d = dirs ?? defaultDirs()
+
+  const [queueFiles, doneFiles, failedFiles] = await Promise.all([
+    listFiles(d.queueDir),
+    listFiles(d.doneDir),
+    listFiles(d.failedDir),
+  ])
+
+  // Build queued set
+  const queued = new Set<string>(queueFiles)
+
+  // Build done map with lineCount
+  const done = new Map<string, { lineCount: number }>()
+  await Promise.all(
+    doneFiles.map(async (name) => {
+      try {
+        const content = await Bun.file(join(d.doneDir, name)).text()
+        const lineCount = parseInt(content, 10)
+        done.set(name, { lineCount: isNaN(lineCount) ? 0 : lineCount })
+      } catch {
+        done.set(name, { lineCount: 0 })
+      }
+    }),
+  )
+
+  // Build failed map with meta and mtimeMs
+  const failed = new Map<string, QueueStateFailedEntry>()
+  await Promise.all(
+    failedFiles.map(async (name) => {
+      const filePath = join(d.failedDir, name)
+      const [meta, s] = await Promise.all([
+        readFailedMeta(filePath),
+        stat(filePath).catch(() => null),
+      ])
+      failed.set(name, {
+        meta,
+        mtimeMs: s?.mtimeMs ?? 0,
+      })
+    }),
+  )
+
+  return { queued, done, failed }
+}
+
+/** In-memory equivalent of isFailed() using pre-loaded QueueState */
+export function isFailedByState(
+  state: QueueState,
+  key: string,
+  retryOpts?: RetryOptions,
+): boolean {
+  const entry = state.failed.get(key)
+  if (!entry) return false
+
+  const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES
+  const retryAfterMs = retryOpts?.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS
+
+  // Permanent-failed: retryCount >= maxRetries
+  if (entry.meta.retryCount >= maxRetries) return true
+
+  // Check mtime: if old enough, allow retry (return false)
+  const elapsed = Date.now() - entry.mtimeMs
+  if (elapsed >= retryAfterMs) return false
+
+  return true
 }

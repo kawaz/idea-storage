@@ -16,6 +16,8 @@ import {
   cleanup,
   validateSessionId,
   validateRecipeName,
+  loadQueueState,
+  isFailedByState,
 } from './queue.ts'
 
 // Test UUIDs (replacing short ids like 'sid-1' for validation compliance)
@@ -528,6 +530,208 @@ describe('queue', () => {
     test('isFailed rejects invalid inputs', async () => {
       await expect(isFailed('../x', 'diary', dirs)).rejects.toThrow(/Invalid sessionId/)
       await expect(isFailed('550e8400-e29b-41d4-a716-446655440000', '../x', dirs)).rejects.toThrow(/Invalid recipeName/)
+    })
+  })
+
+  describe('loadQueueState', () => {
+    test('returns empty sets/maps when directories do not exist', async () => {
+      const state = await loadQueueState(dirs)
+      expect(state.queued.size).toBe(0)
+      expect(state.done.size).toBe(0)
+      expect(state.failed.size).toBe(0)
+    })
+
+    test('loads all queued entries', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await enqueue(SID2, 'recipe-a', dirs)
+
+      const state = await loadQueueState(dirs)
+      expect(state.queued.size).toBe(2)
+      expect(state.queued.has(`${SID1}.diary`)).toBe(true)
+      expect(state.queued.has(`${SID2}.recipe-a`)).toBe(true)
+    })
+
+    test('loads all done entries with lineCount', async () => {
+      await markDone(`${SID1}.diary`, 42, dirs)
+      await markDone(`${SID2}.recipe-a`, 100, dirs)
+
+      const state = await loadQueueState(dirs)
+      expect(state.done.size).toBe(2)
+      expect(state.done.get(`${SID1}.diary`)).toEqual({ lineCount: 42 })
+      expect(state.done.get(`${SID2}.recipe-a`)).toEqual({ lineCount: 100 })
+    })
+
+    test('handles done entries with unparseable content as lineCount 0', async () => {
+      const { mkdir } = await import('node:fs/promises')
+      await mkdir(dirs.doneDir, { recursive: true })
+      await Bun.write(join(dirs.doneDir, `${SID1}.diary`), 'not-a-number')
+
+      const state = await loadQueueState(dirs)
+      expect(state.done.get(`${SID1}.diary`)).toEqual({ lineCount: 0 })
+    })
+
+    test('loads all failed entries with meta and mtimeMs', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, 'error1', dirs)
+      await enqueue(SID2, 'recipe-a', dirs)
+      await markFailed(`${SID2}.recipe-a`, undefined, dirs)
+
+      const state = await loadQueueState(dirs)
+      expect(state.failed.size).toBe(2)
+
+      const f1 = state.failed.get(`${SID1}.diary`)
+      expect(f1).toBeDefined()
+      expect(f1!.meta.retryCount).toBe(1)
+      expect(f1!.meta.reason).toBe('error1')
+      expect(f1!.mtimeMs).toBeGreaterThan(0)
+
+      const f2 = state.failed.get(`${SID2}.recipe-a`)
+      expect(f2).toBeDefined()
+      expect(f2!.meta.retryCount).toBe(1)
+      expect(f2!.meta.reason).toBeUndefined()
+    })
+
+    test('handles legacy empty failed files as retryCount 0', async () => {
+      const { mkdir } = await import('node:fs/promises')
+      await mkdir(dirs.failedDir, { recursive: true })
+      await Bun.write(join(dirs.failedDir, `${SID1}.diary`), '')
+
+      const state = await loadQueueState(dirs)
+      const f = state.failed.get(`${SID1}.diary`)
+      expect(f).toBeDefined()
+      expect(f!.meta.retryCount).toBe(0)
+    })
+
+    test('agrees with isQueued for all entries', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await enqueue(SID2, 'recipe-a', dirs)
+
+      const state = await loadQueueState(dirs)
+
+      // Entries that are queued
+      expect(state.queued.has(`${SID1}.diary`)).toBe(await isQueued(SID1, 'diary', dirs))
+      expect(state.queued.has(`${SID2}.recipe-a`)).toBe(await isQueued(SID2, 'recipe-a', dirs))
+      // Entry that is not queued
+      expect(state.queued.has(`${SID3}.diary`)).toBe(await isQueued(SID3, 'diary', dirs))
+    })
+
+    test('agrees with isDone for all entries', async () => {
+      await markDone(`${SID1}.diary`, 50, dirs)
+
+      const state = await loadQueueState(dirs)
+
+      // isDone checks lineCount: done with 50 lines, check with 50 => true
+      const doneEntry = state.done.get(`${SID1}.diary`)
+      const doneLineCount = doneEntry?.lineCount ?? 0
+      expect(doneLineCount >= 50).toBe(await isDone(SID1, 'diary', 50, dirs))
+      // done with 50, check with 100 => false
+      expect(doneLineCount >= 100).toBe(await isDone(SID1, 'diary', 100, dirs))
+      // Entry that is not done
+      expect(state.done.has(`${SID2}.diary`)).toBe(await isDone(SID2, 'diary', 10, dirs))
+    })
+
+    test('agrees with isFailed for recently failed entries', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs)
+
+      const state = await loadQueueState(dirs)
+      const retryOpts = { retryAfterMs: 60000, maxRetries: 3 }
+
+      // Recently failed => both should return true
+      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(true)
+      expect(await isFailed(SID1, 'diary', dirs, retryOpts)).toBe(true)
+    })
+
+    test('agrees with isFailed for permanent-failed entries', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs) // retryCount=1
+      await markFailed(`${SID1}.diary`, undefined, dirs) // retryCount=2
+      await markFailed(`${SID1}.diary`, undefined, dirs) // retryCount=3
+
+      const state = await loadQueueState(dirs)
+      const retryOpts = { retryAfterMs: 1, maxRetries: 3 }
+
+      // Permanent-failed => both should return true
+      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(true)
+      expect(await isFailed(SID1, 'diary', dirs, retryOpts)).toBe(true)
+    })
+
+    test('agrees with isFailed for retryable entries (old mtime)', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs)
+
+      // Set mtime to the past
+      const { utimesSync } = await import('node:fs')
+      const oldTime = new Date(Date.now() - 5000)
+      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+
+      const state = await loadQueueState(dirs)
+      const retryOpts = { retryAfterMs: 1000, maxRetries: 3 }
+
+      // Retryable => both should return false
+      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(false)
+      expect(await isFailed(SID1, 'diary', dirs, retryOpts)).toBe(false)
+    })
+
+    test('loads mixed state correctly', async () => {
+      // Setup: SID1 queued, SID2 done, SID3 failed
+      await enqueue(SID1, 'diary', dirs)
+      await markDone(`${SID2}.recipe-a`, 75, dirs)
+      await enqueue(SID3, 'diary', dirs)
+      await markFailed(`${SID3}.diary`, 'timeout', dirs)
+
+      const state = await loadQueueState(dirs)
+
+      expect(state.queued.has(`${SID1}.diary`)).toBe(true)
+      expect(state.done.get(`${SID2}.recipe-a`)).toEqual({ lineCount: 75 })
+      expect(state.failed.get(`${SID3}.diary`)!.meta.reason).toBe('timeout')
+    })
+  })
+
+  describe('isFailedByState', () => {
+    test('returns false when key is not in failed map', async () => {
+      const state = await loadQueueState(dirs)
+      expect(isFailedByState(state, `${SID1}.diary`)).toBe(false)
+    })
+
+    test('returns true for recently failed (retryCount < maxRetries, mtime recent)', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs)
+
+      const state = await loadQueueState(dirs)
+      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 60000, maxRetries: 3 })).toBe(true)
+    })
+
+    test('returns true for permanent-failed (retryCount >= maxRetries)', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs) // 1
+      await markFailed(`${SID1}.diary`, undefined, dirs) // 2
+      await markFailed(`${SID1}.diary`, undefined, dirs) // 3
+
+      const state = await loadQueueState(dirs)
+      // Even with very short retryAfterMs, permanent-failed stays true
+      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1, maxRetries: 3 })).toBe(true)
+    })
+
+    test('returns false when retryable (retryCount < maxRetries, mtime old enough)', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs)
+
+      const { utimesSync } = await import('node:fs')
+      const oldTime = new Date(Date.now() - 5000)
+      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+
+      const state = await loadQueueState(dirs)
+      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)
+    })
+
+    test('uses default retryAfterMs and maxRetries when not specified', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await markFailed(`${SID1}.diary`, undefined, dirs)
+
+      const state = await loadQueueState(dirs)
+      // With defaults (24h, 3 retries), just-failed should return true
+      expect(isFailedByState(state, `${SID1}.diary`)).toBe(true)
     })
   })
 })

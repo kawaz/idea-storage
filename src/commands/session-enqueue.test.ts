@@ -36,18 +36,23 @@ mock.module('../lib/queue.ts', () => ({
     enqueueCalls.push({ sessionId, recipeName })
     queuedSet.add(`${sessionId}.${recipeName}`)
   }),
-  isQueued: mock(async (sessionId: string, recipeName: string) => {
-    return queuedSet.has(`${sessionId}.${recipeName}`)
-  }),
-  isFailed: mock(async (sessionId: string, recipeName: string) => {
-    return failedSet.has(`${sessionId}.${recipeName}`)
-  }),
-  isDone: mock(async (sessionId: string, recipeName: string, lineCount: number) => {
-    const key = `${sessionId}.${recipeName}`
-    const doneLine = doneMap.get(key)
-    if (doneLine === undefined) return false
-    return doneLine >= lineCount
-  }),
+  loadQueueState: mock(async () => ({
+    queued: new Set(queuedSet),
+    done: new Map(
+      Array.from(doneMap.entries()).map(([k, v]) => [k, { lineCount: v }]),
+    ),
+    failed: new Map(
+      Array.from(failedSet).map((k) => [
+        k,
+        { meta: { retryCount: 1 }, mtimeMs: Date.now() },
+      ]),
+    ),
+  })),
+  isFailedByState: mock(
+    (state: { failed: Map<string, unknown> }, key: string) => {
+      return state.failed.has(key)
+    },
+  ),
 }))
 
 describe('session-enqueue', () => {
@@ -346,6 +351,50 @@ describe('session-enqueue', () => {
     } finally {
       process.exit = originalExit
     }
+  })
+
+  test('レシピが空の場合のエラーメッセージに次のアクション案内が含まれる', async () => {
+    mockRecipes = []
+
+    const originalExit = process.exit
+    const originalError = console.error
+    let errorOutput = ''
+
+    process.exit = (() => { throw new Error('process.exit called') }) as never
+    console.error = (msg: string) => { errorOutput = msg }
+
+    try {
+      const { runEnqueue } = await import('./session-enqueue.ts')
+      await runEnqueue().catch(() => {})
+    } finally {
+      process.exit = originalExit
+      console.error = originalError
+    }
+
+    expect(errorOutput).toContain('recipe-*.md')
+    expect(errorOutput).toContain('config-examples/')
+  })
+
+  test('レシピディレクトリが存在しない場合のエラーメッセージに次のアクション案内が含まれる', async () => {
+    mockRecipesThrow = true
+
+    const originalExit = process.exit
+    const originalError = console.error
+    let errorOutput = ''
+
+    process.exit = (() => { throw new Error('process.exit called') }) as never
+    console.error = (msg: string) => { errorOutput = msg }
+
+    try {
+      const { runEnqueue } = await import('./session-enqueue.ts')
+      await runEnqueue().catch(() => {})
+    } finally {
+      process.exit = originalExit
+      console.error = originalError
+    }
+
+    expect(errorOutput).toContain('recipe-*.md')
+    expect(errorOutput).toContain('config-examples/')
   })
 
   test('複数のclaudeDirsを走査する', async () => {

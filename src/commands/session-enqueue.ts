@@ -5,7 +5,7 @@ import { loadRecipes } from '../lib/recipe.ts'
 import { getRecipesDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { findMatchingRecipe } from '../lib/recipe-matcher.ts'
-import { enqueue, isQueued, isFailed, isDone } from '../lib/queue.ts'
+import { enqueue, loadQueueState, isFailedByState } from '../lib/queue.ts'
 import { exitWithError } from '../lib/errors.ts'
 import { dirExists } from '../lib/dir-exists.ts'
 import { log } from '../lib/logging.ts'
@@ -17,14 +17,17 @@ export async function runEnqueue(): Promise<void> {
   try {
     recipes = await loadRecipes(getRecipesDir())
   } catch {
-    exitWithError(`No recipes found in ${getRecipesDir()}`)
+    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   if (recipes.length === 0) {
-    exitWithError(`No recipes found in ${getRecipesDir()}`)
+    exitWithError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
   }
 
   const minAgeSec = config.minAgeMinutes * 60
+
+  // Load queue state once upfront (readdir x3 instead of per-entry file checks)
+  const state = await loadQueueState()
 
   let count = 0
 
@@ -49,15 +52,18 @@ export async function runEnqueue(): Promise<void> {
         const matched = findMatchingRecipe([recipe], meta)
         if (!matched) continue
 
+        const key = `${meta.id}.${recipe.name}`
+
         // Skip if already queued or failed
-        if (await isQueued(meta.id, recipe.name)) continue
-        if (await isFailed(meta.id, recipe.name)) continue
+        if (state.queued.has(key)) continue
+        if (isFailedByState(state, key)) continue
 
         // Skip if already done with same or more lines
-        if (await isDone(meta.id, recipe.name, meta.lineCount)) continue
+        const doneEntry = state.done.get(key)
+        if (doneEntry && doneEntry.lineCount >= meta.lineCount) continue
 
         await enqueue(meta.id, recipe.name)
-        log({ msg: 'queued', key: `${meta.id}.${recipe.name}` })
+        log({ msg: 'queued', key })
         count++
       }
     }
