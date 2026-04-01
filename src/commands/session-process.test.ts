@@ -519,12 +519,13 @@ describe('processChunked external signal propagation', () => {
   })
 
   test('外部signalがabortされると合成フェーズもキャンセルされる', async () => {
-    const chunks = makeChunks(1)
+    // チャンク1つでは synthesis がスキップされるため、2チャンクでテスト
+    const chunks = makeChunks(2)
     const convText = 'dummy timeline text'
     const recipePrompt = 'test prompt'
 
     const externalController = new AbortController()
-    let callCount = 0
+    let sectionCount = 0
 
     try {
       await processChunked(
@@ -535,10 +536,10 @@ describe('processChunked external signal propagation', () => {
         dummyMeta,
         undefined,
         async (options) => {
-          callCount++
-          if (callCount === 1) {
+          if (!options.prompt.includes('セクション一覧')) {
+            sectionCount++
             // チャンク処理は成功
-            return '## Section 1\nContent'
+            return `## Section ${sectionCount}\nContent`
           }
           // 合成フェーズ前に外部signalをabort
           externalController.abort()
@@ -555,7 +556,7 @@ describe('processChunked external signal propagation', () => {
       expect(err).toBeInstanceOf(ClaudeAbortError)
     }
 
-    expect(callCount).toBe(2) // チャンク1回 + 合成1回
+    expect(sectionCount).toBe(2) // 2チャンク処理 + 合成1回(abort)
   })
 
   test('外部signalがabort済みの場合、リトライやフォールバックをスキップして即座にClaudeAbortError', async () => {
@@ -586,6 +587,102 @@ describe('processChunked external signal propagation', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ClaudeAbortError)
     }
+  })
+})
+
+// --- CSA_TIMEOUT_MS のテスト ---
+import { CSA_TIMEOUT_MS } from './session-process.ts'
+
+describe('CSA_TIMEOUT_MS', () => {
+  test('10分（600000ms）に設定されている', () => {
+    expect(CSA_TIMEOUT_MS).toBe(10 * 60 * 1000)
+  })
+})
+
+// --- processChunked: チャンク1つの場合 synthesis スキップ ---
+
+describe('processChunked single chunk', () => {
+  const dummyMeta = {
+    startTime: new Date('2025-01-01T00:00:00Z'),
+    endTime: new Date('2025-01-01T01:00:00Z'),
+    project: 'test-project',
+    lineCount: 100,
+    userTurns: 5,
+    forkInfo: null,
+  }
+
+  function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {
+    return Array.from({ length: count }, (_, i) => ({
+      index: i,
+      turns: [],
+      startTime: new Date('2025-01-01T00:00:00Z'),
+      endTime: new Date('2025-01-01T01:00:00Z'),
+      bytes: 1000,
+      turnCount: 5,
+      lineStart: 1,
+      lineEnd: 50,
+      label: `chunk-${i}`,
+    }))
+  }
+
+  test('チャンク1つの場合はsynthesisフェーズをスキップし、セクション結果をそのまま返す', async () => {
+    const chunks = makeChunks(1)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    const callLog: string[] = []
+
+    const result = await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      async (options) => {
+        const prompt = options.prompt
+        if (prompt.includes('セクション一覧')) {
+          callLog.push('synthesis')
+          return '# Synthesized\n## まとめ\nSummary'
+        }
+        callLog.push('section')
+        return '## Section 1\nDirect content'
+      },
+    )
+
+    // synthesis は呼ばれない（section のみ1回）
+    expect(callLog).toEqual(['section'])
+    // セクション結果がそのまま返される
+    expect(result).toBe('## Section 1\nDirect content')
+  })
+
+  test('チャンク2つ以上の場合はsynthesisフェーズが実行される', async () => {
+    const chunks = makeChunks(2)
+    const convText = 'dummy timeline text'
+    const recipePrompt = 'test prompt'
+
+    const callLog: string[] = []
+
+    await processChunked(
+      convText,
+      chunks,
+      recipePrompt,
+      'test-session-id',
+      dummyMeta,
+      undefined,
+      async (options) => {
+        const prompt = options.prompt
+        if (prompt.includes('セクション一覧')) {
+          callLog.push('synthesis')
+          return '# Title\n## まとめ\nSummary'
+        }
+        callLog.push('section')
+        return '## Section\nContent'
+      },
+    )
+
+    // 2つのセクション + 1つの synthesis = 3回
+    expect(callLog).toEqual(['section', 'section', 'synthesis'])
   })
 })
 

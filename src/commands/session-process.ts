@@ -19,8 +19,8 @@ import type { Recipe, SessionMeta } from '../types/index.ts'
 
 const csaBin = 'claude-session-analysis'
 
-/** CSA subprocess timeout: 5 minutes */
-export const CSA_TIMEOUT_MS = 5 * 60 * 1000
+/** CSA subprocess timeout: 10 minutes (実測では1.7MBセッションでも50ms以内だが余裕を持たせる) */
+export const CSA_TIMEOUT_MS = 10 * 60 * 1000
 
 function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
   return recipes.find(r => r.name === name)
@@ -259,8 +259,15 @@ ${convText}`
     }
   }
 
-  // 全チャンク成功: 合成 (外部signalも渡す)
+  // 全チャンク成功
   const orderedResults = chunks.map((_, i) => sectionResults.get(i)!)
+
+  // チャンク1つの場合は synthesis 不要: セクション結果をそのまま返す
+  if (orderedResults.length === 1) {
+    return orderedResults[0]!
+  }
+
+  // 複数チャンク: 合成 (外部signalも渡す)
   const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo)
   return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal })
 }
