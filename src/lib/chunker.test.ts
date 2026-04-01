@@ -349,7 +349,8 @@ describe('splitTimeline', () => {
 describe('extractChunkText', () => {
   test('lineStart-lineEnd の範囲を正しく抽出する', () => {
     const chunks = splitTimeline(SIMPLE_TIMELINE)
-    const text = extractChunkText(SIMPLE_TIMELINE, chunks[0]!)
+    const lines = SIMPLE_TIMELINE.split('\n')
+    const text = extractChunkText(lines, chunks[0]!)
     // チャンクテキストに元のコンテンツが含まれていること
     expect(text).toContain('プロジェクトを評価してください。')
     expect(text).toContain('応答内容...')
@@ -363,11 +364,12 @@ describe('extractChunkText', () => {
       turnBlocks.push(makeResponseBlock(`2026-03-07T${hour}:05:00+09:00`, 5000))
     }
     const timeline = makeTimeline(turnBlocks)
+    const lines = timeline.split('\n')
     const chunks = splitTimeline(timeline, { maxChunkBytes: 20000 })
 
     if (chunks.length >= 2) {
-      const text0 = extractChunkText(timeline, chunks[0]!)
-      const text1 = extractChunkText(timeline, chunks[1]!)
+      const text0 = extractChunkText(lines, chunks[0]!)
+      const text1 = extractChunkText(lines, chunks[1]!)
       // 各チャンクのテキストが空でないこと
       expect(text0.length).toBeGreaterThan(0)
       expect(text1.length).toBeGreaterThan(0)
@@ -379,7 +381,8 @@ describe('extractChunkText', () => {
   test('抽出されたテキストの行数がlineEnd - lineStart + 1であること', () => {
     const chunks = splitTimeline(SIMPLE_TIMELINE)
     const chunk = chunks[0]!
-    const text = extractChunkText(SIMPLE_TIMELINE, chunk)
+    const lines = SIMPLE_TIMELINE.split('\n')
+    const text = extractChunkText(lines, chunk)
     const lineCount = text.split('\n').length
     expect(lineCount).toBe(chunk.lineEnd - chunk.lineStart + 1)
   })

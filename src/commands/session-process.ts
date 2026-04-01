@@ -162,6 +162,7 @@ export async function processChunked(
 ): Promise<string> {
   const run = _runClaudeOverride ?? runClaude
   const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || 'unknown'}\n- Created: ${meta.startTime.toISOString()}`
+  const lines = convText.split('\n')
 
   const controller = new AbortController()
 
@@ -177,7 +178,7 @@ export async function processChunked(
   // --- Step 1: 全チャンクを並列実行 ---
   const sectionSettled = await Promise.allSettled(
     chunks.map(async (chunk) => {
-      const chunkText = extractChunkText(convText, chunk)
+      const chunkText = extractChunkText(lines, chunk)
       const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
       return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal })
     })
@@ -213,7 +214,7 @@ export async function processChunked(
     const retrySettled = await Promise.allSettled(
       failedIndices.map(async (idx) => {
         const chunk = chunks[idx]!
-        const chunkText = extractChunkText(convText, chunk)
+        const chunkText = extractChunkText(lines, chunk)
         const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
         return { idx, result: await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal }) }
       })

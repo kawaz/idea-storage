@@ -50,6 +50,7 @@ export interface SplitOptions {
 
 // --- 内部定数 ---
 
+const encoder = new TextEncoder()
 const TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\s+([A-Za-z])([0-9a-f]+)/
 
 export const DEFAULT_MAX_CHUNK_BYTES = 35000
@@ -114,7 +115,7 @@ function parseBlock(lines: string[], lineStart: number): TimelineBlock | null {
       return {
         lineStart,
         lineEnd: lineStart + lines.length - 1,
-        rawBytes: new TextEncoder().encode(raw).length,
+        rawBytes: encoder.encode(raw).length,
         timestamp: new Date(m[1]!),
         type: m[2]!,
         id: m[3]!,
@@ -365,11 +366,11 @@ function generateLabel(chunk: TimelineChunk): string {
 // --- Extract ---
 
 /**
- * タイムラインテキストからチャンクの行範囲のテキストを抽出する。
+ * タイムラインの行配列からチャンクの行範囲のテキストを抽出する。
  * lineStart, lineEnd は1-basedの行番号。
+ * 呼び出し側で split('\n') を1回だけ行い、行配列を使い回すこと。
  */
-export function extractChunkText(timelineText: string, chunk: TimelineChunk): string {
-  const lines = timelineText.split('\n')
+export function extractChunkText(lines: string[], chunk: TimelineChunk): string {
   // lineStart, lineEnd は 1-based なので 0-based に変換
   const extracted = lines.slice(chunk.lineStart - 1, chunk.lineEnd)
   return extracted.join('\n')
