@@ -1,59 +1,95 @@
 # idea-storage
 
-Claude Code セッションログからレシピベースでドキュメントを自動生成する CLI ツール。
+A CLI tool that transforms Claude Code session histories into articles using AI recipes.
 
-## インストール
+## Install
 
 ```bash
 bun install
 bun run build
-# dist/idea-storage を PATH の通った場所にコピーまたはシンボリックリンク
+# Copy or symlink dist/idea-storage to a directory in your PATH
 ```
 
-## 使い方
+## Usage
+
+### `session` -- Session processing
 
 ```
-idea-storage session run        # セッション走査＋処理
-idea-storage session enqueue    # キューに追加
-idea-storage session process    # 1件処理
-idea-storage session status     # キュー状態表示
-idea-storage session retry KEY  # 失敗エントリ再キュー
-idea-storage session cleanup    # 孤立エントリ削除
-idea-storage extract FILE|UUID  # 会話テキスト抽出
-idea-storage launchd            # launchdジョブ登録
+idea-storage session run               # Scan sessions, enqueue, and process until done
+idea-storage session enqueue           # Find matching sessions and add to queue
+idea-storage session process           # Process one item from the queue
+idea-storage session list              # List all sessions
+idea-storage session status            # Show queue status
+idea-storage session retry <KEY>       # Re-queue a failed entry
+idea-storage session cleanup           # Remove orphaned failed entries
 ```
 
-## 設定
+### `article` -- Browse generated articles
 
-- `~/.config/idea-storage/config.ts` - 設定ファイル
-- `~/.config/idea-storage/recipes/recipe-*.md` - レシピ定義
+```
+idea-storage article list              # List articles with rich formatting
+idea-storage article ls                # List articles (plain output)
+idea-storage article view              # Browse articles interactively (fzf + mdp)
+```
 
-## データパス
+### `service` -- Manage launchd service (macOS)
 
-| パス | 用途 |
-|------|------|
-| `~/.config/idea-storage/config.ts` | 設定 |
-| `~/.config/idea-storage/recipes/` | レシピ |
-| `~/.local/share/idea-storage/` | 生成ファイル |
-| `~/.local/state/idea-storage/` | キュー管理 |
+```
+idea-storage service register          # Install and register the launchd service
+idea-storage service unregister        # Unregister the service and remove plist
+idea-storage service status            # Show service status
+idea-storage service log               # Show service log output
+```
 
-## レシピ形式
+### `extract` -- Extract conversation text
 
-`config-examples/` のサンプルを参照。Markdown + YAML frontmatter 形式。
+```
+idea-storage extract <FILE|UUID>       # Extract conversation text from a session
+idea-storage extract --max-chars N ... # Truncate from the beginning, keeping recent
+```
 
-## 開発
+## Configuration
+
+`~/.config/idea-storage/config.ts` -- TypeScript config (default export):
+
+```typescript
+export default {
+  claudeDirs: ["~/.claude"],      // Directories to scan for session JSONL files
+  minAgeMinutes: 120,             // Ignore sessions newer than this (default: 120)
+}
+```
+
+See `config-examples/config.ts` for a full example.
+
+### Recipes
+
+Place `recipe-*.md` files in `~/.config/idea-storage/`. Each recipe uses Markdown with YAML frontmatter for matching rules. See `config-examples/recipe-*.md` for examples.
+
+## Data Paths
+
+All paths follow the XDG Base Directory Specification.
+
+| Path | Purpose |
+|------|---------|
+| `~/.config/idea-storage/config.ts` | Configuration |
+| `~/.config/idea-storage/recipe-*.md` | Recipe definitions |
+| `~/.local/share/idea-storage/` | Generated articles |
+| `~/.local/state/idea-storage/` | Queue state (queue/done/failed) |
+
+## Development
 
 ```bash
-bun test          # テスト
-bun run typecheck # 型チェック
-bun run build     # ビルド
+bun test          # Run tests
+bun run typecheck # Type check
+bun run build     # Build to dist/idea-storage
 ```
 
-## 要件
+## Requirements
 
-- Bun
-- claude CLI
+- [Bun](https://bun.sh/)
+- [claude](https://docs.anthropic.com/en/docs/claude-cli) CLI
+- [claude-session-analysis](https://github.com/kawaz/claude-session-analysis) CLI
 
-## ライセンス
+## License
 
 MIT
