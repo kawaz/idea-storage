@@ -30,7 +30,24 @@ function defaultDirs(): QueueDirs {
   }
 }
 
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
+
+export function validateSessionId(sessionId: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`Invalid sessionId: "${sessionId}" (must be UUID format)`)
+  }
+}
+
+export function validateRecipeName(recipeName: string): void {
+  if (!RECIPE_NAME_RE.test(recipeName)) {
+    throw new Error(`Invalid recipeName: "${recipeName}" (must match ${RECIPE_NAME_RE})`)
+  }
+}
+
 function makeKey(sessionId: string, recipeName: string): string {
+  validateSessionId(sessionId)
+  validateRecipeName(recipeName)
   return `${sessionId}.${recipeName}`
 }
 
