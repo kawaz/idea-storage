@@ -1,4 +1,4 @@
-import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises'
+import { open, readFile, unlink, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 /**
@@ -15,7 +15,8 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Acquire a lock file. Writes the current PID to the lock file.
+ * Acquire a lock file atomically using O_CREAT | O_EXCL.
+ * Writes the current PID to the lock file.
  * If a lock file already exists, checks whether the PID is still alive (stale lock detection).
  *
  * @returns A release function if the lock was acquired, or null if the lock is held by a live process.
@@ -24,7 +25,19 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
   // Ensure parent directory exists
   await mkdir(dirname(lockPath), { recursive: true })
 
-  // Check existing lock
+  // Attempt atomic creation with O_CREAT | O_EXCL | O_WRONLY ('wx' flag)
+  try {
+    const fh = await open(lockPath, 'wx')
+    await fh.writeFile(String(process.pid))
+    await fh.close()
+    return createRelease(lockPath)
+  } catch (err: unknown) {
+    if (!isEexist(err)) {
+      throw err
+    }
+  }
+
+  // Lock file already exists (EEXIST) — check if stale
   try {
     const content = await readFile(lockPath, 'utf-8')
     const pid = parseInt(content.trim(), 10)
@@ -32,15 +45,32 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
       // Lock held by a live process
       return null
     }
-    // Stale lock (dead PID, invalid content, or empty) — proceed to overwrite
   } catch {
-    // No existing lock file — proceed to create
+    // File may have been removed between our open attempt and readFile — treat as stale
   }
 
-  // Write current PID
-  await writeFile(lockPath, String(process.pid))
+  // Stale lock — remove and retry atomically
+  try {
+    await unlink(lockPath)
+  } catch {
+    // Another process may have already removed it — that's fine
+  }
 
-  // Return release function
+  try {
+    const fh = await open(lockPath, 'wx')
+    await fh.writeFile(String(process.pid))
+    await fh.close()
+    return createRelease(lockPath)
+  } catch (err: unknown) {
+    if (isEexist(err)) {
+      // Another process won the race after stale removal
+      return null
+    }
+    throw err
+  }
+}
+
+function createRelease(lockPath: string): () => Promise<void> {
   return async () => {
     try {
       await unlink(lockPath)
@@ -48,4 +78,8 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
       // Best effort: file may already be removed
     }
   }
+}
+
+function isEexist(err: unknown): boolean {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'EEXIST'
 }
