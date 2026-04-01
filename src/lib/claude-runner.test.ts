@@ -12,8 +12,35 @@ describe('claude-runner', () => {
         '-p',
         'Hello world',
         '--no-session-persistence',
-        '--dangerously-skip-permissions',
+        '--tools',
+        '',
       ])
+    })
+
+    test('never includes --dangerously-skip-permissions', () => {
+      const options: ClaudeRunOptions = { prompt: 'test' }
+      const args = buildClaudeArgs(options)
+      expect(args).not.toContain('--dangerously-skip-permissions')
+    })
+
+    test('uses --tools "" by default to disable all tools', () => {
+      const options: ClaudeRunOptions = { prompt: 'test' }
+      const args = buildClaudeArgs(options)
+      const toolsIdx = args.indexOf('--tools')
+      expect(toolsIdx).toBeGreaterThan(-1)
+      expect(args[toolsIdx + 1]).toBe('')
+    })
+
+    test('uses custom allowedTools when specified', () => {
+      const options: ClaudeRunOptions = {
+        prompt: 'test',
+        allowedTools: ['Read', 'Bash(git:*)'],
+      }
+      const args = buildClaudeArgs(options)
+      expect(args).not.toContain('--tools')
+      const allowedIdx = args.indexOf('--allowedTools')
+      expect(allowedIdx).toBeGreaterThan(-1)
+      expect(args[allowedIdx + 1]).toBe('Read,Bash(git:*)')
     })
 
     test('includes --add-dir when addDir is specified', () => {
@@ -45,19 +72,17 @@ describe('claude-runner', () => {
       expect(args).toContain('--no-session-persistence')
     })
 
-    test('omits --dangerously-skip-permissions when dangerouslySkipPermissions is false', () => {
-      const options: ClaudeRunOptions = {
+    test('allowedTools overrides default --tools ""', () => {
+      const withAllowed = buildClaudeArgs({
         prompt: 'test',
-        dangerouslySkipPermissions: false,
-      }
-      const args = buildClaudeArgs(options)
-      expect(args).not.toContain('--dangerously-skip-permissions')
-    })
+        allowedTools: ['Edit'],
+      })
+      expect(withAllowed).not.toContain('--tools')
+      expect(withAllowed).toContain('--allowedTools')
 
-    test('includes --dangerously-skip-permissions by default', () => {
-      const options: ClaudeRunOptions = { prompt: 'test' }
-      const args = buildClaudeArgs(options)
-      expect(args).toContain('--dangerously-skip-permissions')
+      const withoutAllowed = buildClaudeArgs({ prompt: 'test' })
+      expect(withoutAllowed).toContain('--tools')
+      expect(withoutAllowed).not.toContain('--allowedTools')
     })
 
     test('handles all options combined', () => {
@@ -65,7 +90,7 @@ describe('claude-runner', () => {
         prompt: 'full test',
         addDir: '/my/dir',
         sessionPersistence: false,
-        dangerouslySkipPermissions: true,
+        allowedTools: ['Read', 'Bash(git:*)'],
       }
       const args = buildClaudeArgs(options)
       expect(args).toEqual([
@@ -75,7 +100,27 @@ describe('claude-runner', () => {
         '--add-dir',
         '/my/dir',
         '--no-session-persistence',
-        '--dangerously-skip-permissions',
+        '--allowedTools',
+        'Read,Bash(git:*)',
+      ])
+    })
+
+    test('handles all options combined with default tools (no allowedTools)', () => {
+      const options: ClaudeRunOptions = {
+        prompt: 'full test',
+        addDir: '/my/dir',
+        sessionPersistence: false,
+      }
+      const args = buildClaudeArgs(options)
+      expect(args).toEqual([
+        'claude',
+        '-p',
+        'full test',
+        '--add-dir',
+        '/my/dir',
+        '--no-session-persistence',
+        '--tools',
+        '',
       ])
     })
   })

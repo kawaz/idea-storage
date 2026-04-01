@@ -18,7 +18,8 @@ export interface ClaudeRunOptions {
   prompt: string
   addDir?: string
   sessionPersistence?: boolean // default false
-  dangerouslySkipPermissions?: boolean // default true
+  /** Whitelist of tools to allow. When omitted, all tools are disabled via --tools "". */
+  allowedTools?: string[]
   /** Per-task timeout in milliseconds. No timeout if omitted. */
   timeoutMs?: number
   /** AbortSignal to cancel the process externally. */
@@ -38,8 +39,10 @@ export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
     args.push('--no-session-persistence')
   }
 
-  if (options.dangerouslySkipPermissions !== false) {
-    args.push('--dangerously-skip-permissions')
+  if (options.allowedTools && options.allowedTools.length > 0) {
+    args.push('--allowedTools', options.allowedTools.join(','))
+  } else {
+    args.push('--tools', '')
   }
 
   return args
