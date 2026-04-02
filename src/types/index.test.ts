@@ -8,32 +8,15 @@ describe('types', () => {
       filePath: '/config/recipes/recipe-diary.md',
       match: {
         project: '*/my-project',
-        minLines: 10,
-        maxLines: 1000,
+        minTurns: 3,
         minAge: 60,
-        requireSessionEnd: true,
       },
-      priority: 10,
       onExisting: 'append',
       prompt: 'Write a diary entry.',
     }
     expect(recipe.name).toBe('diary')
     expect(recipe.match.project).toBe('*/my-project')
-    expect(recipe.priority).toBe(10)
     expect(recipe.onExisting).toBe('append')
-  })
-
-  test('Recipe with outputMode stdout', () => {
-    const recipe: Recipe = {
-      name: 'stdout-diary',
-      filePath: '/config/recipes/recipe-diary-stdout.md',
-      match: {},
-      priority: 0,
-      onExisting: 'separate',
-      outputMode: 'stdout',
-      prompt: 'Summarize.',
-    }
-    expect(recipe.outputMode).toBe('stdout')
   })
 
   test('Recipe with minimal match', () => {
@@ -41,7 +24,6 @@ describe('types', () => {
       name: 'minimal',
       filePath: '/path/to/recipe.md',
       match: {},
-      priority: 0,
       onExisting: 'skip',
       prompt: 'Minimal prompt.',
     }

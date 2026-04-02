@@ -4,7 +4,7 @@ import { loadConfig } from '../lib/config.ts'
 import { loadRecipes } from '../lib/recipe.ts'
 import { getRecipesDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
-import { findMatchingRecipe } from '../lib/recipe-matcher.ts'
+import { matchesRecipe } from '../lib/recipe-matcher.ts'
 import { enqueue, loadQueueState, isFailedByState } from '../lib/queue.ts'
 import { CliError } from '../lib/errors.ts'
 import { dirExists } from '../lib/dir-exists.ts'
@@ -49,8 +49,7 @@ export async function runEnqueue(): Promise<void> {
 
       // Check each recipe
       for (const recipe of recipes) {
-        const matched = findMatchingRecipe([recipe], meta)
-        if (!matched) continue
+        if (!matchesRecipe(recipe, meta)) continue
 
         const key = `${meta.id}.${recipe.name}`
 

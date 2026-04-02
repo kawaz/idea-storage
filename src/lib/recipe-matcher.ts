@@ -1,11 +1,11 @@
 import type { Recipe, SessionMeta } from '../types/index.ts'
 
 /**
- * Test if a session matches a single recipe's conditions.
+ * Test if a session matches a recipe's conditions.
  * All specified conditions must be satisfied (AND logic).
  * Unspecified conditions are skipped (always match).
  */
-function matchesRecipe(recipe: Recipe, session: SessionMeta): boolean {
+export function matchesRecipe(recipe: Recipe, session: SessionMeta): boolean {
   const { match } = recipe
 
   // project: glob match
@@ -18,34 +18,12 @@ function matchesRecipe(recipe: Recipe, session: SessionMeta): boolean {
     if (!glob.match(session.project)) return false
   }
 
-  // minLines / maxLines
-  if (match.minLines != null && session.lineCount < match.minLines) return false
-  if (match.maxLines != null && session.lineCount > match.maxLines) return false
+  // minTurns (default 1: filter out sessions with no user interaction)
+  const minTurns = match.minTurns ?? 1
+  if (session.userTurns < minTurns) return false
 
   // minAge
   if (match.minAge != null && session.ageSec < match.minAge) return false
 
-  // requireSessionEnd
-  if (match.requireSessionEnd != null && match.requireSessionEnd && !session.hasEnd) return false
-
   return true
-}
-
-/**
- * Find the best matching recipe for a session.
- * Returns the recipe with the highest priority among all matches.
- * If priorities are equal, returns the first one in the array.
- * Returns null if no recipe matches.
- */
-export function findMatchingRecipe(recipes: Recipe[], session: SessionMeta): Recipe | null {
-  let best: Recipe | null = null
-
-  for (const recipe of recipes) {
-    if (!matchesRecipe(recipe, session)) continue
-    if (best === null || recipe.priority > best.priority) {
-      best = recipe
-    }
-  }
-
-  return best
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { findMatchingRecipe } from './recipe-matcher.ts'
+import { matchesRecipe } from './recipe-matcher.ts'
 import type { Recipe, SessionMeta } from '../types/index.ts'
 
 function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
@@ -7,7 +7,6 @@ function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
     name: 'test-recipe',
     filePath: '/tmp/recipe-test.md',
     match: {},
-    priority: 0,
     onExisting: 'append',
     prompt: 'Test prompt',
     ...overrides,
@@ -28,34 +27,31 @@ function makeSession(overrides: Partial<SessionMeta> = {}): SessionMeta {
   }
 }
 
-describe('findMatchingRecipe', () => {
-  test('returns recipe when all conditions match', () => {
+describe('matchesRecipe', () => {
+  test('returns true when all conditions match', () => {
     const recipe = makeRecipe({
       match: {
         project: '*/myapp',
-        minLines: 100,
-        maxLines: 500,
+        minTurns: 3,
         minAge: 1800,
-        requireSessionEnd: true,
       },
     })
     const session = makeSession({
       project: '/Users/kawaz/projects/myapp',
-      lineCount: 200,
+      userTurns: 5,
       ageSec: 3600,
-      hasEnd: true,
     })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 
-  test('returns null when project does not match', () => {
+  test('returns false when project does not match', () => {
     const recipe = makeRecipe({
       match: { project: '*/emeradaco/*' },
     })
     const session = makeSession({
       project: '/Users/kawaz/projects/myapp',
     })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
+    expect(matchesRecipe(recipe, session)).toBe(false)
   })
 
   test('matches project with glob pattern', () => {
@@ -65,114 +61,58 @@ describe('findMatchingRecipe', () => {
     const session = makeSession({
       project: '/Users/kawaz/repos/emeradaco/antenna',
     })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 
-  test('returns null when lineCount is below minLines', () => {
+  test('returns false when userTurns is below minTurns', () => {
     const recipe = makeRecipe({
-      match: { minLines: 100 },
+      match: { minTurns: 3 },
     })
-    const session = makeSession({ lineCount: 50 })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
+    const session = makeSession({ userTurns: 2 })
+    expect(matchesRecipe(recipe, session)).toBe(false)
   })
 
-  test('returns null when lineCount is above maxLines', () => {
-    const recipe = makeRecipe({
-      match: { maxLines: 100 },
-    })
-    const session = makeSession({ lineCount: 200 })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
+  test('default minTurns=1 filters out sessions with 0 user turns', () => {
+    const recipe = makeRecipe({ match: {} })
+    const session = makeSession({ userTurns: 0 })
+    expect(matchesRecipe(recipe, session)).toBe(false)
   })
 
-  test('returns null when ageSec is below minAge', () => {
+  test('default minTurns=1 allows sessions with 1+ user turns', () => {
+    const recipe = makeRecipe({ match: {} })
+    const session = makeSession({ userTurns: 1 })
+    expect(matchesRecipe(recipe, session)).toBe(true)
+  })
+
+  test('returns false when ageSec is below minAge', () => {
     const recipe = makeRecipe({
       match: { minAge: 7200 },
     })
     const session = makeSession({ ageSec: 3600 })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
+    expect(matchesRecipe(recipe, session)).toBe(false)
   })
 
-  test('returns null when requireSessionEnd is true but session has no end', () => {
-    const recipe = makeRecipe({
-      match: { requireSessionEnd: true },
-    })
-    const session = makeSession({ hasEnd: false })
-    expect(findMatchingRecipe([recipe], session)).toBeNull()
-  })
-
-  test('matches when requireSessionEnd is true and session has end', () => {
-    const recipe = makeRecipe({
-      match: { requireSessionEnd: true },
-    })
-    const session = makeSession({ hasEnd: true })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
-  })
-
-  test('selects recipe with highest priority when multiple match', () => {
-    const low = makeRecipe({ name: 'low', priority: 0, match: {} })
-    const high = makeRecipe({ name: 'high', priority: 10, match: {} })
-    const mid = makeRecipe({ name: 'mid', priority: 5, match: {} })
-    const session = makeSession()
-    const result = findMatchingRecipe([low, high, mid], session)
-    expect(result).toBe(high)
-  })
-
-  test('returns first recipe when priorities are equal', () => {
-    const first = makeRecipe({ name: 'first', priority: 0, match: {} })
-    const second = makeRecipe({ name: 'second', priority: 0, match: {} })
-    const session = makeSession()
-    const result = findMatchingRecipe([first, second], session)
-    expect(result).toBe(first)
-  })
-
-  test('recipe with no conditions matches all sessions', () => {
+  test('recipe with no conditions matches sessions with user turns', () => {
     const recipe = makeRecipe({ match: {} })
     const session = makeSession()
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 
-  test('returns null when no recipes provided', () => {
-    const session = makeSession()
-    expect(findMatchingRecipe([], session)).toBeNull()
-  })
-
-  test('skips non-matching recipes and returns the matching one', () => {
-    const noMatch = makeRecipe({
-      name: 'no-match',
-      priority: 10,
-      match: { project: '*/other-project/*' },
-    })
-    const matches = makeRecipe({
-      name: 'matches',
-      priority: 0,
-      match: {},
-    })
-    const session = makeSession()
-    const result = findMatchingRecipe([noMatch, matches], session)
-    expect(result).toBe(matches)
-  })
-
-  test('boundary: lineCount exactly equals minLines matches', () => {
-    const recipe = makeRecipe({ match: { minLines: 100 } })
-    const session = makeSession({ lineCount: 100 })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
-  })
-
-  test('boundary: lineCount exactly equals maxLines matches', () => {
-    const recipe = makeRecipe({ match: { maxLines: 100 } })
-    const session = makeSession({ lineCount: 100 })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+  test('boundary: userTurns exactly equals minTurns matches', () => {
+    const recipe = makeRecipe({ match: { minTurns: 5 } })
+    const session = makeSession({ userTurns: 5 })
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 
   test('boundary: ageSec exactly equals minAge matches', () => {
     const recipe = makeRecipe({ match: { minAge: 3600 } })
     const session = makeSession({ ageSec: 3600 })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 
   test('古いセッションも maxAge 制限なくマッチする', () => {
     const recipe = makeRecipe({ match: { minAge: 60 } })
     const session = makeSession({ ageSec: 999999 })
-    expect(findMatchingRecipe([recipe], session)).toBe(recipe)
+    expect(matchesRecipe(recipe, session)).toBe(true)
   })
 })

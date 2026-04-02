@@ -5,17 +5,12 @@ export interface Recipe {
   match: {
     /** glob パターン */
     project?: string
-    minLines?: number
-    maxLines?: number
+    minTurns?: number
     /** seconds */
     minAge?: number
-    requireSessionEnd?: boolean
   }
-  /** default 0 */
-  priority: number
   /** default 'append' */
   onExisting: 'append' | 'separate' | 'skip'
-  outputMode?: 'stdout'
   /** frontmatter 以外の本文 */
   prompt: string
 }

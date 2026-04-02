@@ -17,27 +17,19 @@ export async function parseRecipe(filePath: string): Promise<Recipe> {
   const match: Recipe['match'] = {}
 
   if (rawMatch.project != null) match.project = String(rawMatch.project)
-  if (rawMatch.min_lines != null) match.minLines = Number(rawMatch.min_lines)
-  if (rawMatch.max_lines != null) match.maxLines = Number(rawMatch.max_lines)
+  if (rawMatch.min_turns != null) match.minTurns = Number(rawMatch.min_turns)
   if (rawMatch.min_age != null) match.minAge = Number(rawMatch.min_age)
-  if (rawMatch.require_session_end != null) match.requireSessionEnd = Boolean(rawMatch.require_session_end)
-
-  const priority = typeof frontmatter.priority === 'number' ? frontmatter.priority : 0
   const onExistingRaw = frontmatter.on_existing
   let onExisting: Recipe['onExisting'] = 'append'
   if (onExistingRaw === 'separate' || onExistingRaw === 'skip') {
     onExisting = onExistingRaw
   }
 
-  const outputMode = frontmatter.output_mode === 'stdout' ? 'stdout' as const : undefined
-
   return {
     name,
     filePath,
     match,
-    priority,
     onExisting,
-    outputMode,
     prompt: body,
   }
 }

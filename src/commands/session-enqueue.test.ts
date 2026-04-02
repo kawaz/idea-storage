@@ -64,7 +64,6 @@ describe('session-enqueue', () => {
       name: 'diary',
       filePath: '/tmp/recipe-diary.md',
       match: {},
-      priority: 0,
       onExisting: 'append',
       prompt: 'Write a diary',
       ...overrides,
@@ -402,15 +401,15 @@ describe('session-enqueue', () => {
     expect(enqueueCalls).toHaveLength(0)
   })
 
-  test('レシピのminLines条件でフィルタリングされる', async () => {
+  test('レシピのminTurns条件でフィルタリングされる', async () => {
     mockRecipes = [makeRecipe({
       name: 'diary',
-      match: { minLines: 20 },
+      match: { minTurns: 10 },
     })]
 
     const projectsDir = join(claudeDir, 'projects')
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    // Session has only 5 lines (< minLines 20)
+    // Session has only a few user turns (< minTurns 10)
     await createSessionFile(projectsDir, sessionId, { lines: 5 })
 
     const { runEnqueue } = await import('./session-enqueue.ts')
@@ -419,38 +418,4 @@ describe('session-enqueue', () => {
     expect(enqueueCalls).toHaveLength(0)
   })
 
-  test('レシピのrequireSessionEnd条件でフィルタリングされる', async () => {
-    mockRecipes = [makeRecipe({
-      name: 'diary',
-      match: { requireSessionEnd: true },
-    })]
-
-    const projectsDir = join(claudeDir, 'projects')
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    // Session without summary (hasEnd = false)
-    await createSessionFile(projectsDir, sessionId, { hasSummary: false })
-
-    const { runEnqueue } = await import('./session-enqueue.ts')
-    await runEnqueue()
-
-    expect(enqueueCalls).toHaveLength(0)
-  })
-
-  test('requireSessionEnd条件を満たすセッションはエンキューされる', async () => {
-    mockRecipes = [makeRecipe({
-      name: 'diary',
-      match: { requireSessionEnd: true },
-    })]
-
-    const projectsDir = join(claudeDir, 'projects')
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    // Session with summary (hasEnd = true)
-    await createSessionFile(projectsDir, sessionId, { hasSummary: true })
-
-    const { runEnqueue } = await import('./session-enqueue.ts')
-    await runEnqueue()
-
-    expect(enqueueCalls).toHaveLength(1)
-    expect(enqueueCalls[0].sessionId).toBe(sessionId)
-  })
 })
