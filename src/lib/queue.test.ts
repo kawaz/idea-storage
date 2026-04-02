@@ -71,7 +71,7 @@ describe('queue', () => {
       expect(entry).toBeNull()
     })
 
-    test('returns the oldest entry first (FIFO) and removes the file', async () => {
+    test('returns the newest entry first and removes the file', async () => {
       // enqueue two items with different mtimes
       await enqueue(SID1, 'recipe-a', dirs)
       await enqueue(SID2, 'recipe-b', dirs)
@@ -83,20 +83,20 @@ describe('queue', () => {
 
       const entry = await dequeue(dirs)
       expect(entry).not.toBeNull()
-      expect(entry!.sessionId).toBe(SID1)
-      expect(entry!.recipeName).toBe('recipe-a')
-      expect(entry!.key).toBe(`${SID1}.recipe-a`)
+      expect(entry!.sessionId).toBe(SID2)
+      expect(entry!.recipeName).toBe('recipe-b')
+      expect(entry!.key).toBe(`${SID2}.recipe-b`)
 
       // File should be removed
-      const file = Bun.file(join(dirs.queueDir, `${SID1}.recipe-a`))
+      const file = Bun.file(join(dirs.queueDir, `${SID2}.recipe-b`))
       expect(await file.exists()).toBe(false)
 
-      // Newer entry should still exist
-      const file2 = Bun.file(join(dirs.queueDir, `${SID2}.recipe-b`))
+      // Older entry should still exist
+      const file2 = Bun.file(join(dirs.queueDir, `${SID1}.recipe-a`))
       expect(await file2.exists()).toBe(true)
     })
 
-    test('dequeues in FIFO order across multiple calls', async () => {
+    test('dequeues in newest-first order across multiple calls', async () => {
       const { utimesSync } = await import('node:fs')
 
       await enqueue(SID1, 'recipe-a', dirs)
@@ -109,13 +109,13 @@ describe('queue', () => {
       utimesSync(join(dirs.queueDir, `${SID3}.recipe-c`), new Date(3000), new Date(3000))
 
       const first = await dequeue(dirs)
-      expect(first!.sessionId).toBe(SID1)
+      expect(first!.sessionId).toBe(SID3)
 
       const second = await dequeue(dirs)
       expect(second!.sessionId).toBe(SID2)
 
       const third = await dequeue(dirs)
-      expect(third!.sessionId).toBe(SID3)
+      expect(third!.sessionId).toBe(SID1)
 
       const fourth = await dequeue(dirs)
       expect(fourth).toBeNull()
