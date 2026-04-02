@@ -1,8 +1,8 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, rm, readFile, writeFile, open } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, open, stat, utimes } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { acquireLock } from './lockfile.ts'
+import { acquireLock, HEARTBEAT_INTERVAL_MS, STALE_THRESHOLD_MS } from './lockfile.ts'
 
 describe('lockfile', () => {
   let tempDir: string
@@ -151,5 +151,82 @@ describe('lockfile', () => {
     for (const release of winners) {
       await release!()
     }
+  })
+
+  test('HEARTBEAT_INTERVAL_MS and STALE_THRESHOLD_MS are exported with expected values', () => {
+    expect(HEARTBEAT_INTERVAL_MS).toBe(30_000)
+    expect(STALE_THRESHOLD_MS).toBe(5 * 60_000)
+  })
+
+  test('acquireLock starts heartbeat that can be stopped by release', async () => {
+    const release = await acquireLock(lockPath)
+    expect(release).not.toBeNull()
+
+    // Verify lock file exists and has current PID
+    const content = await readFile(lockPath, 'utf-8')
+    expect(content.trim()).toBe(String(process.pid))
+
+    // Verify mtime is recent (within last second)
+    const s = await stat(lockPath)
+    expect(Date.now() - s.mtimeMs).toBeLessThan(1_000)
+
+    await release!()
+
+    // After release, lock file should be removed
+    expect(await Bun.file(lockPath).exists()).toBe(false)
+  })
+
+  test('acquireLock detects hung process via stale mtime', async () => {
+    // Create lock file with current (live) PID but very old mtime
+    await writeFile(lockPath, String(process.pid))
+    const oldTime = new Date(Date.now() - STALE_THRESHOLD_MS - 60_000)
+    await utimes(lockPath, oldTime, oldTime)
+
+    // PID is alive but mtime is stale → should be treated as hung
+    const release = await acquireLock(lockPath)
+    expect(release).not.toBeNull()
+
+    const content = await readFile(lockPath, 'utf-8')
+    expect(content.trim()).toBe(String(process.pid))
+
+    await release!()
+  })
+
+  test('acquireLock returns null when lock held by live process with fresh mtime', async () => {
+    // Create lock file with current (live) PID and fresh mtime (default)
+    await writeFile(lockPath, String(process.pid))
+
+    const result = await acquireLock(lockPath)
+    expect(result).toBeNull()
+
+    // Clean up
+    await rm(lockPath, { force: true })
+  })
+
+  test('acquireLock succeeds when lock has stale mtime even if PID is alive (hung detection)', async () => {
+    // This tests the specific scenario: process alive but heartbeat stopped
+    await writeFile(lockPath, String(process.pid))
+    // Set mtime to exactly at the threshold boundary + 1ms over
+    const staleTime = new Date(Date.now() - STALE_THRESHOLD_MS - 1)
+    await utimes(lockPath, staleTime, staleTime)
+
+    const release = await acquireLock(lockPath)
+    expect(release).not.toBeNull()
+
+    await release!()
+  })
+
+  test('acquireLock returns null when lock mtime is just under stale threshold', async () => {
+    // Create lock file with live PID and mtime just inside the threshold
+    await writeFile(lockPath, String(process.pid))
+    // Set mtime to STALE_THRESHOLD_MS - 10 seconds ago (still fresh)
+    const freshTime = new Date(Date.now() - STALE_THRESHOLD_MS + 10_000)
+    await utimes(lockPath, freshTime, freshTime)
+
+    const result = await acquireLock(lockPath)
+    expect(result).toBeNull()
+
+    // Clean up
+    await rm(lockPath, { force: true })
   })
 })

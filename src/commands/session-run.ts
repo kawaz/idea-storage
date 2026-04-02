@@ -5,50 +5,16 @@ import { runProcess } from './session-process.ts'
 import { acquireLock } from '../lib/lockfile.ts'
 import { getStateDir } from '../lib/paths.ts'
 import { CliError } from '../lib/errors.ts'
-import { log, logError } from '../lib/logging.ts'
+import { log } from '../lib/logging.ts'
 
-/** Default per-task timeout: 25 minutes (generous margin; no need to rush) */
+/** Default per-task timeout: 25 minutes */
 export const DEFAULT_TASK_TIMEOUT_MS = 25 * 60 * 1000
 
-/** Default overall timeout: 45 minutes */
-export const DEFAULT_OVERALL_TIMEOUT_MS = 45 * 60 * 1000
+/** Bail out after this many consecutive failures */
+export const MAX_CONSECUTIVE_FAILURES = 5
 
-export class OverallTimeoutError extends Error {
-  readonly timeoutMs: number
-  constructor(timeoutMs: number) {
-    super(`session run timed out after ${timeoutMs}ms`)
-    this.name = 'OverallTimeoutError'
-    this.timeoutMs = timeoutMs
-  }
-}
-
-/**
- * Run an async function with an overall timeout.
- * The callback receives an AbortSignal that is aborted when the timeout fires.
- * Throws OverallTimeoutError if the timeout is reached.
- */
-export async function runWithOverallTimeout(
-  timeoutMs: number,
-  fn: (signal: AbortSignal) => Promise<void>,
-): Promise<void> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
-  let abortHandler: (() => void) | null = null
-  try {
-    const work = fn(controller.signal)
-    const timeout = new Promise<never>((_, reject) => {
-      abortHandler = () => reject(new OverallTimeoutError(timeoutMs))
-      controller.signal.addEventListener('abort', abortHandler)
-    })
-    await Promise.race([work, timeout])
-  } finally {
-    clearTimeout(timer)
-    if (abortHandler) {
-      controller.signal.removeEventListener('abort', abortHandler)
-    }
-  }
-}
+/** Overall timeout: 50 minutes (must be shorter than launchd StartInterval=3600s=60min) */
+export const OVERALL_TIMEOUT_MS = 50 * 60 * 1000
 
 /** Required external commands and their install instructions. */
 const REQUIRED_DEPS: ReadonlyArray<{ cmd: string; installHint: string }> = [
@@ -91,22 +57,36 @@ const sessionRun = define({
       return
     }
 
-    const overallTimeoutMs = DEFAULT_OVERALL_TIMEOUT_MS
     const taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS
 
     try {
-      await runWithOverallTimeout(overallTimeoutMs, async (signal) => {
-        await runEnqueue()
+      await runEnqueue()
 
-        while (!signal.aborted && await runProcess({ taskTimeoutMs, signal })) {
-          // continue processing
+      let consecutiveFailures = 0
+      const deadline = Date.now() + OVERALL_TIMEOUT_MS
+
+      while (true) {
+        if (Date.now() > deadline) {
+          log({ msg: 'overall_timeout', timeoutMs: OVERALL_TIMEOUT_MS })
+          break
         }
-      })
+
+        const result = await runProcess({ taskTimeoutMs })
+
+        if (result === 'empty') break
+
+        if (result === 'failed') {
+          consecutiveFailures++
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            log({ msg: 'bail_out', consecutiveFailures })
+            break
+          }
+        } else {
+          consecutiveFailures = 0
+        }
+      }
     } catch (err) {
-      if (err instanceof OverallTimeoutError) {
-        logError({ msg: 'overall_timeout', timeoutMs: overallTimeoutMs })
-        process.exitCode = 1
-      } else if (err instanceof CliError) {
+      if (err instanceof CliError) {
         console.error(`Error: ${err.message}`)
         process.exitCode = err.exitCode
       } else {

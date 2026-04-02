@@ -273,17 +273,19 @@ ${convText}`
   return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal })
 }
 
+export type ProcessResult = 'processed' | 'failed' | 'empty'
+
 export interface RunProcessOptions {
   taskTimeoutMs?: number
   /** AbortSignal from the overall timeout. Propagated to runClaude calls. */
   signal?: AbortSignal
 }
 
-export async function runProcess(options: RunProcessOptions = {}): Promise<boolean> {
+export async function runProcess(options: RunProcessOptions = {}): Promise<ProcessResult> {
   const entry = await dequeue()
   if (!entry) {
     log({ msg: 'no_items_in_queue' })
-    return false
+    return 'empty'
   }
 
   const { sessionId, recipeName, key } = entry
@@ -295,7 +297,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   if (!sessionFile) {
     log({ key, msg: 'session_file_not_found' })
     await markFailed(key, 'session file not found')
-    return true
+    return 'failed'
   }
 
   // Find recipe
@@ -310,7 +312,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   if (!recipe) {
     log({ key, msg: 'recipe_not_found', recipe: recipeName })
     await markFailed(key, `recipe not found: ${recipeName}`)
-    return true
+    return 'failed'
   }
 
   // Get session metadata
@@ -320,7 +322,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   if (meta.lineCount === 0) {
     log({ key, msg: 'empty_session' })
     await markFailed(key, 'empty session (0 lines)')
-    return true
+    return 'failed'
   }
 
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
@@ -359,7 +361,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
     switch (recipe.onExisting) {
       case 'skip':
         log({ key, msg: 'skip', reason: 'already_processed' })
-        return true
+        return 'processed'
       case 'append':
         prompt += '\n\n---\nNote: Session continued. Please append to existing entry.'
         break
@@ -385,14 +387,14 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
     if (csaResult.exitCode !== 0) {
       logError({ key, msg: 'csa_failed', exitCode: csaResult.exitCode, stderr: csaResult.stderr })
       await markFailed(key, `csa failed with exit code ${csaResult.exitCode}`)
-      return true
+      return 'failed'
     }
     convText = csaResult.stdout
   } catch (err) {
     if (err instanceof SpawnTimeoutError) {
       logError({ key, msg: 'csa_timeline_timeout', timeoutMs: CSA_TIMEOUT_MS })
       await markFailed(key, `csa timeline timed out after ${CSA_TIMEOUT_MS}ms`)
-      return true
+      return 'failed'
     }
     throw err
   }
@@ -400,7 +402,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
   if (!convText.trim()) {
     log({ key, msg: 'skip', reason: 'no_conversation' })
     await markDone(key, meta.lineCount)
-    return true
+    return 'processed'
   }
 
   // フォークセッションの場合、タイムラインを切り詰め＋プロンプト調整
@@ -411,7 +413,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<boole
     if (!meta.forkInfo.firstNewUuid) {
       log({ key, msg: 'skip', reason: 'fork_no_new_conversation' })
       await markDone(key, meta.lineCount)
-      return true
+      return 'processed'
     }
 
     const originalLen = convText.length
@@ -487,9 +489,10 @@ ${timelineText}`
       logError({ key, msg: 'failed', error: reason })
     }
     await markFailed(key, reason)
+    return 'failed'
   }
 
-  return true
+  return 'processed'
 }
 
 const sessionProcess = define({

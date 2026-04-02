@@ -37,7 +37,7 @@ mock.module('../lib/config.ts', () => ({
 
 // Control recipe loading behavior
 let mockRecipesThrow = false
-let mockRecipes: Array<{ name: string; filePath: string; match: Record<string, unknown>; priority: number; onExisting: string; prompt: string }> = []
+let mockRecipes: Array<{ name: string; filePath: string; match: Record<string, unknown>; onExisting: string; prompt: string }> = []
 
 mock.module('../lib/recipe.ts', () => ({
   loadRecipes: mock(async () => {
@@ -55,7 +55,6 @@ describe('session-process', () => {
       name: 'diary',
       filePath: '/tmp/recipe-diary.md',
       match: {},
-      priority: 0,
       onExisting: 'append',
       prompt: 'Write a diary',
     }]
@@ -80,8 +79,9 @@ describe('session-process', () => {
 
   test('calls markFailed when session file is not found', async () => {
     const { runProcess } = await import('./session-process.ts')
-    await runProcess()
+    const result = await runProcess()
 
+    expect(result).toBe('failed')
     expect(markFailedCalls.map(c => c.key)).toContain('missing-session-id.diary')
   })
 
@@ -132,14 +132,24 @@ describe('session-process', () => {
     await Bun.write(join(projectDir, `${sessionId}.jsonl`), '')
 
     const { runProcess } = await import('./session-process.ts')
-    await runProcess()
+    const result = await runProcess()
 
+    expect(result).toBe('failed')
     // Should markFailed with reason containing "empty"
     const failedEntry = markFailedCalls.find(c => c.key === key)
     expect(failedEntry).toBeDefined()
     expect(failedEntry!.reason).toContain('empty')
     // Should NOT have called markDone
     expect(markDoneCalls).not.toContain(key)
+  })
+
+  test('returns empty when queue is empty', async () => {
+    dequeueResult = null
+
+    const { runProcess } = await import('./session-process.ts')
+    const result = await runProcess()
+
+    expect(result).toBe('empty')
   })
 })
 
@@ -652,6 +662,17 @@ import { CSA_TIMEOUT_MS } from './session-process.ts'
 describe('CSA_TIMEOUT_MS', () => {
   test('10分（600000ms）に設定されている', () => {
     expect(CSA_TIMEOUT_MS).toBe(10 * 60 * 1000)
+  })
+})
+
+// --- ProcessResult 型のテスト ---
+import type { ProcessResult } from './session-process.ts'
+
+describe('ProcessResult', () => {
+  test('ProcessResult type includes expected values', () => {
+    // 型レベルの確認（コンパイルが通ればOK）
+    const values: ProcessResult[] = ['processed', 'failed', 'empty']
+    expect(values).toHaveLength(3)
   })
 })
 

@@ -1,5 +1,8 @@
-import { open, readFile, unlink, mkdir } from 'node:fs/promises'
+import { open, readFile, unlink, mkdir, utimes, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
+
+export const HEARTBEAT_INTERVAL_MS = 30_000 // 30 seconds
+export const STALE_THRESHOLD_MS = 5 * 60_000 // 5 minutes
 
 /**
  * Check if a process with the given PID is alive.
@@ -30,7 +33,7 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
     const fh = await open(lockPath, 'wx')
     await fh.writeFile(String(process.pid))
     await fh.close()
-    return createRelease(lockPath)
+    return createRelease(lockPath, startHeartbeat(lockPath))
   } catch (err: unknown) {
     if (!isEexist(err)) {
       throw err
@@ -42,8 +45,16 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
     const content = await readFile(lockPath, 'utf-8')
     const pid = parseInt(content.trim(), 10)
     if (!isNaN(pid) && isProcessAlive(pid)) {
-      // Lock held by a live process
-      return null
+      // PID alive — check heartbeat freshness
+      try {
+        const s = await stat(lockPath)
+        if (Date.now() - s.mtimeMs < STALE_THRESHOLD_MS) {
+          return null // active lock with fresh heartbeat
+        }
+        // Heartbeat stale — hung process
+      } catch {
+        // stat failed — treat as stale
+      }
     }
   } catch {
     // File may have been removed between our open attempt and readFile — treat as stale
@@ -60,7 +71,7 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
     const fh = await open(lockPath, 'wx')
     await fh.writeFile(String(process.pid))
     await fh.close()
-    return createRelease(lockPath)
+    return createRelease(lockPath, startHeartbeat(lockPath))
   } catch (err: unknown) {
     if (isEexist(err)) {
       // Another process won the race after stale removal
@@ -70,8 +81,20 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
   }
 }
 
-function createRelease(lockPath: string): () => Promise<void> {
+function startHeartbeat(lockPath: string): ReturnType<typeof setInterval> {
+  return setInterval(async () => {
+    try {
+      const now = new Date()
+      await utimes(lockPath, now, now)
+    } catch {
+      // Best effort: file may have been removed
+    }
+  }, HEARTBEAT_INTERVAL_MS)
+}
+
+function createRelease(lockPath: string, heartbeatId: ReturnType<typeof setInterval>): () => Promise<void> {
   return async () => {
+    clearInterval(heartbeatId)
     try {
       await unlink(lockPath)
     } catch {
