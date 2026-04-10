@@ -73,7 +73,7 @@ describe('session run: lock release on errors', () => {
 
     expect(releaseLog).toEqual(['released'])
     expect(process.exitCode).toBe(1)
-    process.exitCode = savedExitCode
+    process.exitCode = savedExitCode ?? 0
   })
 
   test('unknown error: re-thrown but finally still executes', async () => {

@@ -187,7 +187,7 @@ describe('session-enqueue', () => {
 
     // Only the valid UUID session should be enqueued
     expect(enqueueCalls).toHaveLength(1)
-    expect(enqueueCalls[0].sessionId).toBe(validUuid)
+    expect(enqueueCalls[0]!.sessionId).toBe(validUuid)
   })
 
   test('既に queued のセッションはスキップされる', async () => {
@@ -231,7 +231,7 @@ describe('session-enqueue', () => {
     await runEnqueue()
 
     expect(enqueueCalls).toHaveLength(1)
-    expect(enqueueCalls[0].sessionId).toBe(sessionId)
+    expect(enqueueCalls[0]!.sessionId).toBe(sessionId)
   })
 
   test('既に failed のセッションはスキップされる', async () => {

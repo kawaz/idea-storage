@@ -259,13 +259,16 @@ import { ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
 // processChunked は内部で runClaude を呼ぶため、_runClaudeOverride 経由でテストする
 
 describe('processChunked', () => {
-  const dummyMeta = {
+  const dummyMeta: import('../types/index.ts').SessionMeta = {
+    id: 'test-session-id',
+    filePath: '/tmp/test-session.jsonl',
+    ageSec: 3600,
+    hasEnd: true,
     startTime: new Date('2025-01-01T00:00:00Z'),
     endTime: new Date('2025-01-01T01:00:00Z'),
     project: 'test-project',
     lineCount: 100,
     userTurns: 5,
-    forkInfo: null,
   }
 
   function makeChunks(count: number, bytesEach = 1000): import('../lib/chunker.ts').TimelineChunk[] {
@@ -512,13 +515,16 @@ describe('processChunked', () => {
 // --- processChunked の外部 signal 連携テスト ---
 
 describe('processChunked external signal propagation', () => {
-  const dummyMeta = {
+  const dummyMeta: import('../types/index.ts').SessionMeta = {
+    id: 'test-session-id',
+    filePath: '/tmp/test-session.jsonl',
+    ageSec: 3600,
+    hasEnd: true,
     startTime: new Date('2025-01-01T00:00:00Z'),
     endTime: new Date('2025-01-01T01:00:00Z'),
     project: 'test-project',
     lineCount: 100,
     userTurns: 5,
-    forkInfo: null,
   }
 
   function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {
@@ -679,13 +685,16 @@ describe('ProcessResult', () => {
 // --- processChunked: チャンク1つの場合 synthesis スキップ ---
 
 describe('processChunked single chunk', () => {
-  const dummyMeta = {
+  const dummyMeta: import('../types/index.ts').SessionMeta = {
+    id: 'test-session-id',
+    filePath: '/tmp/test-session.jsonl',
+    ageSec: 3600,
+    hasEnd: true,
     startTime: new Date('2025-01-01T00:00:00Z'),
     endTime: new Date('2025-01-01T01:00:00Z'),
     project: 'test-project',
     lineCount: 100,
     userTurns: 5,
-    forkInfo: null,
   }
 
   function makeChunks(count: number): import('../lib/chunker.ts').TimelineChunk[] {

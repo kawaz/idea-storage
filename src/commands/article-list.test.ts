@@ -268,7 +268,9 @@ describe('article-list', () => {
         sessionId: '',
         sessionStart: overrides.sessionStart ?? null,
         sessionEnd: overrides.sessionEnd ?? null,
+        durationMs: null,
         userTurns: overrides.userTurns ?? null,
+        sessionBytes: null,
         project: '',
       }
     }
