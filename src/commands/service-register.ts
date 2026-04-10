@@ -21,6 +21,7 @@ const register = define({
       program,
       programArguments: [program, 'session', 'run'],
       startInterval: 3600,
+      exitTimeOut: 3600,
       environmentVariables: {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       },

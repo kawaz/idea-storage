@@ -7,6 +7,7 @@ export interface PlistOptions {
   startInterval?: number // seconds
   startCalendarInterval?: { Hour?: number; Minute?: number }
   environmentVariables?: Record<string, string>
+  exitTimeOut?: number // seconds; launchd will SIGKILL the process after this
   logDir?: string // default: stateDir
 }
 
@@ -67,7 +68,7 @@ ${argsXml}
     </array>
     ${environmentVariablesXml}
     ${intervalXml}
-    <key>StandardOutPath</key>
+${options.exitTimeOut !== undefined ? `    <key>ExitTimeOut</key>\n    <integer>${options.exitTimeOut}</integer>\n` : ''}    <key>StandardOutPath</key>
     <string>${escapeXml(logDir)}/${escapeXml(options.label)}-stdout.log</string>
     <key>StandardErrorPath</key>
     <string>${escapeXml(logDir)}/${escapeXml(options.label)}-stderr.log</string>

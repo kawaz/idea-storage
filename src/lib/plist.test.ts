@@ -207,5 +207,31 @@ describe('plist', () => {
 
       expect(xml).not.toContain('<key>EnvironmentVariables</key>')
     })
+
+    test('includes ExitTimeOut when specified', () => {
+      const options: PlistOptions = {
+        label: 'com.test',
+        program: '/bin/test',
+        startInterval: 60,
+        exitTimeOut: 3600,
+        logDir: '/tmp/logs',
+      }
+      const xml = generatePlist(options)
+
+      expect(xml).toContain('<key>ExitTimeOut</key>')
+      expect(xml).toContain('<integer>3600</integer>')
+    })
+
+    test('does not include ExitTimeOut when not specified', () => {
+      const options: PlistOptions = {
+        label: 'com.test',
+        program: '/bin/test',
+        startInterval: 60,
+        logDir: '/tmp/logs',
+      }
+      const xml = generatePlist(options)
+
+      expect(xml).not.toContain('<key>ExitTimeOut</key>')
+    })
   })
 })
