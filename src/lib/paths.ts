@@ -31,17 +31,26 @@ export function getRecipesDir(): string {
   return getConfigDir()
 }
 
-/** stateDir/queue/ */
+/**
+ * stateDir/queue/
+ * @deprecated SQLite 移行により queue.ts では不使用。migrate-queue.ts のマイグレーション完了後に削除予定。
+ */
 export function getQueueDir(): string {
   return `${getStateDir()}queue/`
 }
 
-/** stateDir/done/ */
+/**
+ * stateDir/done/
+ * @deprecated SQLite 移行により queue.ts では不使用。migrate-queue.ts のマイグレーション完了後に削除予定。
+ */
 export function getDoneDir(): string {
   return `${getStateDir()}done/`
 }
 
-/** stateDir/failed/ */
+/**
+ * stateDir/failed/
+ * @deprecated SQLite 移行により queue.ts では不使用。migrate-queue.ts のマイグレーション完了後に削除予定。
+ */
 export function getFailedDir(): string {
   return `${getStateDir()}failed/`
 }
