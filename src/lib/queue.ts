@@ -182,6 +182,21 @@ export async function markFailed(key: string, reason?: string, dirs?: QueueDirs)
   }
 }
 
+export async function getDoneLineCount(sessionId: string, recipeName: string, dirs?: QueueDirs): Promise<number | null> {
+  const key = makeKey(sessionId, recipeName)
+  const db = getDb(dirs)
+  try {
+    const row = db.query(
+      `SELECT line_count FROM queue_entries WHERE key = ? AND status = 'done'`,
+    ).get(key) as { line_count: number | null } | null
+
+    if (!row || row.line_count === null) return null
+    return row.line_count
+  } finally {
+    db.close()
+  }
+}
+
 export async function isDone(sessionId: string, recipeName: string, currentLineCount: number, dirs?: QueueDirs): Promise<boolean> {
   const key = makeKey(sessionId, recipeName)
   const db = getDb(dirs)

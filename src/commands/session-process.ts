@@ -3,12 +3,12 @@ import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { loadConfig } from '../lib/config.ts'
 import { loadRecipes } from '../lib/recipe.ts'
-import { getRecipesDir, getDataDir, getDoneDir } from '../lib/paths.ts'
+import { getRecipesDir, getDataDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { generateFrontmatter } from '../lib/frontmatter.ts'
 import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
 import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
-import { dequeue, markDone, markFailed } from '../lib/queue.ts'
+import { dequeue, markDone, markFailed, getDoneLineCount } from '../lib/queue.ts'
 import { CliError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, DEFAULT_MAX_CHUNK_BYTES, type TimelineChunk } from '../lib/chunker.ts'
 import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
@@ -339,17 +339,9 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   // Determine mode based on on_existing and done state
   let prompt = recipe.prompt
   let hasPreviousRun = false
-  try {
-    const doneFilePath = join(getDoneDir(), key)
-    const doneFile = Bun.file(doneFilePath)
-    if (await doneFile.exists()) {
-      const prevLines = parseInt(await doneFile.text(), 10)
-      if (!isNaN(prevLines) && meta.lineCount > prevLines) {
-        hasPreviousRun = true
-      }
-    }
-  } catch {
-    // No previous done entry
+  const prevLineCount = await getDoneLineCount(sessionId, recipeName)
+  if (prevLineCount !== null && meta.lineCount > prevLineCount) {
+    hasPreviousRun = true
   }
 
   if (hasPreviousRun) {

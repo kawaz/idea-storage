@@ -126,3 +126,20 @@ JSON (C) は小規模なら良いが、13,000+ エントリでは毎回の全件
 ## DB ファイルパス
 
 `~/.local/state/idea-storage/queue.db`（XDG State Directory 準拠）
+
+## 設計判断メモ
+
+### dequeue の排他制御
+
+dequeue は SELECT + DELETE で実装。並行実行時の二重取得は lockfile（session-run.lock）で防止する。
+`processing` ステータスを導入しない理由: session-run は単一プロセスで動作する設計であり、lock 取得なしに dequeue されることはない。DB レベルの排他制御は過剰。
+
+### マイグレーション時の状態衝突
+
+同一 key が queue/ と done/ の両方に存在する場合（旧実装の markDone で queue 削除と done 書き込みの間にクラッシュした場合等）、done を優先する。
+取り込み順序: done → queue（done にある key は queue からスキップ）→ failed。
+
+### session-process.ts の done 参照
+
+旧実装では session-process.ts が done ファイルを直接読んでいた（onExisting 判定）。
+SQLite 移行に伴い、queue.ts の `getDoneLineCount()` API を追加して置換済み。
