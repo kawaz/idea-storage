@@ -82,7 +82,7 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
 }
 
 function startHeartbeat(lockPath: string): ReturnType<typeof setInterval> {
-  return setInterval(async () => {
+  const id = setInterval(async () => {
     try {
       const now = new Date()
       await utimes(lockPath, now, now)
@@ -90,6 +90,9 @@ function startHeartbeat(lockPath: string): ReturnType<typeof setInterval> {
       // Best effort: file may have been removed
     }
   }, HEARTBEAT_INTERVAL_MS)
+  // Don't let the heartbeat timer prevent process exit
+  id.unref()
+  return id
 }
 
 function createRelease(lockPath: string, heartbeatId: ReturnType<typeof setInterval>): () => Promise<void> {
