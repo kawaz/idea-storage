@@ -18,6 +18,7 @@ import {
   validateRecipeName,
   loadQueueState,
   isFailedByState,
+  getDb,
 } from './queue.ts'
 
 // Test UUIDs (replacing short ids like 'sid-1' for validation compliance)
@@ -46,22 +47,21 @@ describe('queue', () => {
   })
 
   describe('enqueue', () => {
-    test('creates a file in queueDir with key format {sessionId}.{recipeName}', async () => {
+    test('creates a queued entry with key format {sessionId}.{recipeName}', async () => {
       await enqueue(SID_ABC, 'diary', dirs)
-      const file = Bun.file(join(dirs.queueDir, `${SID_ABC}.diary`))
-      expect(await file.exists()).toBe(true)
+      expect(await isQueued(SID_ABC, 'diary', dirs)).toBe(true)
     })
 
-    test('creates queueDir if it does not exist', async () => {
+    test('auto-creates database when it does not exist', async () => {
       await enqueue(SID_ABC, 'diary', dirs)
-      const file = Bun.file(join(dirs.queueDir, `${SID_ABC}.diary`))
-      expect(await file.exists()).toBe(true)
+      expect(await isQueued(SID_ABC, 'diary', dirs)).toBe(true)
     })
 
-    test('creates an empty file (touch)', async () => {
+    test('does not overwrite an existing entry (INSERT OR IGNORE)', async () => {
       await enqueue(SID_ABC, 'diary', dirs)
-      const file = Bun.file(join(dirs.queueDir, `${SID_ABC}.diary`))
-      expect(await file.text()).toBe('')
+      await enqueue(SID_ABC, 'diary', dirs) // duplicate
+      const status = await getStatus(dirs)
+      expect(status.queued).toBe(1)
     })
   })
 
@@ -71,15 +71,16 @@ describe('queue', () => {
       expect(entry).toBeNull()
     })
 
-    test('returns the newest entry first and removes the file', async () => {
-      // enqueue two items with different mtimes
+    test('returns the newest entry first and removes it', async () => {
+      // enqueue two items with different updated_at
       await enqueue(SID1, 'recipe-a', dirs)
-      await enqueue(SID2, 'recipe-b', dirs)
 
-      // Make SID1 older to guarantee ordering
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 10000)
-      utimesSync(join(dirs.queueDir, `${SID1}.recipe-a`), oldTime, oldTime)
+      // Make SID1 older via direct DB update
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [Date.now() - 10000, `${SID1}.recipe-a`])
+      db.close()
+
+      await enqueue(SID2, 'recipe-b', dirs)
 
       const entry = await dequeue(dirs)
       expect(entry).not.toBeNull()
@@ -87,26 +88,24 @@ describe('queue', () => {
       expect(entry!.recipeName).toBe('recipe-b')
       expect(entry!.key).toBe(`${SID2}.recipe-b`)
 
-      // File should be removed
-      const file = Bun.file(join(dirs.queueDir, `${SID2}.recipe-b`))
-      expect(await file.exists()).toBe(false)
+      // Dequeued entry should no longer be queued
+      expect(await isQueued(SID2, 'recipe-b', dirs)).toBe(false)
 
-      // Older entry should still exist
-      const file2 = Bun.file(join(dirs.queueDir, `${SID1}.recipe-a`))
-      expect(await file2.exists()).toBe(true)
+      // Older entry should still be queued
+      expect(await isQueued(SID1, 'recipe-a', dirs)).toBe(true)
     })
 
     test('dequeues in newest-first order across multiple calls', async () => {
-      const { utimesSync } = await import('node:fs')
-
       await enqueue(SID1, 'recipe-a', dirs)
-      utimesSync(join(dirs.queueDir, `${SID1}.recipe-a`), new Date(1000), new Date(1000))
-
       await enqueue(SID2, 'recipe-b', dirs)
-      utimesSync(join(dirs.queueDir, `${SID2}.recipe-b`), new Date(2000), new Date(2000))
-
       await enqueue(SID3, 'recipe-c', dirs)
-      utimesSync(join(dirs.queueDir, `${SID3}.recipe-c`), new Date(3000), new Date(3000))
+
+      // Set updated_at to control ordering
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [1000, `${SID1}.recipe-a`])
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [2000, `${SID2}.recipe-b`])
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [3000, `${SID3}.recipe-c`])
+      db.close()
 
       const first = await dequeue(dirs)
       expect(first!.sessionId).toBe(SID3)
@@ -121,7 +120,7 @@ describe('queue', () => {
       expect(fourth).toBeNull()
     })
 
-    test('returns null when queueDir does not exist', async () => {
+    test('returns null when database does not exist yet', async () => {
       const nonExistDirs: QueueDirs = {
         queueDir: join(tempDir, 'nonexistent', 'queue') + '/',
         doneDir: dirs.doneDir,
@@ -170,65 +169,65 @@ describe('queue', () => {
   })
 
   describe('markDone', () => {
-    test('creates doneDir/{key} with lineCount and removes queueDir/{key}', async () => {
+    test('marks entry as done with lineCount and removes from queued', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markDone(`${SID1}.diary`, 42, dirs)
 
-      const doneFile = Bun.file(join(dirs.doneDir, `${SID1}.diary`))
-      expect(await doneFile.exists()).toBe(true)
-      expect(await doneFile.text()).toBe('42')
+      expect(await isDone(SID1, 'diary', 42, dirs)).toBe(true)
 
-      const queueFile = Bun.file(join(dirs.queueDir, `${SID1}.diary`))
-      expect(await queueFile.exists()).toBe(false)
+      // Verify lineCount in DB
+      const db = getDb(dirs)
+      const row = db.query(`SELECT line_count, status FROM queue_entries WHERE key = ?`).get(`${SID1}.diary`) as { line_count: number; status: string }
+      expect(row.status).toBe('done')
+      expect(row.line_count).toBe(42)
+      db.close()
+
+      // Should no longer be queued
+      expect(await isQueued(SID1, 'diary', dirs)).toBe(false)
     })
 
-    test('creates doneDir if it does not exist', async () => {
+    test('works even when entry did not exist before', async () => {
       await markDone(`${SID1}.diary`, 100, dirs)
-      const doneFile = Bun.file(join(dirs.doneDir, `${SID1}.diary`))
-      expect(await doneFile.exists()).toBe(true)
+      expect(await isDone(SID1, 'diary', 100, dirs)).toBe(true)
     })
   })
 
   describe('markFailed', () => {
-    test('moves file from queueDir to failedDir', async () => {
+    test('marks entry as failed and removes from queued', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      const failedFile = Bun.file(join(dirs.failedDir, `${SID1}.diary`))
-      expect(await failedFile.exists()).toBe(true)
-
-      const queueFile = Bun.file(join(dirs.queueDir, `${SID1}.diary`))
-      expect(await queueFile.exists()).toBe(false)
+      expect(await isFailed(SID1, 'diary', dirs)).toBe(true)
+      expect(await isQueued(SID1, 'diary', dirs)).toBe(false)
     })
 
-    test('creates failedDir if it does not exist', async () => {
+    test('works when database does not exist yet', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
-      const failedFile = Bun.file(join(dirs.failedDir, `${SID1}.diary`))
-      expect(await failedFile.exists()).toBe(true)
+      expect(await isFailed(SID1, 'diary', dirs)).toBe(true)
     })
 
-    test('works after dequeue (queue file already removed)', async () => {
+    test('works after dequeue (entry already removed from DB)', async () => {
       await enqueue(SID1, 'diary', dirs)
       const entry = await dequeue(dirs)
       expect(entry).not.toBeNull()
 
-      // Queue file is already removed by dequeue
-      const queueFile = Bun.file(join(dirs.queueDir, `${SID1}.diary`))
-      expect(await queueFile.exists()).toBe(false)
+      // Entry is already removed by dequeue
+      expect(await isQueued(SID1, 'diary', dirs)).toBe(false)
 
-      // markFailed should still succeed and create the failed file
+      // markFailed should still succeed
       await markFailed(`${SID1}.diary`, undefined, dirs)
-      const failedFile = Bun.file(join(dirs.failedDir, `${SID1}.diary`))
-      expect(await failedFile.exists()).toBe(true)
+      expect(await isFailed(SID1, 'diary', dirs)).toBe(true)
     })
 
     test('records retryCount: 1 on first call', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      const content = await Bun.file(join(dirs.failedDir, `${SID1}.diary`)).json()
-      expect(content.retryCount).toBe(1)
+      const db = getDb(dirs)
+      const row = db.query(`SELECT retry_count FROM queue_entries WHERE key = ?`).get(`${SID1}.diary`) as { retry_count: number }
+      expect(row.retry_count).toBe(1)
+      db.close()
     })
 
     test('increments retryCount on subsequent calls', async () => {
@@ -236,55 +235,49 @@ describe('queue', () => {
       await markFailed(`${SID1}.diary`, undefined, dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      const content = await Bun.file(join(dirs.failedDir, `${SID1}.diary`)).json()
-      expect(content.retryCount).toBe(2)
+      const db = getDb(dirs)
+      const row = db.query(`SELECT retry_count FROM queue_entries WHERE key = ?`).get(`${SID1}.diary`) as { retry_count: number }
+      expect(row.retry_count).toBe(2)
+      db.close()
     })
 
     test('records reason when provided', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, 'claude exited with code 1', dirs)
 
-      const content = await Bun.file(join(dirs.failedDir, `${SID1}.diary`)).json()
-      expect(content.retryCount).toBe(1)
-      expect(content.reason).toBe('claude exited with code 1')
+      const db = getDb(dirs)
+      const row = db.query(`SELECT retry_count, fail_reason FROM queue_entries WHERE key = ?`).get(`${SID1}.diary`) as { retry_count: number; fail_reason: string }
+      expect(row.retry_count).toBe(1)
+      expect(row.fail_reason).toBe('claude exited with code 1')
+      db.close()
     })
 
-    test('preserves reason from previous failure when incrementing', async () => {
+    test('updates reason on subsequent failure', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, 'first error', dirs)
       await markFailed(`${SID1}.diary`, 'second error', dirs)
 
-      const content = await Bun.file(join(dirs.failedDir, `${SID1}.diary`)).json()
-      expect(content.retryCount).toBe(2)
-      expect(content.reason).toBe('second error')
-    })
-
-    test('treats existing empty file as retryCount 0 (backward compat)', async () => {
-      // Simulate legacy empty failed file
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(dirs.failedDir, { recursive: true })
-      await Bun.write(join(dirs.failedDir, `${SID1}.diary`), '')
-
-      await markFailed(`${SID1}.diary`, undefined, dirs)
-
-      const content = await Bun.file(join(dirs.failedDir, `${SID1}.diary`)).json()
-      expect(content.retryCount).toBe(1)
+      const db = getDb(dirs)
+      const row = db.query(`SELECT retry_count, fail_reason FROM queue_entries WHERE key = ?`).get(`${SID1}.diary`) as { retry_count: number; fail_reason: string }
+      expect(row.retry_count).toBe(2)
+      expect(row.fail_reason).toBe('second error')
+      db.close()
     })
   })
 
   describe('isDone', () => {
-    test('returns true when done file exists and lineCount >= currentLineCount', async () => {
+    test('returns true when done and lineCount >= currentLineCount', async () => {
       await markDone(`${SID1}.diary`, 100, dirs)
       expect(await isDone(SID1, 'diary', 100, dirs)).toBe(true)
       expect(await isDone(SID1, 'diary', 50, dirs)).toBe(true)
     })
 
-    test('returns false when done file has fewer lines than currentLineCount', async () => {
+    test('returns false when done but fewer lines than currentLineCount', async () => {
       await markDone(`${SID1}.diary`, 50, dirs)
       expect(await isDone(SID1, 'diary', 100, dirs)).toBe(false)
     })
 
-    test('returns false when done file does not exist', async () => {
+    test('returns false when entry does not exist', async () => {
       expect(await isDone(SID1, 'diary', 10, dirs)).toBe(false)
     })
   })
@@ -301,27 +294,27 @@ describe('queue', () => {
   })
 
   describe('isFailed', () => {
-    test('returns false when failed file does not exist', async () => {
+    test('returns false when entry does not exist', async () => {
       expect(await isFailed(SID1, 'diary', dirs)).toBe(false)
     })
 
-    test('returns true when failed and mtime is recent (within retryAfterMs)', async () => {
+    test('returns true when failed and updated_at is recent (within retryAfterMs)', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
       // Just failed - should still be considered failed (too soon to retry)
       expect(await isFailed(SID1, 'diary', dirs, { retryAfterMs: 1000 })).toBe(true)
     })
 
-    test('returns false when retryCount < maxRetries and mtime is old enough (auto-retry)', async () => {
+    test('returns false when retryCount < maxRetries and updated_at is old enough (auto-retry)', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      // Set mtime to the past to simulate time passing
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 2000)
-      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+      // Set updated_at to the past via DB
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [Date.now() - 2000, `${SID1}.diary`])
+      db.close()
 
-      // retryCount=1, maxRetries=3, mtime is 2s ago, retryAfterMs=1000ms => should retry
+      // retryCount=1, maxRetries=3, updated_at is 2s ago, retryAfterMs=1000ms => should retry
       expect(await isFailed(SID1, 'diary', dirs, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)
     })
 
@@ -331,38 +324,13 @@ describe('queue', () => {
       await markFailed(`${SID1}.diary`, undefined, dirs) // retryCount=2
       await markFailed(`${SID1}.diary`, undefined, dirs) // retryCount=3
 
-      // Set mtime to the past
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 100000)
-      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+      // Set updated_at to the past
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [Date.now() - 100000, `${SID1}.diary`])
+      db.close()
 
       // retryCount=3, maxRetries=3 => permanent-failed, always true
       expect(await isFailed(SID1, 'diary', dirs, { retryAfterMs: 1, maxRetries: 3 })).toBe(true)
-    })
-
-    test('treats legacy empty file as retryCount 0 (always retryable after delay)', async () => {
-      // Simulate legacy empty failed file
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(dirs.failedDir, { recursive: true })
-      await Bun.write(join(dirs.failedDir, `${SID1}.diary`), '')
-
-      // Set mtime to the past
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 2000)
-      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
-
-      // retryCount=0, maxRetries=3, mtime old => should retry
-      expect(await isFailed(SID1, 'diary', dirs, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)
-    })
-
-    test('returns true for legacy empty file when mtime is recent', async () => {
-      // Simulate legacy empty failed file
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(dirs.failedDir, { recursive: true })
-      await Bun.write(join(dirs.failedDir, `${SID1}.diary`), '')
-
-      // retryCount=0, maxRetries=3, mtime is now => too soon
-      expect(await isFailed(SID1, 'diary', dirs, { retryAfterMs: 60000, maxRetries: 3 })).toBe(true)
     })
 
     test('uses default retryAfterMs and maxRetries when not specified', async () => {
@@ -374,21 +342,18 @@ describe('queue', () => {
   })
 
   describe('retry', () => {
-    test('moves file from failedDir to queueDir', async () => {
+    test('moves entry from failed to queued', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
       await retry(`${SID1}.diary`, dirs)
 
-      const queueFile = Bun.file(join(dirs.queueDir, `${SID1}.diary`))
-      expect(await queueFile.exists()).toBe(true)
-
-      const failedFile = Bun.file(join(dirs.failedDir, `${SID1}.diary`))
-      expect(await failedFile.exists()).toBe(false)
+      expect(await isQueued(SID1, 'diary', dirs)).toBe(true)
+      expect(await isFailed(SID1, 'diary', dirs)).toBe(false)
     })
   })
 
   describe('getStatus', () => {
-    test('returns counts for each directory', async () => {
+    test('returns counts for each status', async () => {
       await enqueue(SID1, 'diary', dirs)
       await enqueue(SID2, 'diary', dirs)
       await markDone(`${SID3}.diary`, 10, dirs)
@@ -401,7 +366,7 @@ describe('queue', () => {
       expect(status.failed).toBe(1)
     })
 
-    test('returns zeros when directories are empty or do not exist', async () => {
+    test('returns zeros when database is empty', async () => {
       const status = await getStatus(dirs)
       expect(status.queued).toBe(0)
       expect(status.done).toBe(0)
@@ -433,22 +398,10 @@ describe('queue', () => {
       expect(removed).toBe(0)
     })
 
-    test('returns 0 when failedDir is empty', async () => {
+    test('returns 0 when no failed entries exist', async () => {
       const isSessionExists = async (_sid: string) => false
       const removed = await cleanup(isSessionExists, dirs)
       expect(removed).toBe(0)
-    })
-
-    test('ignores .log files in failed directory', async () => {
-      await enqueue(SID1, 'diary', dirs)
-      await markFailed(`${SID1}.diary`, undefined, dirs)
-      // Simulate a .log file
-      await Bun.write(join(dirs.failedDir, `${SID1}.diary.log`), 'error log')
-
-      const isSessionExists = async (_sid: string) => false
-      const removed = await cleanup(isSessionExists, dirs)
-      // Only the queue entry is counted, not the .log
-      expect(removed).toBe(1)
     })
   })
 
@@ -534,7 +487,7 @@ describe('queue', () => {
   })
 
   describe('loadQueueState', () => {
-    test('returns empty sets/maps when directories do not exist', async () => {
+    test('returns empty sets/maps when database is empty', async () => {
       const state = await loadQueueState(dirs)
       expect(state.queued.size).toBe(0)
       expect(state.done.size).toBe(0)
@@ -561,15 +514,6 @@ describe('queue', () => {
       expect(state.done.get(`${SID2}.recipe-a`)).toEqual({ lineCount: 100 })
     })
 
-    test('handles done entries with unparseable content as lineCount 0', async () => {
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(dirs.doneDir, { recursive: true })
-      await Bun.write(join(dirs.doneDir, `${SID1}.diary`), 'not-a-number')
-
-      const state = await loadQueueState(dirs)
-      expect(state.done.get(`${SID1}.diary`)).toEqual({ lineCount: 0 })
-    })
-
     test('loads all failed entries with meta and mtimeMs', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, 'error1', dirs)
@@ -589,17 +533,6 @@ describe('queue', () => {
       expect(f2).toBeDefined()
       expect(f2!.meta.retryCount).toBe(1)
       expect(f2!.meta.reason).toBeUndefined()
-    })
-
-    test('handles legacy empty failed files as retryCount 0', async () => {
-      const { mkdir } = await import('node:fs/promises')
-      await mkdir(dirs.failedDir, { recursive: true })
-      await Bun.write(join(dirs.failedDir, `${SID1}.diary`), '')
-
-      const state = await loadQueueState(dirs)
-      const f = state.failed.get(`${SID1}.diary`)
-      expect(f).toBeDefined()
-      expect(f!.meta.retryCount).toBe(0)
     })
 
     test('agrees with isQueued for all entries', async () => {
@@ -656,14 +589,14 @@ describe('queue', () => {
       expect(await isFailed(SID1, 'diary', dirs, retryOpts)).toBe(true)
     })
 
-    test('agrees with isFailed for retryable entries (old mtime)', async () => {
+    test('agrees with isFailed for retryable entries (old updated_at)', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      // Set mtime to the past
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 5000)
-      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+      // Set updated_at to the past via DB
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [Date.now() - 5000, `${SID1}.diary`])
+      db.close()
 
       const state = await loadQueueState(dirs)
       const retryOpts = { retryAfterMs: 1000, maxRetries: 3 }
@@ -694,7 +627,7 @@ describe('queue', () => {
       expect(isFailedByState(state, `${SID1}.diary`)).toBe(false)
     })
 
-    test('returns true for recently failed (retryCount < maxRetries, mtime recent)', async () => {
+    test('returns true for recently failed (retryCount < maxRetries, updated_at recent)', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
@@ -713,13 +646,13 @@ describe('queue', () => {
       expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1, maxRetries: 3 })).toBe(true)
     })
 
-    test('returns false when retryable (retryCount < maxRetries, mtime old enough)', async () => {
+    test('returns false when retryable (retryCount < maxRetries, updated_at old enough)', async () => {
       await enqueue(SID1, 'diary', dirs)
       await markFailed(`${SID1}.diary`, undefined, dirs)
 
-      const { utimesSync } = await import('node:fs')
-      const oldTime = new Date(Date.now() - 5000)
-      utimesSync(join(dirs.failedDir, `${SID1}.diary`), oldTime, oldTime)
+      const db = getDb(dirs)
+      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [Date.now() - 5000, `${SID1}.diary`])
+      db.close()
 
       const state = await loadQueueState(dirs)
       expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1000, maxRetries: 3 })).toBe(false)

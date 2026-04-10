@@ -6,6 +6,7 @@ import { acquireLock } from '../lib/lockfile.ts'
 import { getStateDir } from '../lib/paths.ts'
 import { CliError } from '../lib/errors.ts'
 import { log } from '../lib/logging.ts'
+import { migrateIfNeeded } from '../lib/migrate-queue.ts'
 
 /** Default per-task timeout: 25 minutes */
 export const DEFAULT_TASK_TIMEOUT_MS = 25 * 60 * 1000
@@ -60,6 +61,11 @@ const sessionRun = define({
     const taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS
 
     try {
+      const migrated = await migrateIfNeeded()
+      if (migrated !== null) {
+        log({ msg: 'migrated_queue', entries: migrated })
+      }
+
       await runEnqueue()
 
       let consecutiveFailures = 0

@@ -1,6 +1,7 @@
-import { mkdir, readdir, unlink, rename, stat } from 'node:fs/promises'
-import { join } from 'node:path'
-import { getQueueDir, getDoneDir, getFailedDir } from './paths.ts'
+import { Database } from 'bun:sqlite'
+import { dirname, join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { getStateDir } from './paths.ts'
 import type { QueueEntry } from '../types/index.ts'
 
 export const DEFAULT_MAX_RETRIES = 3
@@ -33,14 +34,6 @@ export interface QueueState {
   failed: Map<string, QueueStateFailedEntry>
 }
 
-function defaultDirs(): QueueDirs {
-  return {
-    queueDir: getQueueDir(),
-    doneDir: getDoneDir(),
-    failedDir: getFailedDir(),
-  }
-}
-
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 
@@ -70,117 +63,151 @@ function parseKey(key: string): { sessionId: string; recipeName: string } {
   }
 }
 
-async function ensureDir(dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true })
+function resolveDbPath(dirs?: QueueDirs): string {
+  if (dirs) {
+    // dirs.queueDir may have a trailing slash; strip it, then go to parent
+    const parent = dirname(dirs.queueDir.replace(/\/$/, ''))
+    return join(parent, 'queue.db')
+  }
+  return join(getStateDir(), 'queue.db')
 }
 
-async function readFailedMeta(filePath: string): Promise<FailedMeta> {
-  try {
-    const file = Bun.file(filePath)
-    const text = await file.text()
-    if (!text.trim()) {
-      // Legacy empty file: treat as retryCount 0
-      return { retryCount: 0 }
-    }
-    return JSON.parse(text) as FailedMeta
-  } catch {
-    return { retryCount: 0 }
-  }
+function initSchema(db: Database): void {
+  db.run(`CREATE TABLE IF NOT EXISTS queue_entries (
+    key TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    recipe_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    line_count INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    fail_reason TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_status ON queue_entries(status)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_status_updated ON queue_entries(status, updated_at)`)
 }
 
-async function listFiles(dir: string): Promise<string[]> {
-  try {
-    return await readdir(dir)
-  } catch {
-    return []
-  }
+export function getDb(dirs?: QueueDirs): Database {
+  const dbPath = resolveDbPath(dirs)
+  mkdirSync(dirname(dbPath), { recursive: true })
+  const db = new Database(dbPath)
+  db.run('PRAGMA journal_mode = WAL')
+  db.run('PRAGMA busy_timeout = 5000')
+  initSchema(db)
+  return db
 }
 
 export async function enqueue(sessionId: string, recipeName: string, dirs?: QueueDirs): Promise<void> {
-  const d = dirs ?? defaultDirs()
-  await ensureDir(d.queueDir)
   const key = makeKey(sessionId, recipeName)
-  await Bun.write(join(d.queueDir, key), '')
+  const now = Date.now()
+  const db = getDb(dirs)
+  try {
+    db.run(
+      `INSERT OR IGNORE INTO queue_entries (key, session_id, recipe_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', ?, ?)`,
+      [key, sessionId, recipeName, now, now],
+    )
+  } finally {
+    db.close()
+  }
 }
 
 export async function dequeue(dirs?: QueueDirs): Promise<QueueEntry | null> {
-  const d = dirs ?? defaultDirs()
-  const files = await listFiles(d.queueDir)
-  if (files.length === 0) return null
+  const db = getDb(dirs)
+  try {
+    const row = db.query(
+      `SELECT key, session_id, recipe_name FROM queue_entries
+       WHERE status = 'queued'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    ).get() as { key: string; session_id: string; recipe_name: string } | null
 
-  // Find the newest file by mtime (process recent sessions first)
-  let newest: { name: string; mtime: number } | null = null
-  for (const name of files) {
-    try {
-      const s = await stat(join(d.queueDir, name))
-      if (newest === null || s.mtimeMs > newest.mtime) {
-        newest = { name, mtime: s.mtimeMs }
-      }
-    } catch {
-      // File may have been removed concurrently
+    if (!row) return null
+
+    db.run(`DELETE FROM queue_entries WHERE key = ?`, [row.key])
+
+    return {
+      sessionId: row.session_id,
+      recipeName: row.recipe_name,
+      key: row.key,
     }
+  } finally {
+    db.close()
   }
-
-  if (newest === null) return null
-
-  const { sessionId, recipeName } = parseKey(newest.name)
-  await unlink(join(d.queueDir, newest.name))
-
-  return { sessionId, recipeName, key: newest.name }
 }
 
 export async function markDone(key: string, lineCount: number, dirs?: QueueDirs): Promise<void> {
-  const d = dirs ?? defaultDirs()
-  await ensureDir(d.doneDir)
-  await Bun.write(join(d.doneDir, key), String(lineCount))
-  // Remove from queue if present
+  const { sessionId, recipeName } = parseKey(key)
+  const now = Date.now()
+  const db = getDb(dirs)
   try {
-    await unlink(join(d.queueDir, key))
-  } catch {
-    // May not exist in queue
+    db.run(
+      `INSERT INTO queue_entries (key, session_id, recipe_name, status, line_count, created_at, updated_at)
+       VALUES (?, ?, ?, 'done', ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         status = 'done',
+         line_count = excluded.line_count,
+         updated_at = excluded.updated_at`,
+      [key, sessionId, recipeName, lineCount, now, now],
+    )
+  } finally {
+    db.close()
   }
 }
 
 export async function markFailed(key: string, reason?: string, dirs?: QueueDirs): Promise<void> {
-  const d = dirs ?? defaultDirs()
-  await ensureDir(d.failedDir)
-  const failedPath = join(d.failedDir, key)
-
-  // Read existing metadata (if any) to increment retryCount
-  const existing = await readFailedMeta(failedPath)
-  const meta: FailedMeta = {
-    retryCount: existing.retryCount + 1,
-    ...(reason !== undefined ? { reason } : {}),
-  }
-
-  // Remove queue file if present (best effort)
+  const { sessionId, recipeName } = parseKey(key)
+  const now = Date.now()
+  const db = getDb(dirs)
   try {
-    await unlink(join(d.queueDir, key))
-  } catch {
-    // May not exist (already dequeued)
-  }
+    // Get existing retry_count if any
+    const existing = db.query(
+      `SELECT retry_count FROM queue_entries WHERE key = ?`,
+    ).get(key) as { retry_count: number } | null
+    const retryCount = (existing?.retry_count ?? 0) + 1
 
-  await Bun.write(failedPath, JSON.stringify(meta))
+    db.run(
+      `INSERT INTO queue_entries (key, session_id, recipe_name, status, retry_count, fail_reason, created_at, updated_at)
+       VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         status = 'failed',
+         retry_count = excluded.retry_count,
+         fail_reason = excluded.fail_reason,
+         updated_at = excluded.updated_at`,
+      [key, sessionId, recipeName, retryCount, reason ?? null, now, now],
+    )
+  } finally {
+    db.close()
+  }
 }
 
 export async function isDone(sessionId: string, recipeName: string, currentLineCount: number, dirs?: QueueDirs): Promise<boolean> {
-  const d = dirs ?? defaultDirs()
   const key = makeKey(sessionId, recipeName)
+  const db = getDb(dirs)
   try {
-    const file = Bun.file(join(d.doneDir, key))
-    const content = await file.text()
-    const doneLines = parseInt(content, 10)
-    return !isNaN(doneLines) && doneLines >= currentLineCount
-  } catch {
-    return false
+    const row = db.query(
+      `SELECT line_count FROM queue_entries WHERE key = ? AND status = 'done'`,
+    ).get(key) as { line_count: number | null } | null
+
+    if (!row || row.line_count === null) return false
+    return row.line_count >= currentLineCount
+  } finally {
+    db.close()
   }
 }
 
 export async function isQueued(sessionId: string, recipeName: string, dirs?: QueueDirs): Promise<boolean> {
-  const d = dirs ?? defaultDirs()
   const key = makeKey(sessionId, recipeName)
-  const file = Bun.file(join(d.queueDir, key))
-  return file.exists()
+  const db = getDb(dirs)
+  try {
+    const row = db.query(
+      `SELECT 1 FROM queue_entries WHERE key = ? AND status = 'queued'`,
+    ).get(key)
+    return row !== null
+  } finally {
+    db.close()
+  }
 }
 
 export async function isFailed(
@@ -189,51 +216,60 @@ export async function isFailed(
   dirs?: QueueDirs,
   retryOpts?: RetryOptions,
 ): Promise<boolean> {
-  const d = dirs ?? defaultDirs()
   const key = makeKey(sessionId, recipeName)
-  const failedPath = join(d.failedDir, key)
-  const file = Bun.file(failedPath)
-
-  if (!(await file.exists())) return false
-
-  const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES
-  const retryAfterMs = retryOpts?.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS
-
-  const meta = await readFailedMeta(failedPath)
-
-  // Permanent-failed: retryCount >= maxRetries
-  if (meta.retryCount >= maxRetries) return true
-
-  // Check mtime: if old enough, allow retry (return false)
+  const db = getDb(dirs)
   try {
-    const s = await stat(failedPath)
-    const elapsed = Date.now() - s.mtimeMs
-    if (elapsed >= retryAfterMs) return false
-  } catch {
-    // stat failed, treat as still failed
-  }
+    const row = db.query(
+      `SELECT retry_count, updated_at FROM queue_entries WHERE key = ? AND status = 'failed'`,
+    ).get(key) as { retry_count: number; updated_at: number } | null
 
-  return true
+    if (!row) return false
+
+    const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES
+    const retryAfterMs = retryOpts?.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS
+
+    // Permanent-failed: retryCount >= maxRetries
+    if (row.retry_count >= maxRetries) return true
+
+    // Check updated_at: if old enough, allow retry (return false)
+    const elapsed = Date.now() - row.updated_at
+    if (elapsed >= retryAfterMs) return false
+
+    return true
+  } finally {
+    db.close()
+  }
 }
 
 export async function retry(key: string, dirs?: QueueDirs): Promise<void> {
-  const d = dirs ?? defaultDirs()
-  await ensureDir(d.queueDir)
-  await rename(join(d.failedDir, key), join(d.queueDir, key))
+  const now = Date.now()
+  const db = getDb(dirs)
+  try {
+    db.run(
+      `UPDATE queue_entries SET status = 'queued', updated_at = ? WHERE key = ?`,
+      [now, key],
+    )
+  } finally {
+    db.close()
+  }
 }
 
 export async function getStatus(dirs?: QueueDirs): Promise<{ queued: number; done: number; failed: number }> {
-  const d = dirs ?? defaultDirs()
-  const [queueFiles, doneFiles, failedFiles] = await Promise.all([
-    listFiles(d.queueDir),
-    listFiles(d.doneDir),
-    listFiles(d.failedDir),
-  ])
-  return {
-    queued: queueFiles.length,
-    done: doneFiles.length,
-    // Exclude .log files from failed count (matching shell script behavior)
-    failed: failedFiles.filter(f => !f.endsWith('.log')).length,
+  const db = getDb(dirs)
+  try {
+    const rows = db.query(
+      `SELECT status, COUNT(*) as count FROM queue_entries GROUP BY status`,
+    ).all() as { status: string; count: number }[]
+
+    const result = { queued: 0, done: 0, failed: 0 }
+    for (const row of rows) {
+      if (row.status === 'queued') result.queued = row.count
+      else if (row.status === 'done') result.done = row.count
+      else if (row.status === 'failed') result.failed = row.count
+    }
+    return result
+  } finally {
+    db.close()
   }
 }
 
@@ -241,68 +277,62 @@ export async function cleanup(
   isSessionExists: (sid: string) => Promise<boolean>,
   dirs?: QueueDirs,
 ): Promise<number> {
-  const d = dirs ?? defaultDirs()
-  const files = await listFiles(d.failedDir)
-  let removed = 0
+  const db = getDb(dirs)
+  try {
+    const rows = db.query(
+      `SELECT key, session_id FROM queue_entries WHERE status = 'failed'`,
+    ).all() as { key: string; session_id: string }[]
 
-  for (const name of files) {
-    // Skip .log files
-    if (name.endsWith('.log')) continue
-
-    const { sessionId } = parseKey(name)
-    const exists = await isSessionExists(sessionId)
-    if (!exists) {
-      await unlink(join(d.failedDir, name))
-      removed++
+    let removed = 0
+    for (const row of rows) {
+      const exists = await isSessionExists(row.session_id)
+      if (!exists) {
+        db.run(`DELETE FROM queue_entries WHERE key = ?`, [row.key])
+        removed++
+      }
     }
+    return removed
+  } finally {
+    db.close()
   }
-
-  return removed
 }
 
 export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
-  const d = dirs ?? defaultDirs()
+  const db = getDb(dirs)
+  try {
+    const rows = db.query(
+      `SELECT key, status, line_count, retry_count, fail_reason, updated_at FROM queue_entries`,
+    ).all() as {
+      key: string
+      status: string
+      line_count: number | null
+      retry_count: number
+      fail_reason: string | null
+      updated_at: number
+    }[]
 
-  const [queueFiles, doneFiles, failedFiles] = await Promise.all([
-    listFiles(d.queueDir),
-    listFiles(d.doneDir),
-    listFiles(d.failedDir),
-  ])
+    const queued = new Set<string>()
+    const done = new Map<string, { lineCount: number }>()
+    const failed = new Map<string, QueueStateFailedEntry>()
 
-  // Build queued set
-  const queued = new Set<string>(queueFiles)
-
-  // Build done map with lineCount
-  const done = new Map<string, { lineCount: number }>()
-  await Promise.all(
-    doneFiles.map(async (name) => {
-      try {
-        const content = await Bun.file(join(d.doneDir, name)).text()
-        const lineCount = parseInt(content, 10)
-        done.set(name, { lineCount: isNaN(lineCount) ? 0 : lineCount })
-      } catch {
-        done.set(name, { lineCount: 0 })
+    for (const row of rows) {
+      if (row.status === 'queued') {
+        queued.add(row.key)
+      } else if (row.status === 'done') {
+        done.set(row.key, { lineCount: row.line_count ?? 0 })
+      } else if (row.status === 'failed') {
+        const meta: FailedMeta = {
+          retryCount: row.retry_count,
+          ...(row.fail_reason !== null ? { reason: row.fail_reason } : {}),
+        }
+        failed.set(row.key, { meta, mtimeMs: row.updated_at })
       }
-    }),
-  )
+    }
 
-  // Build failed map with meta and mtimeMs
-  const failed = new Map<string, QueueStateFailedEntry>()
-  await Promise.all(
-    failedFiles.map(async (name) => {
-      const filePath = join(d.failedDir, name)
-      const [meta, s] = await Promise.all([
-        readFailedMeta(filePath),
-        stat(filePath).catch(() => null),
-      ])
-      failed.set(name, {
-        meta,
-        mtimeMs: s?.mtimeMs ?? 0,
-      })
-    }),
-  )
-
-  return { queued, done, failed }
+    return { queued, done, failed }
+  } finally {
+    db.close()
+  }
 }
 
 /** In-memory equivalent of isFailed() using pre-loaded QueueState */
