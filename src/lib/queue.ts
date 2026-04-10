@@ -98,6 +98,42 @@ export function getDb(dirs?: QueueDirs): Database {
   return db
 }
 
+/**
+ * 複数のエントリを1トランザクションで一括 enqueue する。
+ * 既に存在する key は無視（INSERT OR IGNORE）。
+ * バリデーションはトランザクション開始前に全件チェックするため、
+ * 1件でも不正があればどのエントリも挿入されない。
+ */
+export function enqueueBatch(
+  entries: Array<{ sessionId: string; recipeName: string }>,
+  dirs?: QueueDirs,
+): void {
+  if (entries.length === 0) return
+  // Validate all entries upfront (before opening DB) so invalid input
+  // causes no partial inserts even without relying on transaction rollback.
+  const validated = entries.map(({ sessionId, recipeName }) => ({
+    key: makeKey(sessionId, recipeName), // validates inputs
+    sessionId,
+    recipeName,
+  }))
+  const now = Date.now()
+  const db = getDb(dirs)
+  try {
+    const stmt = db.prepare(
+      `INSERT OR IGNORE INTO queue_entries (key, session_id, recipe_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', ?, ?)`,
+    )
+    const tx = db.transaction(() => {
+      for (const { key, sessionId, recipeName } of validated) {
+        stmt.run(key, sessionId, recipeName, now, now)
+      }
+    })
+    tx()
+  } finally {
+    db.close()
+  }
+}
+
 export async function enqueue(sessionId: string, recipeName: string, dirs?: QueueDirs): Promise<void> {
   const key = makeKey(sessionId, recipeName)
   const now = Date.now()

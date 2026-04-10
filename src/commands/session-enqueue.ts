@@ -5,7 +5,7 @@ import { loadRecipes } from '../lib/recipe.ts'
 import { getRecipesDir } from '../lib/paths.ts'
 import { getSessionMeta } from '../lib/conversation.ts'
 import { matchesRecipe } from '../lib/recipe-matcher.ts'
-import { enqueue, loadQueueState, isFailedByState } from '../lib/queue.ts'
+import { enqueueBatch, loadQueueState, isFailedByState } from '../lib/queue.ts'
 import { CliError } from '../lib/errors.ts'
 import { dirExists } from '../lib/dir-exists.ts'
 import { log } from '../lib/logging.ts'
@@ -29,7 +29,7 @@ export async function runEnqueue(): Promise<void> {
   // Load queue state once upfront (readdir x3 instead of per-entry file checks)
   const state = await loadQueueState()
 
-  let count = 0
+  const pending: Array<{ sessionId: string; recipeName: string }> = []
 
   for (const claudeDir of config.claudeDirs) {
     const projectsDir = join(claudeDir, 'projects')
@@ -61,14 +61,18 @@ export async function runEnqueue(): Promise<void> {
         const doneEntry = state.done.get(key)
         if (doneEntry && doneEntry.lineCount >= meta.lineCount) continue
 
-        await enqueue(meta.id, recipe.name)
+        pending.push({ sessionId: meta.id, recipeName: recipe.name })
         log({ msg: 'queued', key })
-        count++
       }
     }
   }
 
-  log({ msg: 'enqueue_done', count })
+  // Batch INSERT in a single transaction
+  if (pending.length > 0) {
+    enqueueBatch(pending)
+  }
+
+  log({ msg: 'enqueue_done', count: pending.length })
 }
 
 const sessionEnqueue = define({

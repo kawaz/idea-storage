@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import type { QueueDirs } from './queue.ts'
 import {
   enqueue,
+  enqueueBatch,
   dequeue,
   markDone,
   markFailed,
@@ -62,6 +63,59 @@ describe('queue', () => {
       await enqueue(SID_ABC, 'diary', dirs) // duplicate
       const status = await getStatus(dirs)
       expect(status.queued).toBe(1)
+    })
+  })
+
+  describe('enqueueBatch', () => {
+    test('複数エントリを一括で enqueue する', async () => {
+      await enqueueBatch([
+        { sessionId: SID1, recipeName: 'diary' },
+        { sessionId: SID2, recipeName: 'report' },
+      ], dirs)
+
+      expect(await isQueued(SID1, 'diary', dirs)).toBe(true)
+      expect(await isQueued(SID2, 'report', dirs)).toBe(true)
+    })
+
+    test('空配列でもエラーにならない', async () => {
+      await enqueueBatch([], dirs)
+      const status = await getStatus(dirs)
+      expect(status.queued).toBe(0)
+    })
+
+    test('既存エントリは無視する（INSERT OR IGNORE）', async () => {
+      await enqueue(SID1, 'diary', dirs)
+      await enqueueBatch([
+        { sessionId: SID1, recipeName: 'diary' },  // duplicate
+        { sessionId: SID2, recipeName: 'report' },
+      ], dirs)
+
+      const status = await getStatus(dirs)
+      expect(status.queued).toBe(2)
+    })
+
+    test('無効な sessionId でバリデーションエラー', async () => {
+      expect(() =>
+        enqueueBatch([{ sessionId: 'invalid', recipeName: 'diary' }], dirs)
+      ).toThrow(/Invalid sessionId/)
+    })
+
+    test('無効な recipeName でバリデーションエラー', async () => {
+      expect(() =>
+        enqueueBatch([{ sessionId: SID1, recipeName: '../bad' }], dirs)
+      ).toThrow(/Invalid recipeName/)
+    })
+
+    test('バリデーションエラー時はどのエントリも挿入されない（トランザクション）', async () => {
+      try {
+        enqueueBatch([
+          { sessionId: SID1, recipeName: 'diary' },   // valid
+          { sessionId: 'invalid', recipeName: 'diary' }, // invalid
+        ], dirs)
+      } catch { /* expected */ }
+
+      const status = await getStatus(dirs)
+      expect(status.queued).toBe(0)
     })
   })
 

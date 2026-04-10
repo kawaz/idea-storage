@@ -32,9 +32,11 @@ const failedSet = new Set<string>()
 const doneMap = new Map<string, number>() // key -> lineCount
 
 mock.module('../lib/queue.ts', () => ({
-  enqueue: mock(async (sessionId: string, recipeName: string) => {
-    enqueueCalls.push({ sessionId, recipeName })
-    queuedSet.add(`${sessionId}.${recipeName}`)
+  enqueueBatch: mock((entries: Array<{ sessionId: string; recipeName: string }>) => {
+    for (const entry of entries) {
+      enqueueCalls.push(entry)
+      queuedSet.add(`${entry.sessionId}.${entry.recipeName}`)
+    }
   }),
   loadQueueState: mock(async () => ({
     queued: new Set(queuedSet),
