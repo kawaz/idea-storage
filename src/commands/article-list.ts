@@ -47,6 +47,7 @@ function oscLink(url: string, text: string): string {
 }
 
 export function stripAnsi(s: string): string {
+  // oxlint-disable-next-line no-control-regex -- intentional: strip ANSI escape sequences
   return s.replace(/\x1b\[[0-9;]*m/g, '')
 }
 

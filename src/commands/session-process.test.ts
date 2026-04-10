@@ -253,7 +253,7 @@ describe('buildSynthesisPrompt', () => {
 
 // --- processChunked のユニットテスト ---
 import { processChunked } from './session-process.ts'
-import { ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
+import { ClaudeAbortError } from '../lib/claude-runner.ts'
 
 // テスト用ヘルパー: processChunked をモックされた runClaude で検証する
 // processChunked は内部で runClaude を呼ぶため、_runClaudeOverride 経由でテストする
@@ -478,7 +478,6 @@ describe('processChunked', () => {
     const recipePrompt = 'test prompt'
 
     let chunk2CallCount = 0
-    const sectionResults: string[] = []
 
     const result = await processChunked(
       convText,

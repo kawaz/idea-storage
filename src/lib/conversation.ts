@@ -6,7 +6,7 @@
 
 import { basename } from 'node:path'
 import { stat } from 'node:fs/promises'
-import { streamSessionLines, countLines } from './session-jsonl.ts'
+import { streamSessionLines } from './session-jsonl.ts'
 import type { ConversationMessage, SessionMeta } from '../types/index.ts'
 
 /**

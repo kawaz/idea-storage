@@ -237,8 +237,7 @@ export async function processChunked(
       const totalBytes = new TextEncoder().encode(convText).length
       if (totalBytes <= DEFAULT_MAX_CHUNK_BYTES) {
         log({ msg: 'fallback_unsplit', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
-        try {
-          const fullPrompt = `${recipePrompt}
+        const fullPrompt = `${recipePrompt}
 
 ---
 ## セッション情報
@@ -246,13 +245,9 @@ ${sessionInfo}
 
 ## 会話タイムライン
 ${convText}`
-          const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal })
-          // 分割なしフォールバック成功: synthesis 不要（1チャンク相当）
-          return result
-        } catch (err) {
-          // Step 4: それでもダメなら例外を投げる
-          throw err
-        }
+        const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal })
+        // 分割なしフォールバック成功: synthesis 不要（1チャンク相当）
+        return result
       } else {
         log({ msg: 'fallback_unsplit_skipped', reason: 'text_too_large', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
         throw lastError
