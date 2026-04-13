@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { checkDependencies, DEFAULT_TASK_TIMEOUT_MS, MAX_CONSECUTIVE_FAILURES, OVERALL_TIMEOUT_MS } from './session-run.ts'
+import {
+  checkDependencies,
+  DEFAULT_TASK_TIMEOUT_MS,
+  MAX_CONSECUTIVE_FAILURES,
+  OVERALL_TIMEOUT_MS,
+  RATE_LIMIT_STALE_THRESHOLD_SEC,
+} from './session-run.ts'
 import { CliError } from '../lib/errors.ts'
 
 describe('session-run constants', () => {
@@ -14,6 +20,10 @@ describe('session-run constants', () => {
 
   test('DEFAULT_TASK_TIMEOUT_MS は 25分', () => {
     expect(DEFAULT_TASK_TIMEOUT_MS).toBe(25 * 60 * 1000)
+  })
+
+  test('RATE_LIMIT_STALE_THRESHOLD_SEC は 15分', () => {
+    expect(RATE_LIMIT_STALE_THRESHOLD_SEC).toBe(15 * 60)
   })
 })
 

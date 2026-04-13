@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildClaudeArgs, buildClaudeEnv, runClaude, ClaudeTimeoutError, ClaudeAbortError } from './claude-runner.ts'
+import { buildClaudeArgs, buildClaudeEnv, runClaude, ClaudeTimeoutError, ClaudeAbortError, extractResultFromJsonOutput } from './claude-runner.ts'
 import type { ClaudeRunOptions } from './claude-runner.ts'
 
 describe('claude-runner', () => {
@@ -123,6 +123,18 @@ describe('claude-runner', () => {
         '',
       ])
     })
+
+    test('captureUsage: true adds --output-format json', () => {
+      const args = buildClaudeArgs({ prompt: 'test', captureUsage: true })
+      const idx = args.indexOf('--output-format')
+      expect(idx).toBeGreaterThan(-1)
+      expect(args[idx + 1]).toBe('json')
+    })
+
+    test('captureUsage: false (default) omits --output-format', () => {
+      const args = buildClaudeArgs({ prompt: 'test' })
+      expect(args).not.toContain('--output-format')
+    })
   })
 
   describe('buildClaudeEnv', () => {
@@ -159,6 +171,53 @@ describe('claude-runner', () => {
           process.env.CLAUDECODE = originalEnv
         }
       }
+    })
+
+    test('captureUsage: true sets ANTHROPIC_LOG=debug', () => {
+      const env = buildClaudeEnv({ captureUsage: true })
+      expect(env.ANTHROPIC_LOG).toBe('debug')
+    })
+
+    test('captureUsage: false (default) does not set ANTHROPIC_LOG', () => {
+      const originalLog = process.env.ANTHROPIC_LOG
+      delete process.env.ANTHROPIC_LOG
+      try {
+        const env = buildClaudeEnv()
+        expect(env.ANTHROPIC_LOG).toBeUndefined()
+      } finally {
+        if (originalLog !== undefined) process.env.ANTHROPIC_LOG = originalLog
+      }
+    })
+  })
+
+  describe('extractResultFromJsonOutput', () => {
+    test('extracts .result from a JSON object line', () => {
+      const input = `some debug log
+more debug
+{"type":"result","subtype":"success","is_error":false,"result":"hello world","usage":{}}`
+      expect(extractResultFromJsonOutput(input)).toBe('hello world')
+    })
+
+    test('picks the LAST JSON result line even if there is earlier JSON-looking content', () => {
+      const input = `[log_abc] response parsed { url: "..." }
+{"type":"result","result":"final answer"}`
+      expect(extractResultFromJsonOutput(input)).toBe('final answer')
+    })
+
+    test('returns null when no valid result JSON found', () => {
+      expect(extractResultFromJsonOutput('no json here')).toBeNull()
+      expect(extractResultFromJsonOutput('')).toBeNull()
+    })
+
+    test('handles multi-line debug then trailing JSON', () => {
+      const input = `[log_1] sending request {
+  method: "post",
+  url: "..."
+}
+[log_1] response parsed { status: 200 }
+{"type":"result","subtype":"success","result":"ok"}
+`
+      expect(extractResultFromJsonOutput(input)).toBe('ok')
     })
   })
 

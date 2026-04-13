@@ -7,6 +7,8 @@ import { getStateDir } from '../lib/paths.ts'
 import { CliError } from '../lib/errors.ts'
 import { log } from '../lib/logging.ts'
 import { migrateIfNeeded } from '../lib/migrate-queue.ts'
+import { cleanupOldObservations, getLatestObservations } from '../lib/rate-limit-store.ts'
+import { shouldSkip } from '../lib/rate-limit-judge.ts'
 
 /** Default per-task timeout: 25 minutes */
 export const DEFAULT_TASK_TIMEOUT_MS = 25 * 60 * 1000
@@ -16,6 +18,13 @@ export const MAX_CONSECUTIVE_FAILURES = 5
 
 /** Overall timeout: 50 minutes (must be shorter than launchd StartInterval=3600s=60min) */
 export const OVERALL_TIMEOUT_MS = 50 * 60 * 1000
+
+/**
+ * Rate limit observations older than this are considered stale and the judge
+ * ignores them (treated as no-data → proceed). Keeps us from skipping forever
+ * on a week-old sample.
+ */
+export const RATE_LIMIT_STALE_THRESHOLD_SEC = 15 * 60 // 15 min
 
 /** Required external commands and their install instructions. */
 const REQUIRED_DEPS: ReadonlyArray<{ cmd: string; installHint: string }> = [
@@ -68,12 +77,31 @@ const sessionRun = define({
 
       await runEnqueue()
 
+      // Cleanup old rate-limit observations on worker startup
+      try {
+        cleanupOldObservations(Math.floor(Date.now() / 1000))
+      } catch (err) {
+        log({ msg: 'rate_limit_cleanup_failed', error: String(err) })
+      }
+
       let consecutiveFailures = 0
       const deadline = Date.now() + OVERALL_TIMEOUT_MS
 
       while (true) {
         if (Date.now() > deadline) {
           log({ msg: 'overall_timeout', timeoutMs: OVERALL_TIMEOUT_MS })
+          break
+        }
+
+        // Check rate_limits before picking up the next task.
+        // First iteration has no worker observation yet; judge returns proceed
+        // (no-observation case) so we always run at least once per launchd tick.
+        const latestObs = getLatestObservations(1)
+        const decision = shouldSkip(latestObs, Math.floor(Date.now() / 1000), {
+          staleThresholdSec: RATE_LIMIT_STALE_THRESHOLD_SEC,
+        })
+        if (decision.skip) {
+          log({ msg: 'rate_limit_skip', reason: decision.reason })
           break
         }
 

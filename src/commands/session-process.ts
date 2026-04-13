@@ -8,6 +8,8 @@ import { getSessionMeta } from '../lib/conversation.ts'
 import { generateFrontmatter } from '../lib/frontmatter.ts'
 import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
 import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
+import { recordObservation } from '../lib/rate-limit-store.ts'
+import type { RateLimitObservation } from '../lib/rate-limit-parser.ts'
 import { dequeue, markDone, markFailed, getDoneLineCount } from '../lib/queue.ts'
 import { CliError } from '../lib/errors.ts'
 import { splitTimeline, extractChunkText, DEFAULT_MAX_CHUNK_BYTES, type TimelineChunk } from '../lib/chunker.ts'
@@ -18,6 +20,25 @@ import { findSessionFile } from '../lib/session-finder.ts'
 import type { Recipe, SessionMeta } from '../types/index.ts'
 
 const csaBin = 'claude-session-analysis'
+
+/**
+ * Record a rate_limit observation from a worker claude call.
+ * Best-effort: any DB error is swallowed so worker processing isn't disrupted.
+ */
+function recordWorkerObservation(obs: RateLimitObservation): void {
+  try {
+    recordObservation(
+      {
+        ts: Math.floor(Date.now() / 1000),
+        fiveHour: obs.fiveHour,
+        sevenDay: obs.sevenDay,
+        source: 'worker',
+      },
+    )
+  } catch (err) {
+    logError({ msg: 'rate_limit_record_failed', error: String(err) })
+  }
+}
 
 /** CSA subprocess timeout: 10 minutes (実測では1.7MBセッションでも50ms以内だが余裕を持たせる) */
 export const CSA_TIMEOUT_MS = 10 * 60 * 1000
@@ -180,7 +201,7 @@ export async function processChunked(
     chunks.map(async (chunk) => {
       const chunkText = extractChunkText(lines, chunk)
       const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-      return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal })
+      return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation })
     })
   )
 
@@ -216,7 +237,7 @@ export async function processChunked(
         const chunk = chunks[idx]!
         const chunkText = extractChunkText(lines, chunk)
         const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-        return { idx, result: await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal }) }
+        return { idx, result: await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation }) }
       })
     )
 
@@ -245,7 +266,7 @@ ${sessionInfo}
 
 ## 会話タイムライン
 ${convText}`
-        const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal })
+        const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation })
         // 分割なしフォールバック成功: synthesis 不要（1チャンク相当）
         return result
       } else {
@@ -265,7 +286,7 @@ ${convText}`
 
   // 複数チャンク: 合成 (外部signalも渡す)
   const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo)
-  return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal })
+  return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal, captureUsage: true, onUsageObserved: recordWorkerObservation })
 }
 
 export type ProcessResult = 'processed' | 'failed' | 'empty'
@@ -433,7 +454,14 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
 
 ## 会話タイムライン
 ${timelineText}`
-      output = await runClaude({ prompt: fullPrompt, addDir: dataDir, timeoutMs: taskTimeoutMs, signal })
+      output = await runClaude({
+        prompt: fullPrompt,
+        addDir: dataDir,
+        timeoutMs: taskTimeoutMs,
+        signal,
+        captureUsage: true,
+        onUsageObserved: recordWorkerObservation,
+      })
     }
 
     // Generate frontmatter
