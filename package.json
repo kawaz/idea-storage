@@ -1,9 +1,9 @@
 {
   "name": "idea-storage",
   "version": "0.1.0",
-  "module": "src/index.ts",
-  "type": "module",
   "license": "MIT",
+  "type": "module",
+  "module": "src/index.ts",
   "scripts": {
     "build": "bun run scripts/build.ts",
     "test": "bun test",

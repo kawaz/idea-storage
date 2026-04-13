@@ -4,8 +4,8 @@
  * that listen for 'unhandledrejection' can type the handler parameter.
  */
 interface PromiseRejectionEvent extends Event {
-  readonly promise: Promise<unknown>
-  readonly reason: unknown
+  readonly promise: Promise<unknown>;
+  readonly reason: unknown;
 }
 
 /**
@@ -13,5 +13,5 @@ interface PromiseRejectionEvent extends Event {
  * is accepted by the type checker.
  */
 interface EventMap {
-  unhandledrejection: PromiseRejectionEvent
+  unhandledrejection: PromiseRejectionEvent;
 }

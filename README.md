@@ -54,9 +54,9 @@ idea-storage extract --max-chars N ... # Truncate from the beginning, keeping re
 
 ```typescript
 export default {
-  claudeDirs: ["~/.claude"],      // Directories to scan for session JSONL files
-  minAgeMinutes: 120,             // Ignore sessions newer than this (default: 120)
-}
+  claudeDirs: ["~/.claude"], // Directories to scan for session JSONL files
+  minAgeMinutes: 120, // Ignore sessions newer than this (default: 120)
+};
 ```
 
 See `config-examples/config.ts` for a full example.
@@ -89,12 +89,12 @@ See `docs/dr-005-rate-limits-aware-scheduling.md` for the full design.
 
 All paths follow the XDG Base Directory Specification.
 
-| Path | Purpose |
-|------|---------|
-| `~/.config/idea-storage/config.ts` | Configuration |
-| `~/.config/idea-storage/recipe-*.md` | Recipe definitions |
-| `~/.local/share/idea-storage/` | Generated articles |
-| `~/.local/state/idea-storage/` | Queue state + rate_limits observations (`queue.db`) |
+| Path                                 | Purpose                                             |
+| ------------------------------------ | --------------------------------------------------- |
+| `~/.config/idea-storage/config.ts`   | Configuration                                       |
+| `~/.config/idea-storage/recipe-*.md` | Recipe definitions                                  |
+| `~/.local/share/idea-storage/`       | Generated articles                                  |
+| `~/.local/state/idea-storage/`       | Queue state + rate_limits observations (`queue.db`) |
 
 ## Development
 

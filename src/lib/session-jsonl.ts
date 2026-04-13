@@ -9,22 +9,22 @@
  * Empty lines are skipped.
  */
 export async function* streamSessionLines(filePath: string): AsyncGenerator<unknown> {
-  const file = Bun.file(filePath)
-  const stream = file.stream()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  const file = Bun.file(filePath);
+  const stream = file.stream();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
   for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split('\n')
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split("\n");
     // Keep the last element as it may be incomplete
-    buffer = lines.pop() ?? ''
+    buffer = lines.pop() ?? "";
 
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed.length === 0) continue
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
       try {
-        yield JSON.parse(trimmed) as unknown
+        yield JSON.parse(trimmed) as unknown;
       } catch {
         // Skip broken JSON lines silently (e.g. truncated writes)
       }
@@ -32,11 +32,11 @@ export async function* streamSessionLines(filePath: string): AsyncGenerator<unkn
   }
 
   // Process remaining buffer
-  buffer += decoder.decode()
-  const trimmed = buffer.trim()
+  buffer += decoder.decode();
+  const trimmed = buffer.trim();
   if (trimmed.length > 0) {
     try {
-      yield JSON.parse(trimmed) as unknown
+      yield JSON.parse(trimmed) as unknown;
     } catch {
       // Skip broken last line silently (e.g. incomplete write)
     }
@@ -47,24 +47,24 @@ export async function* streamSessionLines(filePath: string): AsyncGenerator<unkn
  * Count non-empty lines in a JSONL file using streaming.
  */
 export async function countLines(filePath: string): Promise<number> {
-  let count = 0
-  const file = Bun.file(filePath)
-  const stream = file.stream()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  let count = 0;
+  const file = Bun.file(filePath);
+  const stream = file.stream();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
   for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
 
     for (const line of lines) {
-      if (line.trim().length > 0) count++
+      if (line.trim().length > 0) count++;
     }
   }
 
-  buffer += decoder.decode()
-  if (buffer.trim().length > 0) count++
+  buffer += decoder.decode();
+  if (buffer.trim().length > 0) count++;
 
-  return count
+  return count;
 }

@@ -33,18 +33,19 @@ CREATE INDEX idx_status ON queue_entries(status);
 CREATE INDEX idx_status_updated ON queue_entries(status, updated_at);
 ```
 
-| 操作 | 現状 | SQLite |
-|------|------|--------|
-| enqueue N件 | N回のファイル作成 | 1 transaction, N INSERT OR IGNORE |
-| loadQueueState | readdir x3 + 5000 read | 1 SELECT (全件) |
-| dequeue | readdir + 8000 stat | 1 SELECT + 1 UPDATE (newest queued) |
-| markDone | unlink + write | 1 UPDATE |
-| markFailed | unlink + write + read(既存meta) | 1 UPDATE (retry_count++) |
-| getStatus | readdir x3 + count | 1 SELECT COUNT GROUP BY status |
-| isDone | 1 file read | 1 SELECT |
-| isFailed | 1 file read + 1 stat | 1 SELECT |
+| 操作           | 現状                            | SQLite                              |
+| -------------- | ------------------------------- | ----------------------------------- |
+| enqueue N件    | N回のファイル作成               | 1 transaction, N INSERT OR IGNORE   |
+| loadQueueState | readdir x3 + 5000 read          | 1 SELECT (全件)                     |
+| dequeue        | readdir + 8000 stat             | 1 SELECT + 1 UPDATE (newest queued) |
+| markDone       | unlink + write                  | 1 UPDATE                            |
+| markFailed     | unlink + write + read(既存meta) | 1 UPDATE (retry_count++)            |
+| getStatus      | readdir x3 + count              | 1 SELECT COUNT GROUP BY status      |
+| isDone         | 1 file read                     | 1 SELECT                            |
+| isFailed       | 1 file read + 1 stat            | 1 SELECT                            |
 
 利点:
+
 - トランザクションで一括書き込み（enqueue が劇的に高速化）
 - dequeue が O(1)（インデックス利用）
 - ファイルシステムへの散発的 I/O がなくなる
@@ -52,6 +53,7 @@ CREATE INDEX idx_status_updated ON queue_entries(status, updated_at);
 - Bun 組み込みで追加依存ゼロ
 
 欠点:
+
 - ファイルベースの透明性がなくなる（ls で状態確認できない）
 - DB ファイル破損のリスク（WAL + checkpoint で緩和）
 - マイグレーション（既存データの移行）が必要
@@ -61,10 +63,12 @@ CREATE INDEX idx_status_updated ON queue_entries(status, updated_at);
 全エントリを1つの NDJSON ファイルに記録。
 
 利点:
+
 - シンプル、人間が読める
 - 追記のみで書き込み（append-only）
 
 欠点:
+
 - 状態更新（queued → done）に書き換えが必要 → 全ファイル読み書き or compaction
 - dequeue で全件スキャンが必要（インデックスなし）
 - ファイルサイズが肥大化
@@ -75,10 +79,12 @@ CREATE INDEX idx_status_updated ON queue_entries(status, updated_at);
 全状態を1つの JSON オブジェクトで管理。
 
 利点:
+
 - 最もシンプル
 - 人間が読める
 
 欠点:
+
 - 全件読み込み → 更新 → 全件書き込みが毎操作で発生
 - 13,000+ エントリの JSON シリアライズ/デシリアライズは軽くない
 - アトミック書き込みが必要（一時ファイル + rename）
@@ -91,15 +97,18 @@ CREATE INDEX idx_status_updated ON queue_entries(status, updated_at);
 - done/failed のファイル内容をファイル名にエンコード
 
 利点:
+
 - 既存コードからの変更が最小
 
 欠点:
+
 - 本質的な問題（ファイル数の肥大化）は解決しない
 - ディレクトリの readdir コストは変わらない
 
 ## 決定: A. SQLite
 
 理由:
+
 1. **I/O パターンとの親和性**: enqueue の一括 INSERT、dequeue のインデックス引き、状態更新の UPDATE — 全てが RDB の得意パターン
 2. **Bun 組み込み**: `bun:sqlite` で追加依存ゼロ。同期 API で使いやすい
 3. **トランザクション**: enqueue で数百件の INSERT をトランザクションでまとめられる

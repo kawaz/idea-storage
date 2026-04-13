@@ -4,7 +4,7 @@
 
 /** Extract a human-readable message from an unknown error value. */
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -14,11 +14,11 @@ export function errorMessage(err: unknown): string {
  * and call process.exit(exitCode).
  */
 export class CliError extends Error {
-  readonly exitCode: number
+  readonly exitCode: number;
   constructor(message: string, exitCode = 1) {
-    super(message)
-    this.name = 'CliError'
-    this.exitCode = exitCode
+    super(message);
+    this.name = "CliError";
+    this.exitCode = exitCode;
   }
 }
 
@@ -31,7 +31,7 @@ export class CliError extends Error {
  * throw CliError instead.
  */
 export function exitWithError(err: unknown): never {
-  const msg = typeof err === 'string' ? err : errorMessage(err)
-  console.error(`Error: ${msg}`)
-  process.exit(1)
+  const msg = typeof err === "string" ? err : errorMessage(err);
+  console.error(`Error: ${msg}`);
+  process.exit(1);
 }

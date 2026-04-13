@@ -1,8 +1,8 @@
-import { open, readFile, unlink, mkdir, utimes, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { open, readFile, unlink, mkdir, utimes, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 
-export const HEARTBEAT_INTERVAL_MS = 30_000 // 30 seconds
-export const STALE_THRESHOLD_MS = 5 * 60_000 // 5 minutes
+export const HEARTBEAT_INTERVAL_MS = 30_000; // 30 seconds
+export const STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes
 
 /**
  * Check if a process with the given PID is alive.
@@ -10,10 +10,10 @@ export const STALE_THRESHOLD_MS = 5 * 60_000 // 5 minutes
 function isProcessAlive(pid: number): boolean {
   try {
     // signal 0 does not kill the process, just checks if it exists
-    process.kill(pid, 0)
-    return true
+    process.kill(pid, 0);
+    return true;
   } catch {
-    return false
+    return false;
   }
 }
 
@@ -26,30 +26,30 @@ function isProcessAlive(pid: number): boolean {
  */
 export async function acquireLock(lockPath: string): Promise<(() => Promise<void>) | null> {
   // Ensure parent directory exists
-  await mkdir(dirname(lockPath), { recursive: true })
+  await mkdir(dirname(lockPath), { recursive: true });
 
   // Attempt atomic creation with O_CREAT | O_EXCL | O_WRONLY ('wx' flag)
   try {
-    const fh = await open(lockPath, 'wx')
-    await fh.writeFile(String(process.pid))
-    await fh.close()
-    return createRelease(lockPath, startHeartbeat(lockPath))
+    const fh = await open(lockPath, "wx");
+    await fh.writeFile(String(process.pid));
+    await fh.close();
+    return createRelease(lockPath, startHeartbeat(lockPath));
   } catch (err: unknown) {
     if (!isEexist(err)) {
-      throw err
+      throw err;
     }
   }
 
   // Lock file already exists (EEXIST) — check if stale
   try {
-    const content = await readFile(lockPath, 'utf-8')
-    const pid = parseInt(content.trim(), 10)
+    const content = await readFile(lockPath, "utf-8");
+    const pid = parseInt(content.trim(), 10);
     if (!isNaN(pid) && isProcessAlive(pid)) {
       // PID alive — check heartbeat freshness
       try {
-        const s = await stat(lockPath)
+        const s = await stat(lockPath);
         if (Date.now() - s.mtimeMs < STALE_THRESHOLD_MS) {
-          return null // active lock with fresh heartbeat
+          return null; // active lock with fresh heartbeat
         }
         // Heartbeat stale — hung process
       } catch {
@@ -62,50 +62,53 @@ export async function acquireLock(lockPath: string): Promise<(() => Promise<void
 
   // Stale lock — remove and retry atomically
   try {
-    await unlink(lockPath)
+    await unlink(lockPath);
   } catch {
     // Another process may have already removed it — that's fine
   }
 
   try {
-    const fh = await open(lockPath, 'wx')
-    await fh.writeFile(String(process.pid))
-    await fh.close()
-    return createRelease(lockPath, startHeartbeat(lockPath))
+    const fh = await open(lockPath, "wx");
+    await fh.writeFile(String(process.pid));
+    await fh.close();
+    return createRelease(lockPath, startHeartbeat(lockPath));
   } catch (err: unknown) {
     if (isEexist(err)) {
       // Another process won the race after stale removal
-      return null
+      return null;
     }
-    throw err
+    throw err;
   }
 }
 
 function startHeartbeat(lockPath: string): ReturnType<typeof setInterval> {
   const id = setInterval(async () => {
     try {
-      const now = new Date()
-      await utimes(lockPath, now, now)
+      const now = new Date();
+      await utimes(lockPath, now, now);
     } catch {
       // Best effort: file may have been removed
     }
-  }, HEARTBEAT_INTERVAL_MS)
+  }, HEARTBEAT_INTERVAL_MS);
   // Don't let the heartbeat timer prevent process exit
-  id.unref()
-  return id
+  id.unref();
+  return id;
 }
 
-function createRelease(lockPath: string, heartbeatId: ReturnType<typeof setInterval>): () => Promise<void> {
+function createRelease(
+  lockPath: string,
+  heartbeatId: ReturnType<typeof setInterval>,
+): () => Promise<void> {
   return async () => {
-    clearInterval(heartbeatId)
+    clearInterval(heartbeatId);
     try {
-      await unlink(lockPath)
+      await unlink(lockPath);
     } catch {
       // Best effort: file may already be removed
     }
-  }
+  };
 }
 
 function isEexist(err: unknown): boolean {
-  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'EEXIST'
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === "EEXIST";
 }

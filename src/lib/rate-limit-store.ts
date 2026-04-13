@@ -1,39 +1,39 @@
-import { Database } from 'bun:sqlite'
-import { dirname, join } from 'node:path'
-import { mkdirSync } from 'node:fs'
-import { getStateDir } from './paths.ts'
-import type { BucketObservation } from './rate-limit-parser.ts'
+import { Database } from "bun:sqlite";
+import { dirname, join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { getStateDir } from "./paths.ts";
+import type { BucketObservation } from "./rate-limit-parser.ts";
 
 export interface RateLimitStoreDirs {
   /** state dir that contains queue.db (e.g., ~/.local/share/idea-storage) */
-  stateDir: string
+  stateDir: string;
 }
 
-export type ObservationSource = 'worker' | 'probe'
+export type ObservationSource = "worker" | "probe";
 
 export interface RecordInput {
-  ts: number // unix epoch seconds
-  fiveHour: BucketObservation | null
-  sevenDay: BucketObservation | null
-  source: ObservationSource
+  ts: number; // unix epoch seconds
+  fiveHour: BucketObservation | null;
+  sevenDay: BucketObservation | null;
+  source: ObservationSource;
 }
 
 export interface ObservationRow {
-  ts: number
-  fiveHourUtil: number | null
-  fiveHourReset: number | null
-  fiveHourStatus: string | null
-  sevenDayUtil: number | null
-  sevenDayReset: number | null
-  sevenDayStatus: string | null
-  source: ObservationSource
+  ts: number;
+  fiveHourUtil: number | null;
+  fiveHourReset: number | null;
+  fiveHourStatus: string | null;
+  sevenDayUtil: number | null;
+  sevenDayReset: number | null;
+  sevenDayStatus: string | null;
+  source: ObservationSource;
 }
 
 function resolveDbPath(dirs?: RateLimitStoreDirs): string {
   if (dirs) {
-    return join(dirs.stateDir, 'queue.db')
+    return join(dirs.stateDir, "queue.db");
   }
-  return join(getStateDir(), 'queue.db')
+  return join(getStateDir(), "queue.db");
 }
 
 function initSchema(db: Database): void {
@@ -46,22 +46,22 @@ function initSchema(db: Database): void {
     seven_day_reset INTEGER,
     seven_day_status TEXT,
     source TEXT NOT NULL
-  )`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_rl_ts ON rate_limits(ts DESC)`)
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_rl_ts ON rate_limits(ts DESC)`);
 }
 
 function getDb(dirs?: RateLimitStoreDirs): Database {
-  const dbPath = resolveDbPath(dirs)
-  mkdirSync(dirname(dbPath), { recursive: true })
-  const db = new Database(dbPath)
-  db.run('PRAGMA journal_mode = WAL')
-  db.run('PRAGMA busy_timeout = 5000')
-  initSchema(db)
-  return db
+  const dbPath = resolveDbPath(dirs);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA busy_timeout = 5000");
+  initSchema(db);
+  return db;
 }
 
 export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs): void {
-  const db = getDb(dirs)
+  const db = getDb(dirs);
   try {
     db.run(
       `INSERT OR IGNORE INTO rate_limits
@@ -78,14 +78,14 @@ export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs)
         input.sevenDay?.status ?? null,
         input.source,
       ],
-    )
+    );
   } finally {
-    db.close()
+    db.close();
   }
 }
 
 export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs): ObservationRow[] {
-  const db = getDb(dirs)
+  const db = getDb(dirs);
   try {
     const rows = db
       .query(
@@ -94,15 +94,15 @@ export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs):
          FROM rate_limits ORDER BY ts DESC LIMIT ?`,
       )
       .all(limit) as Array<{
-      ts: number
-      five_hour_util: number | null
-      five_hour_reset: number | null
-      five_hour_status: string | null
-      seven_day_util: number | null
-      seven_day_reset: number | null
-      seven_day_status: string | null
-      source: string
-    }>
+      ts: number;
+      five_hour_util: number | null;
+      five_hour_reset: number | null;
+      five_hour_status: string | null;
+      seven_day_util: number | null;
+      seven_day_reset: number | null;
+      seven_day_status: string | null;
+      source: string;
+    }>;
     return rows.map((r) => ({
       ts: r.ts,
       fiveHourUtil: r.five_hour_util,
@@ -112,9 +112,9 @@ export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs):
       sevenDayReset: r.seven_day_reset,
       sevenDayStatus: r.seven_day_status,
       source: r.source as ObservationSource,
-    }))
+    }));
   } finally {
-    db.close()
+    db.close();
   }
 }
 
@@ -127,14 +127,14 @@ export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs):
  * @param nowSec 現在時刻 (Unix epoch seconds)。テスト時に固定値を渡せる。
  */
 export function cleanupOldObservations(nowSec: number, dirs?: RateLimitStoreDirs): void {
-  const db = getDb(dirs)
+  const db = getDb(dirs);
   try {
-    const eightDaysAgo = nowSec - 8 * 86400
-    const oneDayAgo = nowSec - 86400
+    const eightDaysAgo = nowSec - 8 * 86400;
+    const oneDayAgo = nowSec - 86400;
 
     const tx = db.transaction(() => {
       // Stage 1: delete rows older than 8d
-      db.run(`DELETE FROM rate_limits WHERE ts < ?`, [eightDaysAgo])
+      db.run(`DELETE FROM rate_limits WHERE ts < ?`, [eightDaysAgo]);
 
       // Stage 2: in the 1d..8d range, keep only the latest ts per 1-hour bucket
       db.run(
@@ -146,10 +146,10 @@ export function cleanupOldObservations(nowSec: number, dirs?: RateLimitStoreDirs
              GROUP BY ts / 3600
            )`,
         [oneDayAgo, oneDayAgo],
-      )
-    })
-    tx()
+      );
+    });
+    tx();
   } finally {
-    db.close()
+    db.close();
   }
 }

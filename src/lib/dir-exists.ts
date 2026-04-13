@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { stat } from "node:fs/promises";
 
 /**
  * Check if a path exists and is a directory.
@@ -6,9 +6,9 @@ import { stat } from 'node:fs/promises'
  */
 export async function dirExists(path: string): Promise<boolean> {
   try {
-    const s = await stat(path)
-    return s.isDirectory()
+    const s = await stat(path);
+    return s.isDirectory();
   } catch {
-    return false
+    return false;
   }
 }

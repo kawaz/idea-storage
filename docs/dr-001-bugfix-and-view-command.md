@@ -3,6 +3,7 @@
 ## 背景
 
 TypeScript/Bunリファクタリング完了後、以下の問題が発見された：
+
 - getRecipesDir() が存在しない recipes/ サブディレクトリを参照（修正済み）
 - launchdが旧シェルスクリプトを参照（修正済み）
 - session-process.ts でセッションファイル未発見時にmarkFailed()が呼ばれない

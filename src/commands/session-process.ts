@@ -1,25 +1,30 @@
-import { define } from 'gunshi'
-import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
-import { loadConfig } from '../lib/config.ts'
-import { loadRecipes } from '../lib/recipe.ts'
-import { getRecipesDir, getDataDir } from '../lib/paths.ts'
-import { getSessionMeta } from '../lib/conversation.ts'
-import { generateFrontmatter } from '../lib/frontmatter.ts'
-import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from '../lib/claude-runner.ts'
-import type { ClaudeRunOptions } from '../lib/claude-runner.ts'
-import { recordObservation } from '../lib/rate-limit-store.ts'
-import type { RateLimitObservation } from '../lib/rate-limit-parser.ts'
-import { dequeue, markDone, markFailed, getDoneLineCount } from '../lib/queue.ts'
-import { CliError } from '../lib/errors.ts'
-import { splitTimeline, extractChunkText, DEFAULT_MAX_CHUNK_BYTES, type TimelineChunk } from '../lib/chunker.ts'
-import { spawnWithTimeout, SpawnTimeoutError } from '../lib/spawn-timeout.ts'
-import { log, logError } from '../lib/logging.ts'
-import { formatDatePath, formatFileTimestamp } from '../lib/format.ts'
-import { findSessionFile } from '../lib/session-finder.ts'
-import type { Recipe, SessionMeta } from '../types/index.ts'
+import { define } from "gunshi";
+import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { loadConfig } from "../lib/config.ts";
+import { loadRecipes } from "../lib/recipe.ts";
+import { getRecipesDir, getDataDir } from "../lib/paths.ts";
+import { getSessionMeta } from "../lib/conversation.ts";
+import { generateFrontmatter } from "../lib/frontmatter.ts";
+import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from "../lib/claude-runner.ts";
+import type { ClaudeRunOptions } from "../lib/claude-runner.ts";
+import { recordObservation } from "../lib/rate-limit-store.ts";
+import type { RateLimitObservation } from "../lib/rate-limit-parser.ts";
+import { dequeue, markDone, markFailed, getDoneLineCount } from "../lib/queue.ts";
+import { CliError } from "../lib/errors.ts";
+import {
+  splitTimeline,
+  extractChunkText,
+  DEFAULT_MAX_CHUNK_BYTES,
+  type TimelineChunk,
+} from "../lib/chunker.ts";
+import { spawnWithTimeout, SpawnTimeoutError } from "../lib/spawn-timeout.ts";
+import { log, logError } from "../lib/logging.ts";
+import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
+import { findSessionFile } from "../lib/session-finder.ts";
+import type { Recipe, SessionMeta } from "../types/index.ts";
 
-const csaBin = 'claude-session-analysis'
+const csaBin = "claude-session-analysis";
 
 /**
  * Record a rate_limit observation from a worker claude call.
@@ -27,24 +32,22 @@ const csaBin = 'claude-session-analysis'
  */
 function recordWorkerObservation(obs: RateLimitObservation): void {
   try {
-    recordObservation(
-      {
-        ts: Math.floor(Date.now() / 1000),
-        fiveHour: obs.fiveHour,
-        sevenDay: obs.sevenDay,
-        source: 'worker',
-      },
-    )
+    recordObservation({
+      ts: Math.floor(Date.now() / 1000),
+      fiveHour: obs.fiveHour,
+      sevenDay: obs.sevenDay,
+      source: "worker",
+    });
   } catch (err) {
-    logError({ msg: 'rate_limit_record_failed', error: String(err) })
+    logError({ msg: "rate_limit_record_failed", error: String(err) });
   }
 }
 
 /** CSA subprocess timeout: 10 minutes (実測では1.7MBセッションでも50ms以内だが余裕を持たせる) */
-export const CSA_TIMEOUT_MS = 10 * 60 * 1000
+export const CSA_TIMEOUT_MS = 10 * 60 * 1000;
 
 function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
-  return recipes.find(r => r.name === name)
+  return recipes.find((r) => r.name === name);
 }
 
 // --- フォークセッション用のタイムライン切り詰め ---
@@ -55,44 +58,44 @@ function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
  * そのブロック以降（--- 区切り含む）を返す。
  */
 export function trimTimelineForFork(timelineText: string, firstNewUuid: string): string {
-  if (!firstNewUuid) return timelineText
+  if (!firstNewUuid) return timelineText;
 
-  const blockIdPrefix = firstNewUuid.slice(0, 8)
-  const lines = timelineText.split('\n')
+  const blockIdPrefix = firstNewUuid.slice(0, 8);
+  const lines = timelineText.split("\n");
 
   // ヘッダー（最初の --- ... --- ペア）を特定
-  let headerEnd = 0
-  if (lines[0]?.trim() === '---') {
-    let i = 1
-    while (i < lines.length && lines[i]?.trim() !== '---') i++
-    headerEnd = i + 1 // 閉じの --- の次
+  let headerEnd = 0;
+  if (lines[0]?.trim() === "---") {
+    let i = 1;
+    while (i < lines.length && lines[i]?.trim() !== "---") i++;
+    headerEnd = i + 1; // 閉じの --- の次
   }
 
   // CSA ブロックID パターン: タイプ文字(U,T,B,F,G,R,W,S等) + 8文字hex
   // .includes() だとメッセージ本文中の偶然の一致で誤マッチするため、
   // CSA のブロックIDフォーマットに限定してマッチする
-  const blockIdPattern = new RegExp(`[A-Z]${blockIdPrefix}\\b`)
+  const blockIdPattern = new RegExp(`[A-Z]${blockIdPrefix}\\b`);
 
   // ブロックIDを含む行を探す
   for (let i = headerEnd; i < lines.length; i++) {
-    if (blockIdPattern.test(lines[i] ?? '')) {
+    if (blockIdPattern.test(lines[i] ?? "")) {
       // この行を含むブロックの開始位置（直前の --- か headerEnd）を見つける
-      let blockStart = i
+      let blockStart = i;
       for (let j = i - 1; j >= headerEnd; j--) {
-        if (lines[j]?.trim() === '---') {
-          blockStart = j
-          break
+        if (lines[j]?.trim() === "---") {
+          blockStart = j;
+          break;
         }
       }
       // ヘッダー + このブロック以降を返す
-      const header = lines.slice(0, headerEnd).join('\n')
-      const body = lines.slice(blockStart).join('\n')
-      return header + '\n' + body
+      const header = lines.slice(0, headerEnd).join("\n");
+      const body = lines.slice(blockStart).join("\n");
+      return header + "\n" + body;
     }
   }
 
   // 見つからない場合はそのまま返す
-  return timelineText
+  return timelineText;
 }
 
 // --- チャンク分割パス用のプロンプトビルダー ---
@@ -129,7 +132,7 @@ ${recipePrompt}
 ${sessionInfo}
 
 ## 会話タイムライン（このチャンクの部分）
-${chunkText}`
+${chunkText}`;
 }
 
 /**
@@ -156,7 +159,7 @@ export function buildSynthesisPrompt(sections: string[], sessionInfo: string): s
 ${sessionInfo}
 
 ## セクション一覧
-${sections.map((s, i) => `### --- セクション ${i + 1} ---\n${s}`).join('\n\n')}`
+${sections.map((s, i) => `### --- セクション ${i + 1} ---\n${s}`).join("\n\n")}`;
 }
 
 /**
@@ -181,83 +184,98 @@ export async function processChunked(
   _runClaudeOverride?: (options: ClaudeRunOptions) => Promise<string>,
   externalSignal?: AbortSignal,
 ): Promise<string> {
-  const run = _runClaudeOverride ?? runClaude
-  const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || 'unknown'}\n- Created: ${meta.startTime.toISOString()}`
-  const lines = convText.split('\n')
+  const run = _runClaudeOverride ?? runClaude;
+  const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || "unknown"}\n- Created: ${meta.startTime.toISOString()}`;
+  const lines = convText.split("\n");
 
-  const controller = new AbortController()
+  const controller = new AbortController();
 
   // 外部 signal が abort されたら内部の controller も abort する
   if (externalSignal) {
     if (externalSignal.aborted) {
-      controller.abort()
+      controller.abort();
     } else {
-      externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
+      externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
     }
   }
 
   // --- Step 1: 全チャンクを並列実行 ---
   const sectionSettled = await Promise.allSettled(
     chunks.map(async (chunk) => {
-      const chunkText = extractChunkText(lines, chunk)
-      const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-      return await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation })
-    })
-  )
+      const chunkText = extractChunkText(lines, chunk);
+      const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo);
+      return await run({
+        prompt: sectionPrompt,
+        timeoutMs,
+        signal: controller.signal,
+        captureUsage: true,
+        onUsageObserved: recordWorkerObservation,
+      });
+    }),
+  );
 
   // 結果を集約: index をキーにした Map で管理
-  const sectionResults = new Map<number, string>()
-  const failedIndices: number[] = []
-  let hasAbortError = false
+  const sectionResults = new Map<number, string>();
+  const failedIndices: number[] = [];
+  let hasAbortError = false;
 
   for (let i = 0; i < sectionSettled.length; i++) {
-    const result = sectionSettled[i]!
-    if (result.status === 'fulfilled') {
-      sectionResults.set(i, result.value)
+    const result = sectionSettled[i]!;
+    if (result.status === "fulfilled") {
+      sectionResults.set(i, result.value);
     } else if (result.reason instanceof ClaudeAbortError) {
-      hasAbortError = true
+      hasAbortError = true;
     } else {
-      failedIndices.push(i)
+      failedIndices.push(i);
     }
   }
 
   // 外部 signal による中断: リトライやフォールバックをスキップ
   if (hasAbortError && sectionResults.size === 0) {
-    throw new ClaudeAbortError()
+    throw new ClaudeAbortError();
   }
 
   // --- Step 2: 失敗チャンクを1回リトライ ---
-  let lastError: unknown = null
+  let lastError: unknown = null;
 
   if (failedIndices.length > 0) {
-    log({ msg: 'chunk_retry', failedChunks: failedIndices.length, totalChunks: chunks.length })
+    log({ msg: "chunk_retry", failedChunks: failedIndices.length, totalChunks: chunks.length });
 
     const retrySettled = await Promise.allSettled(
       failedIndices.map(async (idx) => {
-        const chunk = chunks[idx]!
-        const chunkText = extractChunkText(lines, chunk)
-        const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo)
-        return { idx, result: await run({ prompt: sectionPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation }) }
-      })
-    )
+        const chunk = chunks[idx]!;
+        const chunkText = extractChunkText(lines, chunk);
+        const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo);
+        return {
+          idx,
+          result: await run({
+            prompt: sectionPrompt,
+            timeoutMs,
+            signal: controller.signal,
+            captureUsage: true,
+            onUsageObserved: recordWorkerObservation,
+          }),
+        };
+      }),
+    );
 
-    const stillFailedIndices: number[] = []
+    const stillFailedIndices: number[] = [];
     for (const settled of retrySettled) {
-      if (settled.status === 'fulfilled') {
-        sectionResults.set(settled.value.idx, settled.value.result)
+      if (settled.status === "fulfilled") {
+        sectionResults.set(settled.value.idx, settled.value.result);
       } else {
-        lastError = settled.reason
+        lastError = settled.reason;
         // リトライ結果から失敗したindexを特定
         // Promise.allSettled は入力と同じ順序なので、failedIndices[i] で追跡
-        stillFailedIndices.push(failedIndices[retrySettled.indexOf(settled)]!)
+        stillFailedIndices.push(failedIndices[retrySettled.indexOf(settled)]!);
       }
     }
 
     // --- Step 3: まだ失敗があり、全体サイズが許容内なら分割なしフォールバック ---
     if (stillFailedIndices.length > 0) {
-      const totalBytes = new TextEncoder().encode(convText).length
+      const totalBytes = new TextEncoder().encode(convText).length;
       if (totalBytes <= DEFAULT_MAX_CHUNK_BYTES) {
-        log({ msg: 'fallback_unsplit', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
+        log({ msg: "fallback_unsplit", totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES });
         const fullPrompt = `${recipePrompt}
 
 ---
@@ -265,192 +283,220 @@ export async function processChunked(
 ${sessionInfo}
 
 ## 会話タイムライン
-${convText}`
-        const result = await run({ prompt: fullPrompt, timeoutMs, signal: controller.signal, captureUsage: true, onUsageObserved: recordWorkerObservation })
+${convText}`;
+        const result = await run({
+          prompt: fullPrompt,
+          timeoutMs,
+          signal: controller.signal,
+          captureUsage: true,
+          onUsageObserved: recordWorkerObservation,
+        });
         // 分割なしフォールバック成功: synthesis 不要（1チャンク相当）
-        return result
+        return result;
       } else {
-        log({ msg: 'fallback_unsplit_skipped', reason: 'text_too_large', totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES })
-        throw lastError
+        log({
+          msg: "fallback_unsplit_skipped",
+          reason: "text_too_large",
+          totalBytes,
+          maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES,
+        });
+        throw lastError;
       }
     }
   }
 
   // 全チャンク成功
-  const orderedResults = chunks.map((_, i) => sectionResults.get(i)!)
+  const orderedResults = chunks.map((_, i) => sectionResults.get(i)!);
 
   // チャンク1つの場合は synthesis 不要: セクション結果をそのまま返す
   if (orderedResults.length === 1) {
-    return orderedResults[0]!
+    return orderedResults[0]!;
   }
 
   // 複数チャンク: 合成 (外部signalも渡す)
-  const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo)
-  return run({ prompt: synthesisPrompt, timeoutMs, signal: externalSignal, captureUsage: true, onUsageObserved: recordWorkerObservation })
+  const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo);
+  return run({
+    prompt: synthesisPrompt,
+    timeoutMs,
+    signal: externalSignal,
+    captureUsage: true,
+    onUsageObserved: recordWorkerObservation,
+  });
 }
 
-export type ProcessResult = 'processed' | 'failed' | 'empty'
+export type ProcessResult = "processed" | "failed" | "empty";
 
 export interface RunProcessOptions {
-  taskTimeoutMs?: number
+  taskTimeoutMs?: number;
   /** AbortSignal from the overall timeout. Propagated to runClaude calls. */
-  signal?: AbortSignal
+  signal?: AbortSignal;
 }
 
 export async function runProcess(options: RunProcessOptions = {}): Promise<ProcessResult> {
-  const entry = await dequeue()
+  const entry = await dequeue();
   if (!entry) {
-    log({ msg: 'no_items_in_queue' })
-    return 'empty'
+    log({ msg: "no_items_in_queue" });
+    return "empty";
   }
 
-  const { sessionId, recipeName, key } = entry
-  const config = await loadConfig()
-  const dataDir = getDataDir()
+  const { sessionId, recipeName, key } = entry;
+  const config = await loadConfig();
+  const dataDir = getDataDir();
 
   // Find session file
-  const sessionFile = await findSessionFile(config.claudeDirs, sessionId)
+  const sessionFile = await findSessionFile(config.claudeDirs, sessionId);
   if (!sessionFile) {
-    log({ key, msg: 'session_file_not_found' })
-    await markFailed(key, 'session file not found')
-    return 'failed'
+    log({ key, msg: "session_file_not_found" });
+    await markFailed(key, "session file not found");
+    return "failed";
   }
 
   // Find recipe
-  let recipes: Recipe[]
+  let recipes: Recipe[];
   try {
-    recipes = await loadRecipes(getRecipesDir())
+    recipes = await loadRecipes(getRecipesDir());
   } catch {
-    throw new CliError(`No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`)
+    throw new CliError(
+      `No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`,
+    );
   }
 
-  const recipe = findRecipeByName(recipes, recipeName)
+  const recipe = findRecipeByName(recipes, recipeName);
   if (!recipe) {
-    log({ key, msg: 'recipe_not_found', recipe: recipeName })
-    await markFailed(key, `recipe not found: ${recipeName}`)
-    return 'failed'
+    log({ key, msg: "recipe_not_found", recipe: recipeName });
+    await markFailed(key, `recipe not found: ${recipeName}`);
+    return "failed";
   }
 
   // Get session metadata
-  const meta = await getSessionMeta(sessionFile)
+  const meta = await getSessionMeta(sessionFile);
 
   // Early skip for empty session files (0 lines = no parseable JSONL content)
   if (meta.lineCount === 0) {
-    log({ key, msg: 'empty_session' })
-    await markFailed(key, 'empty session (0 lines)')
-    return 'failed'
+    log({ key, msg: "empty_session" });
+    await markFailed(key, "empty session (0 lines)");
+    return "failed";
   }
 
   // Early skip for sessions that have no user/assistant turns.
   // Some sessions contain only summary + file-history-snapshot and would cause
   // claude to fail because there is nothing to summarize/analyze.
   if ((meta.userTurns ?? 0) === 0) {
-    log({ key, msg: 'empty_session', reason: 'no_user_turns' })
-    await markFailed(key, 'empty session (no user turns)')
-    return 'failed'
+    log({ key, msg: "empty_session", reason: "no_user_turns" });
+    await markFailed(key, "empty session (no user turns)");
+    return "failed";
   }
 
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
-  let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {}
+  let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {};
   try {
     const statsResult = await spawnWithTimeout({
-      cmd: [csaBin, 'sessions', '--format', 'jsonl', sessionId],
+      cmd: [csaBin, "sessions", "--format", "jsonl", sessionId],
       timeoutMs: CSA_TIMEOUT_MS,
-    })
-    const line = statsResult.stdout.trim().split('\n')[0]
-    if (line) sessionStats = JSON.parse(line)
+    });
+    const line = statsResult.stdout.trim().split("\n")[0];
+    if (line) sessionStats = JSON.parse(line);
   } catch (err) {
     if (err instanceof SpawnTimeoutError) {
-      logError({ key, msg: 'csa_stats_timeout', timeoutMs: CSA_TIMEOUT_MS })
+      logError({ key, msg: "csa_stats_timeout", timeoutMs: CSA_TIMEOUT_MS });
     }
     // fallback: use meta values
   }
 
   // Determine mode based on on_existing and done state
-  let prompt = recipe.prompt
-  let hasPreviousRun = false
-  const prevLineCount = await getDoneLineCount(sessionId, recipeName)
+  let prompt = recipe.prompt;
+  let hasPreviousRun = false;
+  const prevLineCount = await getDoneLineCount(sessionId, recipeName);
   if (prevLineCount !== null && meta.lineCount > prevLineCount) {
-    hasPreviousRun = true
+    hasPreviousRun = true;
   }
 
   if (hasPreviousRun) {
     switch (recipe.onExisting) {
-      case 'skip':
-        log({ key, msg: 'skip', reason: 'already_processed' })
-        return 'processed'
-      case 'append':
-        prompt += '\n\n---\nNote: Session continued. Please append to existing entry.'
-        break
-      case 'separate':
+      case "skip":
+        log({ key, msg: "skip", reason: "already_processed" });
+        return "processed";
+      case "append":
+        prompt += "\n\n---\nNote: Session continued. Please append to existing entry.";
+        break;
+      case "separate":
         // New file, no modification needed
-        break
+        break;
     }
   }
 
-  const sizeBytes = sessionStats.bytes ?? null
-  const turns = sessionStats.turns ?? meta.userTurns
-  const project = meta.project || 'unknown'
-  log({ key, msg: 'start', recipe: recipeName, sizeBytes, turns, project })
+  const sizeBytes = sessionStats.bytes ?? null;
+  const turns = sessionStats.turns ?? meta.userTurns;
+  const project = meta.project || "unknown";
+  log({ key, msg: "start", recipe: recipeName, sizeBytes, turns, project });
 
   // Extract conversation timeline via claude-session-analysis
-  let convText: string
+  let convText: string;
   try {
     const csaResult = await spawnWithTimeout({
-      cmd: [csaBin, 'timeline', sessionId, '--md', '--no-emoji'],
+      cmd: [csaBin, "timeline", sessionId, "--md", "--no-emoji"],
       timeoutMs: CSA_TIMEOUT_MS,
-    })
+    });
 
     if (csaResult.exitCode !== 0) {
-      logError({ key, msg: 'csa_failed', exitCode: csaResult.exitCode, stderr: csaResult.stderr })
-      await markFailed(key, `csa failed with exit code ${csaResult.exitCode}`)
-      return 'failed'
+      logError({ key, msg: "csa_failed", exitCode: csaResult.exitCode, stderr: csaResult.stderr });
+      await markFailed(key, `csa failed with exit code ${csaResult.exitCode}`);
+      return "failed";
     }
-    convText = csaResult.stdout
+    convText = csaResult.stdout;
   } catch (err) {
     if (err instanceof SpawnTimeoutError) {
-      logError({ key, msg: 'csa_timeline_timeout', timeoutMs: CSA_TIMEOUT_MS })
-      await markFailed(key, `csa timeline timed out after ${CSA_TIMEOUT_MS}ms`)
-      return 'failed'
+      logError({ key, msg: "csa_timeline_timeout", timeoutMs: CSA_TIMEOUT_MS });
+      await markFailed(key, `csa timeline timed out after ${CSA_TIMEOUT_MS}ms`);
+      return "failed";
     }
-    throw err
+    throw err;
   }
 
   if (!convText.trim()) {
-    log({ key, msg: 'skip', reason: 'no_conversation' })
-    await markDone(key, meta.lineCount)
-    return 'processed'
+    log({ key, msg: "skip", reason: "no_conversation" });
+    await markDone(key, meta.lineCount);
+    return "processed";
   }
 
   // フォークセッションの場合、タイムラインを切り詰め＋プロンプト調整
-  let timelineText = convText
+  let timelineText = convText;
   if (meta.forkInfo) {
-    log({ key, msg: 'fork', parent: meta.forkInfo.parentSessionId })
+    log({ key, msg: "fork", parent: meta.forkInfo.parentSessionId });
 
     if (!meta.forkInfo.firstNewUuid) {
-      log({ key, msg: 'skip', reason: 'fork_no_new_conversation' })
-      await markDone(key, meta.lineCount)
-      return 'processed'
+      log({ key, msg: "skip", reason: "fork_no_new_conversation" });
+      await markDone(key, meta.lineCount);
+      return "processed";
     }
 
-    const originalLen = convText.length
-    timelineText = trimTimelineForFork(convText, meta.forkInfo.firstNewUuid)
-    log({ key, msg: 'trimmed', from: originalLen, to: timelineText.length })
-    prompt += `\n\n---\nNote: このセッションは元セッション ${meta.forkInfo.parentSessionId} からフォークされたものです。以下のタイムラインはフォーク後の新規会話のみです。`
+    const originalLen = convText.length;
+    timelineText = trimTimelineForFork(convText, meta.forkInfo.firstNewUuid);
+    log({ key, msg: "trimmed", from: originalLen, to: timelineText.length });
+    prompt += `\n\n---\nNote: このセッションは元セッション ${meta.forkInfo.parentSessionId} からフォークされたものです。以下のタイムラインはフォーク後の新規会話のみです。`;
   }
 
   // チャンク分割の判定
-  const chunks = splitTimeline(timelineText)
+  const chunks = splitTimeline(timelineText);
 
-  const { taskTimeoutMs, signal } = options
+  const { taskTimeoutMs, signal } = options;
 
   try {
-    let output: string
-    const sessionStart = meta.startTime.toISOString()
+    let output: string;
+    const sessionStart = meta.startTime.toISOString();
 
     if (chunks.length > 1) {
-      log({ key, msg: 'chunked', chunks: chunks.length })
-      output = await processChunked(timelineText, chunks, prompt, sessionId, meta, taskTimeoutMs, undefined, signal)
+      log({ key, msg: "chunked", chunks: chunks.length });
+      output = await processChunked(
+        timelineText,
+        chunks,
+        prompt,
+        sessionId,
+        meta,
+        taskTimeoutMs,
+        undefined,
+        signal,
+      );
     } else {
       // 既存の単一パス（変更なし）
       const fullPrompt = `${prompt}
@@ -458,11 +504,11 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
 ---
 ## セッション情報
 - Session ID: ${sessionId}
-- Project: ${meta.project || 'unknown'}
+- Project: ${meta.project || "unknown"}
 - Created: ${sessionStart}
 
 ## 会話タイムライン
-${timelineText}`
+${timelineText}`;
       output = await runClaude({
         prompt: fullPrompt,
         addDir: dataDir,
@@ -470,15 +516,15 @@ ${timelineText}`
         signal,
         captureUsage: true,
         onUsageObserved: recordWorkerObservation,
-      })
+      });
     }
 
     // Generate frontmatter
-    const sessionEnd = meta.endTime ? meta.endTime.toISOString() : 'unknown'
-    const generatedAt = new Date().toISOString()
+    const sessionEnd = meta.endTime ? meta.endTime.toISOString() : "unknown";
+    const generatedAt = new Date().toISOString();
     const fmData: Record<string, unknown> = {
       session_id: sessionId,
-      project: meta.project || 'unknown',
+      project: meta.project || "unknown",
       session_start: sessionStart,
       session_end: sessionEnd,
       generated_at: generatedAt,
@@ -486,45 +532,48 @@ ${timelineText}`
       user_turns: sessionStats.turns ?? meta.userTurns,
       session_bytes: sessionStats.bytes,
       duration_ms: sessionStats.duration_ms,
-    }
+    };
     if (meta.forkInfo) {
-      fmData.forked_from = meta.forkInfo.parentSessionId
+      fmData.forked_from = meta.forkInfo.parentSessionId;
     }
-    const fm = generateFrontmatter(fmData)
+    const fm = generateFrontmatter(fmData);
 
     // Output file path: {dataDir}/{recipeName}/YYYY/MM/DD/{yyyymmddTHHMMSSZ}.{sessionId}.md
-    const datePath = formatDatePath(meta.startTime)
-    const outputDir = join(dataDir, recipeName, datePath)
-    await mkdir(outputDir, { recursive: true })
+    const datePath = formatDatePath(meta.startTime);
+    const outputDir = join(dataDir, recipeName, datePath);
+    await mkdir(outputDir, { recursive: true });
 
-    const fileTs = formatFileTimestamp(meta.startTime)
-    const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`)
+    const fileTs = formatFileTimestamp(meta.startTime);
+    const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`);
 
-    await Bun.write(outputFile, fm + output)
-    await markDone(key, meta.lineCount)
-    log({ key, msg: 'success', output: outputFile })
+    await Bun.write(outputFile, fm + output);
+    await markDone(key, meta.lineCount);
+    log({ key, msg: "success", output: outputFile });
   } catch (err) {
-    const reason = err instanceof ClaudeTimeoutError
-      ? `task timeout after ${err.timeoutMs}ms`
-      : err instanceof Error ? err.message : String(err)
+    const reason =
+      err instanceof ClaudeTimeoutError
+        ? `task timeout after ${err.timeoutMs}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err);
     if (err instanceof ClaudeTimeoutError) {
-      logError({ key, msg: 'task_timeout', timeoutMs: err.timeoutMs })
+      logError({ key, msg: "task_timeout", timeoutMs: err.timeoutMs });
     } else {
-      logError({ key, msg: 'failed', error: reason })
+      logError({ key, msg: "failed", error: reason });
     }
-    await markFailed(key, reason)
-    return 'failed'
+    await markFailed(key, reason);
+    return "failed";
   }
 
-  return 'processed'
+  return "processed";
 }
 
 const sessionProcess = define({
-  name: 'process',
-  description: 'Process one item from the queue',
+  name: "process",
+  description: "Process one item from the queue",
   run: async () => {
-    await runProcess()
+    await runProcess();
   },
-})
+});
 
-export default sessionProcess
+export default sessionProcess;
