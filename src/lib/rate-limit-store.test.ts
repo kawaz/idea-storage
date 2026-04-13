@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -6,8 +6,8 @@ import {
   recordObservation,
   getLatestObservations,
   cleanupOldObservations,
-  RateLimitStoreDirs,
 } from './rate-limit-store.ts'
+import type { RateLimitStoreDirs } from './rate-limit-store.ts'
 
 function makeTestDirs(): RateLimitStoreDirs {
   const base = join(tmpdir(), `rl-store-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)

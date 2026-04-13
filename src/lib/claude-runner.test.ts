@@ -505,4 +505,91 @@ more debug
       }
     })
   })
+
+  describe('runClaude with captureUsage: end-to-end', () => {
+    // Simulated stdout: mixed ANTHROPIC_LOG=debug output + final result JSON
+    const fakeStdout = `[log_abc] sending request {
+  method: "post",
+  url: "https://api.anthropic.com/v1/messages",
+}
+[log_abc] response headers {
+  "anthropic-ratelimit-unified-5h-utilization": "0.42",
+  "anthropic-ratelimit-unified-5h-reset": "1776056400",
+  "anthropic-ratelimit-unified-5h-status": "allowed",
+  "anthropic-ratelimit-unified-7d-utilization": "0.08",
+  "anthropic-ratelimit-unified-7d-reset": "1776646800",
+  "anthropic-ratelimit-unified-7d-status": "allowed",
+}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{}}
+`
+
+    test('extracts headers via onUsageObserved callback and returns .result', async () => {
+      const observations: unknown[] = []
+
+      const result = await runClaude({
+        prompt: 'test',
+        captureUsage: true,
+        onUsageObserved: (obs) => observations.push(obs),
+        _spawnOverride: () => {
+          // Use printf to emit the fake stdout verbatim
+          return Bun.spawn(['printf', '%s', fakeStdout], { stdout: 'pipe', stderr: 'pipe' })
+        },
+      })
+
+      // Return value is .result from the trailing JSON line
+      expect(result).toBe('ok')
+
+      // onUsageObserved was called exactly once with parsed headers
+      expect(observations).toHaveLength(1)
+      expect(observations[0]).toEqual({
+        fiveHour: { util: 0.42, reset: 1776056400, status: 'allowed' },
+        sevenDay: { util: 0.08, reset: 1776646800, status: 'allowed' },
+      })
+    })
+
+    test('does not invoke onUsageObserved when no rate_limit headers present', async () => {
+      const observations: unknown[] = []
+      const justResult = `{"type":"result","subtype":"success","is_error":false,"result":"bare","usage":{}}\n`
+
+      const result = await runClaude({
+        prompt: 'test',
+        captureUsage: true,
+        onUsageObserved: (obs) => observations.push(obs),
+        _spawnOverride: () => {
+          return Bun.spawn(['printf', '%s', justResult], { stdout: 'pipe', stderr: 'pipe' })
+        },
+      })
+
+      expect(result).toBe('bare')
+      expect(observations).toEqual([])
+    })
+
+    test('onUsageObserved errors do not break the pipeline (best-effort)', async () => {
+      const result = await runClaude({
+        prompt: 'test',
+        captureUsage: true,
+        onUsageObserved: () => {
+          throw new Error('simulated callback failure')
+        },
+        _spawnOverride: () => {
+          return Bun.spawn(['printf', '%s', fakeStdout], { stdout: 'pipe', stderr: 'pipe' })
+        },
+      })
+      // Still returns .result even though callback threw
+      expect(result).toBe('ok')
+    })
+
+    test('falls back to raw stdout when JSON result line cannot be found', async () => {
+      const brokenOutput = `some garbage\nno JSON here at all\n`
+      const result = await runClaude({
+        prompt: 'test',
+        captureUsage: true,
+        _spawnOverride: () => {
+          return Bun.spawn(['printf', '%s', brokenOutput], { stdout: 'pipe', stderr: 'pipe' })
+        },
+      })
+      // Fallback: return raw stdout instead of throwing/returning empty
+      expect(result).toBe(brokenOutput)
+    })
+  })
 })

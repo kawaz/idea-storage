@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { shouldSkip, computeElapsedRatio, SkipDecision } from './rate-limit-judge.ts'
+import { shouldSkip, computeElapsedRatio } from './rate-limit-judge.ts'
 import type { ObservationRow } from './rate-limit-store.ts'
 
 function makeRow(overrides: Partial<ObservationRow>): ObservationRow {
