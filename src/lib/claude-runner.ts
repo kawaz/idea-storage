@@ -184,6 +184,20 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
     return result ?? stdout
   }
 
+  /**
+   * Build an informative error message for non-zero exits. Include both stderr
+   * (where claude usually writes errors) and a tail of stdout (where
+   * ANTHROPIC_LOG=debug mode may have written structured error JSON instead).
+   */
+  function buildExitError(exitCode: number | null, stdout: string, stderr: string): Error {
+    const tail = stdout.length > 2000 ? '...' + stdout.slice(-2000) : stdout
+    const stderrMsg = stderr.trim()
+    const parts: string[] = [`claude exited with code ${exitCode}`]
+    if (stderrMsg) parts.push(`stderr: ${stderrMsg}`)
+    if (tail.trim()) parts.push(`stdout tail: ${tail}`)
+    return new Error(parts.join(' | '))
+  }
+
   // If we have timeout or signal, race them
   if (racePromises.length > 1) {
     try {
@@ -191,7 +205,7 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
       runCleanups()
       const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
       if (exitCode !== 0) {
-        throw new Error(`claude exited with code ${exitCode}: ${stderr}`)
+        throw buildExitError(exitCode, stdout, stderr)
       }
       return finalizeOutput(stdout)
     } catch (err) {
@@ -209,7 +223,7 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
   const exitCode = await proc.exited
 
   if (exitCode !== 0) {
-    throw new Error(`claude exited with code ${exitCode}: ${stderr}`)
+    throw buildExitError(exitCode, stdout, stderr)
   }
 
   return finalizeOutput(stdout)

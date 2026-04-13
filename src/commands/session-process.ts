@@ -341,6 +341,15 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
     return 'failed'
   }
 
+  // Early skip for sessions that have no user/assistant turns.
+  // Some sessions contain only summary + file-history-snapshot and would cause
+  // claude to fail because there is nothing to summarize/analyze.
+  if ((meta.userTurns ?? 0) === 0) {
+    log({ key, msg: 'empty_session', reason: 'no_user_turns' })
+    await markFailed(key, 'empty session (no user turns)')
+    return 'failed'
+  }
+
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
   let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {}
   try {
