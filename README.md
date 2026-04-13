@@ -65,6 +65,26 @@ See `config-examples/config.ts` for a full example.
 
 Place `recipe-*.md` files in `~/.config/idea-storage/`. Each recipe uses Markdown with YAML frontmatter for matching rules. See `config-examples/recipe-*.md` for examples.
 
+### Rate-limit-aware scheduling
+
+When run as a launchd service (or any long-running worker), idea-storage observes
+your Claude subscription's 5-hour and 7-day rate limits and pauses processing when
+your own interactive usage is outpacing elapsed time.
+
+- Rate-limit data is captured transparently from the very `claude` calls the
+  worker is already making (via `ANTHROPIC_LOG=debug`) -- no separate probe API
+  calls are issued.
+- The skip condition is `(util% > 30 || elapsed% > 30) && util% > elapsed% * 0.9`.
+  Before the 30% gate is crossed, the worker always runs; past that gate, it only
+  runs while usage tracks elapsed time or below.
+- On skip, the worker exits cleanly so launchd re-fires at the next `StartInterval`.
+- Observations are persisted in the queue SQLite DB (`rate_limits` table) with a
+  2-stage retention (24h full resolution, 24h-8d aggregated hourly, 8d+ deleted).
+- `idea-storage session status` shows the latest observation and the current
+  skip/proceed decision.
+
+See `docs/dr-005-rate-limits-aware-scheduling.md` for the full design.
+
 ## Data Paths
 
 All paths follow the XDG Base Directory Specification.
@@ -74,7 +94,7 @@ All paths follow the XDG Base Directory Specification.
 | `~/.config/idea-storage/config.ts` | Configuration |
 | `~/.config/idea-storage/recipe-*.md` | Recipe definitions |
 | `~/.local/share/idea-storage/` | Generated articles |
-| `~/.local/state/idea-storage/` | Queue state (queue/done/failed) |
+| `~/.local/state/idea-storage/` | Queue state + rate_limits observations (`queue.db`) |
 
 ## Development
 
