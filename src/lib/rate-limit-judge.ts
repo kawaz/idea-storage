@@ -33,7 +33,9 @@ export function computeElapsedRatio(resetsAt: number, windowLengthSec: number, n
  *
  * skip if (token% > 30 || elapsed% > 30) && token% > elapsed% * 0.9
  *
- * 入力がなければ false (=proceed) を返す。
+ * 入力がなければ null を返す (= proceed に寄与しない)。
+ * reset が既に過去になっている場合、観測はリセット済みのバケツを指しており
+ * 現在のバケツ状態は不明なので同じく null を返す (stale window)。
  */
 function evaluateBucket(
   util: number | null,
@@ -42,6 +44,9 @@ function evaluateBucket(
   nowSec: number,
 ): { skip: boolean; util: number; elapsed: number } | null {
   if (util === null || reset === null) return null
+  // If the window has already reset, the observation is for the *previous*
+  // window and tells us nothing about the current one. Treat as unknown.
+  if (reset <= nowSec) return null
 
   const elapsed = computeElapsedRatio(reset, windowLengthSec, nowSec)
   const gateCrossed = util > 0.3 || elapsed > 0.3

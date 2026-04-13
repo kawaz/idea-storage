@@ -135,6 +135,19 @@ describe('rate-limit-judge', () => {
       expect(decision.skip).toBe(false)
     })
 
+    test('ignores bucket when reset is already in the past (window has reset)', () => {
+      // 5h bucket said util=0.9 but reset was 1h ago → observation refers to
+      // the previous window, not current. Treat as unknown → no skip from 5h.
+      const now = 1000000
+      const row = makeRow({
+        ts: now - 60,
+        fiveHourUtil: 0.9,
+        fiveHourReset: now - 3600, // already in the past
+      })
+      const decision = shouldSkip([row], now)
+      expect(decision.skip).toBe(false)
+    })
+
     test('ignores observation older than staleThresholdSec', () => {
       const now = 1000
       const row = makeRow({
