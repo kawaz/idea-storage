@@ -1,359 +1,69 @@
-import { Database } from "bun:sqlite";
-import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
-import { getStateDir } from "./paths.ts";
-import { DEFAULT_MAX_RETRIES } from "./constants.ts";
+import {
+  formatLogKey,
+  getDb,
+  getOrCreateRecipePk,
+  getOrCreateSessionPk,
+  lookupRecipePk,
+  lookupSessionPk,
+  recordHistory,
+  validateRecipeName,
+  validateSessionId,
+} from "./queue-internal.ts";
+import type { QueueDirs, QueueStatus } from "./queue-internal.ts";
 import type { QueueEntry } from "../types/index.ts";
 
-export const DEFAULT_RETRY_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/** Default poll interval for waitForCompletion (ms). */
-export const DEFAULT_WAIT_POLL_INTERVAL_MS = 1000;
-/** Default timeout for waitForCompletion (ms). 30 minutes. */
-export const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
-
-/** Current schema version. Bumped whenever sessions/recipes/queue_entries/history change. */
-export const CURRENT_SCHEMA_VERSION = 1;
-
-export interface FailedMeta {
-  retryCount: number;
-  reason?: string;
-}
-
-export interface SkippedMeta {
-  reason?: string;
-}
-
-export interface RetryOptions {
-  retryAfterMs?: number;
-  maxRetries?: number;
-}
-
-export interface QueueDirs {
-  queueDir: string;
-  doneDir: string;
-  failedDir: string;
-}
-
-export interface QueueStateFailedEntry {
-  meta: FailedMeta;
-  mtimeMs: number;
-}
-
-export interface QueueState {
-  queued: Set<string>;
-  /** Entries currently being processed by a worker / convert. */
-  processing: Set<string>;
-  done: Map<string, { lineCount: number }>;
-  failed: Map<string, QueueStateFailedEntry>;
-  skipped: Map<string, SkippedMeta>;
-}
-
-export type QueueStatus = "queued" | "processing" | "done" | "failed" | "skipped";
-
 /**
- * History action vocabulary.
+ * Public entry point for queue operations.
  *
- * Mapping to queue_entries.status:
- * - enqueued  → queued
- * - claimed   → processing
- * - completed → done
- * - failed    → failed
- * - skipped   → skipped
- * - reset     → queued
+ * This module owns the *write* API (enqueue / dequeue / claim / mark* / retry /
+ * cleanup). Schema definitions live in `queue-schema.ts`, low-level shared
+ * helpers in `queue-internal.ts`, and read-only state queries in
+ * `queue-state.ts`. We re-export the read-side and shared types from here so
+ * existing consumers can keep importing from `./queue.ts` without churn.
  */
-export type HistoryAction = "enqueued" | "claimed" | "completed" | "failed" | "skipped" | "reset";
 
-const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+// --- Re-exports for backward compatibility ---
+//
+// External callers import everything from `./queue.ts`. After the split, the
+// real definitions live in sibling files; the re-exports below keep the
+// public surface stable.
 
-export function validateSessionId(sessionId: string): void {
-  if (!SESSION_ID_RE.test(sessionId)) {
-    throw new Error(`Invalid sessionId: "${sessionId}" (must be UUID format)`);
-  }
-}
+export { CURRENT_SCHEMA_VERSION } from "./queue-schema.ts";
+export {
+  DEFAULT_RETRY_AFTER_MS,
+  formatLogKey,
+  getDb,
+  validateRecipeName,
+  validateSessionId,
+} from "./queue-internal.ts";
+export type {
+  FailedMeta,
+  HistoryAction,
+  QueueDirs,
+  QueueStatus,
+  RetryOptions,
+  SkippedMeta,
+} from "./queue-internal.ts";
+export {
+  DEFAULT_WAIT_POLL_INTERVAL_MS,
+  DEFAULT_WAIT_TIMEOUT_MS,
+  getDoneLineCount,
+  getStatus,
+  isDone,
+  isFailed,
+  isFailedByState,
+  isQueued,
+  loadQueueState,
+  waitForCompletion,
+} from "./queue-state.ts";
+export type {
+  QueueState,
+  QueueStateFailedEntry,
+  WaitForCompletionOptions,
+  WaitForCompletionResult,
+} from "./queue-state.ts";
 
-export function validateRecipeName(recipeName: string): void {
-  if (!RECIPE_NAME_RE.test(recipeName)) {
-    throw new Error(`Invalid recipeName: "${recipeName}" (must match ${RECIPE_NAME_RE})`);
-  }
-}
-
-/**
- * Build a log-friendly key string for grep-able log lines.
- *
- * Design rationale: queue_entries no longer stores a string `key` column. The
- * `${sessionId}.${recipeName}` format is kept only as a logging convention for
- * grep-ability, not as a data identifier. Validation is the caller's responsibility
- * (this function does not validate to keep logging cheap).
- */
-export function formatLogKey(sessionId: string, recipeName: string): string {
-  return `${sessionId}.${recipeName}`;
-}
-
-function resolveDbPath(dirs?: QueueDirs): string {
-  if (dirs) {
-    // dirs.queueDir may have a trailing slash; strip it, then go to parent
-    const parent = dirname(dirs.queueDir.replace(/\/$/, ""));
-    return join(parent, "queue.db");
-  }
-  return join(getStateDir(), "queue.db");
-}
-
-function createSchemaV1(db: Database): void {
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    uuid TEXT NOT NULL UNIQUE
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_uuid ON sessions(uuid)`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS recipes (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_recipes_name ON recipes(name)`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS queue_entries (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_pk INTEGER NOT NULL REFERENCES sessions(pk),
-    recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
-    status TEXT NOT NULL DEFAULT 'queued',
-    reason TEXT,
-    line_count INTEGER,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(session_pk, recipe_pk)
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_entries(status)`);
-  db.run(
-    `CREATE INDEX IF NOT EXISTS idx_queue_status_updated ON queue_entries(status, updated_at)`,
-  );
-
-  db.run(`CREATE TABLE IF NOT EXISTS history (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    session_pk INTEGER NOT NULL REFERENCES sessions(pk),
-    recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
-    action TEXT NOT NULL,
-    message TEXT
-  )`);
-  db.run(
-    `CREATE INDEX IF NOT EXISTS idx_history_session_recipe ON history(session_pk, recipe_pk, timestamp)`,
-  );
-  db.run(`CREATE INDEX IF NOT EXISTS idx_history_action ON history(action, timestamp)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp)`);
-}
-
-/**
- * Migrate the legacy v0 single-table schema (key TEXT PRIMARY KEY, fail_reason)
- * to the v1 normalized schema (sessions/recipes/queue_entries/history).
- *
- * Caller must ensure this is invoked inside a transaction.
- */
-function migrateV0ToV1(db: Database): void {
-  // 1. Create v1 tables alongside legacy queue_entries.
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    uuid TEXT NOT NULL UNIQUE
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_uuid ON sessions(uuid)`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS recipes (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_recipes_name ON recipes(name)`);
-
-  db.run(`CREATE TABLE queue_entries_v1 (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_pk INTEGER NOT NULL REFERENCES sessions(pk),
-    recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
-    status TEXT NOT NULL DEFAULT 'queued',
-    reason TEXT,
-    line_count INTEGER,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(session_pk, recipe_pk)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS history (
-    pk INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    session_pk INTEGER NOT NULL REFERENCES sessions(pk),
-    recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
-    action TEXT NOT NULL,
-    message TEXT
-  )`);
-
-  // 2. Copy data from legacy queue_entries.
-  const legacyRows = db
-    .query(
-      `SELECT key, session_id, recipe_name, status, line_count, retry_count, fail_reason,
-              created_at, updated_at
-       FROM queue_entries`,
-    )
-    .all() as {
-    key: string;
-    session_id: string;
-    recipe_name: string;
-    status: string;
-    line_count: number | null;
-    retry_count: number;
-    fail_reason: string | null;
-    created_at: number;
-    updated_at: number;
-  }[];
-
-  const insertSession = db.prepare(`INSERT OR IGNORE INTO sessions (uuid) VALUES (?)`);
-  const selectSessionPk = db.prepare(`SELECT pk FROM sessions WHERE uuid = ?`);
-  const insertRecipe = db.prepare(`INSERT OR IGNORE INTO recipes (name) VALUES (?)`);
-  const selectRecipePk = db.prepare(`SELECT pk FROM recipes WHERE name = ?`);
-  const insertEntry = db.prepare(
-    `INSERT INTO queue_entries_v1
-       (session_pk, recipe_pk, status, reason, line_count, retry_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  for (const row of legacyRows) {
-    insertSession.run(row.session_id);
-    const sessionPk = (selectSessionPk.get(row.session_id) as { pk: number }).pk;
-    insertRecipe.run(row.recipe_name);
-    const recipePk = (selectRecipePk.get(row.recipe_name) as { pk: number }).pk;
-
-    insertEntry.run(
-      sessionPk,
-      recipePk,
-      row.status,
-      row.fail_reason,
-      row.line_count,
-      row.retry_count,
-      row.created_at,
-      row.updated_at,
-    );
-  }
-
-  // 3. Drop legacy and rename v1 → queue_entries.
-  db.run(`DROP TABLE queue_entries`);
-  db.run(`ALTER TABLE queue_entries_v1 RENAME TO queue_entries`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_entries(status)`);
-  db.run(
-    `CREATE INDEX IF NOT EXISTS idx_queue_status_updated ON queue_entries(status, updated_at)`,
-  );
-
-  db.run(
-    `CREATE INDEX IF NOT EXISTS idx_history_session_recipe ON history(session_pk, recipe_pk, timestamp)`,
-  );
-  db.run(`CREATE INDEX IF NOT EXISTS idx_history_action ON history(action, timestamp)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp)`);
-}
-
-/**
- * Detect whether a legacy v0 queue_entries table exists in the DB.
- * v0 table has `key` column as PRIMARY KEY; v1 doesn't.
- */
-function hasLegacyV0Schema(db: Database): boolean {
-  const row = db
-    .query(`SELECT name FROM sqlite_master WHERE type='table' AND name='queue_entries'`)
-    .get() as { name: string } | null;
-  if (!row) return false;
-  // Probe for legacy `key` column.
-  const cols = db.query(`PRAGMA table_info(queue_entries)`).all() as { name: string }[];
-  return cols.some((c) => c.name === "key");
-}
-
-function applyMigrations(db: Database): void {
-  const versionRow = db.query(`PRAGMA user_version`).get() as { user_version: number };
-  let version = versionRow.user_version;
-
-  if (version === 0) {
-    // Either a fresh DB (no tables) or a legacy v0 DB. Distinguish by probing.
-    if (hasLegacyV0Schema(db)) {
-      const tx = db.transaction(() => {
-        migrateV0ToV1(db);
-      });
-      tx();
-    } else {
-      // Fresh DB — create v1 schema directly.
-      const tx = db.transaction(() => {
-        createSchemaV1(db);
-      });
-      tx();
-    }
-    db.run(`PRAGMA user_version = 1`);
-    version = 1;
-  }
-
-  // Future: if (version === 1) migrate to v2, etc.
-  if (version > CURRENT_SCHEMA_VERSION) {
-    throw new Error(
-      `queue.db schema version ${version} is newer than supported ${CURRENT_SCHEMA_VERSION}. ` +
-        `Please update idea-storage.`,
-    );
-  }
-}
-
-export function getDb(dirs?: QueueDirs): Database {
-  const dbPath = resolveDbPath(dirs);
-  mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA busy_timeout = 5000");
-  applyMigrations(db);
-  return db;
-}
-
-// --- Internal helpers for pk lookup / creation ---
-
-function getOrCreateSessionPk(db: Database, sessionId: string): number {
-  validateSessionId(sessionId);
-  db.run(`INSERT OR IGNORE INTO sessions (uuid) VALUES (?)`, [sessionId]);
-  const row = db.query(`SELECT pk FROM sessions WHERE uuid = ?`).get(sessionId) as {
-    pk: number;
-  };
-  return row.pk;
-}
-
-function getOrCreateRecipePk(db: Database, recipeName: string): number {
-  validateRecipeName(recipeName);
-  db.run(`INSERT OR IGNORE INTO recipes (name) VALUES (?)`, [recipeName]);
-  const row = db.query(`SELECT pk FROM recipes WHERE name = ?`).get(recipeName) as {
-    pk: number;
-  };
-  return row.pk;
-}
-
-function lookupSessionPk(db: Database, sessionId: string): number | null {
-  const row = db.query(`SELECT pk FROM sessions WHERE uuid = ?`).get(sessionId) as {
-    pk: number;
-  } | null;
-  return row?.pk ?? null;
-}
-
-function lookupRecipePk(db: Database, recipeName: string): number | null {
-  const row = db.query(`SELECT pk FROM recipes WHERE name = ?`).get(recipeName) as {
-    pk: number;
-  } | null;
-  return row?.pk ?? null;
-}
-
-function recordHistory(
-  db: Database,
-  sessionPk: number,
-  recipePk: number,
-  action: HistoryAction,
-  message: string | null,
-  timestamp: number,
-): void {
-  db.run(
-    `INSERT INTO history (timestamp, session_pk, recipe_pk, action, message)
-     VALUES (?, ?, ?, ?, ?)`,
-    [timestamp, sessionPk, recipePk, action, message],
-  );
-}
-
-// --- Queue API (all functions take sessionId/recipeName, no string keys) ---
+// --- Queue write API (all functions take sessionId/recipeName, no string keys) ---
 
 /**
  * 複数のエントリを1トランザクションで一括 enqueue する。
@@ -581,86 +291,6 @@ export async function claim(
   }
 }
 
-export type WaitForCompletionResult =
-  | { status: "done"; lineCount: number }
-  | { status: "failed"; reason: string | null }
-  | { status: "skipped"; reason: string | null }
-  | { status: "timeout" };
-
-export interface WaitForCompletionOptions {
-  /** Polling interval in ms. Default: DEFAULT_WAIT_POLL_INTERVAL_MS. */
-  pollIntervalMs?: number;
-  /** Total timeout in ms. Default: DEFAULT_WAIT_TIMEOUT_MS. */
-  timeoutMs?: number;
-  /** Custom sleep function (for testing). */
-  sleep?: (ms: number) => Promise<void>;
-  /** Custom now() function (for testing). */
-  now?: () => number;
-}
-
-/**
- * Poll until the entry transitions to a terminal status (done/failed/skipped),
- * or the timeout expires.
- */
-export async function waitForCompletion(
-  sessionId: string,
-  recipeName: string,
-  options: WaitForCompletionOptions = {},
-  dirs?: QueueDirs,
-): Promise<WaitForCompletionResult> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-  const sleep = options.sleep ?? ((ms: number) => Bun.sleep(ms));
-  const now = options.now ?? (() => Date.now());
-
-  const start = now();
-
-  while (true) {
-    const db = getDb(dirs);
-    let row: { status: QueueStatus; line_count: number | null; reason: string | null } | null;
-    try {
-      const sessionPk = lookupSessionPk(db, sessionId);
-      const recipePk = lookupRecipePk(db, recipeName);
-      if (sessionPk === null || recipePk === null) {
-        row = null;
-      } else {
-        row = db
-          .query(
-            `SELECT status, line_count, reason FROM queue_entries
-             WHERE session_pk = ? AND recipe_pk = ?`,
-          )
-          .get(sessionPk, recipePk) as {
-          status: QueueStatus;
-          line_count: number | null;
-          reason: string | null;
-        } | null;
-      }
-    } finally {
-      db.close();
-    }
-
-    if (row) {
-      if (row.status === "done") {
-        return { status: "done", lineCount: row.line_count ?? 0 };
-      }
-      if (row.status === "failed") {
-        return { status: "failed", reason: row.reason };
-      }
-      if (row.status === "skipped") {
-        return { status: "skipped", reason: row.reason };
-      }
-    }
-
-    if (now() - start >= timeoutMs) {
-      return { status: "timeout" };
-    }
-
-    await sleep(pollIntervalMs);
-  }
-}
-
 /**
  * Mark an entry as done. Idempotent: existing entries are upserted.
  *
@@ -787,105 +417,6 @@ export async function markSkipped(
   }
 }
 
-export async function getDoneLineCount(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-): Promise<number | null> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
-  const db = getDb(dirs);
-  try {
-    const sessionPk = lookupSessionPk(db, sessionId);
-    const recipePk = lookupRecipePk(db, recipeName);
-    if (sessionPk === null || recipePk === null) return null;
-    const row = db
-      .query(
-        `SELECT line_count FROM queue_entries
-         WHERE session_pk = ? AND recipe_pk = ? AND status = 'done'`,
-      )
-      .get(sessionPk, recipePk) as { line_count: number | null } | null;
-
-    if (!row || row.line_count === null) return null;
-    return row.line_count;
-  } finally {
-    db.close();
-  }
-}
-
-export async function isDone(
-  sessionId: string,
-  recipeName: string,
-  currentLineCount: number,
-  dirs?: QueueDirs,
-): Promise<boolean> {
-  const lineCount = await getDoneLineCount(sessionId, recipeName, dirs);
-  if (lineCount === null) return false;
-  return lineCount >= currentLineCount;
-}
-
-export async function isQueued(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-): Promise<boolean> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
-  const db = getDb(dirs);
-  try {
-    const sessionPk = lookupSessionPk(db, sessionId);
-    const recipePk = lookupRecipePk(db, recipeName);
-    if (sessionPk === null || recipePk === null) return false;
-    const row = db
-      .query(
-        `SELECT 1 FROM queue_entries
-         WHERE session_pk = ? AND recipe_pk = ? AND status = 'queued'`,
-      )
-      .get(sessionPk, recipePk);
-    return row !== null;
-  } finally {
-    db.close();
-  }
-}
-
-export async function isFailed(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-  retryOpts?: RetryOptions,
-): Promise<boolean> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
-  const db = getDb(dirs);
-  try {
-    const sessionPk = lookupSessionPk(db, sessionId);
-    const recipePk = lookupRecipePk(db, recipeName);
-    if (sessionPk === null || recipePk === null) return false;
-    const row = db
-      .query(
-        `SELECT retry_count, updated_at FROM queue_entries
-         WHERE session_pk = ? AND recipe_pk = ? AND status = 'failed'`,
-      )
-      .get(sessionPk, recipePk) as { retry_count: number; updated_at: number } | null;
-
-    if (!row) return false;
-
-    const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const retryAfterMs = retryOpts?.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS;
-
-    // Permanent-failed: retryCount >= maxRetries
-    if (row.retry_count >= maxRetries) return true;
-
-    // Check updated_at: if old enough, allow retry (return false)
-    const elapsed = Date.now() - row.updated_at;
-    if (elapsed >= retryAfterMs) return false;
-
-    return true;
-  } finally {
-    db.close();
-  }
-}
-
 /**
  * Reset an entry (failed or skipped) back to queued so it can be retried.
  * Only entries currently in failed/skipped status are moved; any other status is a no-op.
@@ -914,33 +445,6 @@ export async function retry(
       }
     });
     tx();
-  } finally {
-    db.close();
-  }
-}
-
-export async function getStatus(dirs?: QueueDirs): Promise<{
-  queued: number;
-  processing: number;
-  done: number;
-  failed: number;
-  skipped: number;
-}> {
-  const db = getDb(dirs);
-  try {
-    const rows = db
-      .query(`SELECT status, COUNT(*) as count FROM queue_entries GROUP BY status`)
-      .all() as { status: string; count: number }[];
-
-    const result = { queued: 0, processing: 0, done: 0, failed: 0, skipped: 0 };
-    for (const row of rows) {
-      if (row.status === "queued") result.queued = row.count;
-      else if (row.status === "processing") result.processing = row.count;
-      else if (row.status === "done") result.done = row.count;
-      else if (row.status === "failed") result.failed = row.count;
-      else if (row.status === "skipped") result.skipped = row.count;
-    }
-    return result;
   } finally {
     db.close();
   }
@@ -979,75 +483,4 @@ export async function cleanup(
   } finally {
     db.close();
   }
-}
-
-export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
-  const db = getDb(dirs);
-  try {
-    const rows = db
-      .query(
-        `SELECT s.uuid AS session_id, r.name AS recipe_name,
-                qe.status, qe.line_count, qe.retry_count, qe.reason, qe.updated_at
-         FROM queue_entries qe
-           INNER JOIN sessions s ON s.pk = qe.session_pk
-           INNER JOIN recipes r ON r.pk = qe.recipe_pk`,
-      )
-      .all() as {
-      session_id: string;
-      recipe_name: string;
-      status: string;
-      line_count: number | null;
-      retry_count: number;
-      reason: string | null;
-      updated_at: number;
-    }[];
-
-    const queued = new Set<string>();
-    const processing = new Set<string>();
-    const done = new Map<string, { lineCount: number }>();
-    const failed = new Map<string, QueueStateFailedEntry>();
-    const skipped = new Map<string, SkippedMeta>();
-
-    for (const row of rows) {
-      const key = formatLogKey(row.session_id, row.recipe_name);
-      if (row.status === "queued") {
-        queued.add(key);
-      } else if (row.status === "processing") {
-        processing.add(key);
-      } else if (row.status === "done") {
-        done.set(key, { lineCount: row.line_count ?? 0 });
-      } else if (row.status === "failed") {
-        const meta: FailedMeta = {
-          retryCount: row.retry_count,
-          ...(row.reason !== null ? { reason: row.reason } : {}),
-        };
-        failed.set(key, { meta, mtimeMs: row.updated_at });
-      } else if (row.status === "skipped") {
-        const meta: SkippedMeta = row.reason !== null ? { reason: row.reason } : {};
-        skipped.set(key, meta);
-      }
-    }
-
-    return { queued, processing, done, failed, skipped };
-  } finally {
-    db.close();
-  }
-}
-
-/** In-memory equivalent of isFailed() using pre-loaded QueueState */
-export function isFailedByState(state: QueueState, key: string, retryOpts?: RetryOptions): boolean {
-  const entry = state.failed.get(key);
-  if (!entry) return false;
-
-  const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const retryAfterMs = retryOpts?.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS;
-
-  // Permanent-failed: retryCount >= maxRetries
-  if (entry.meta.retryCount >= maxRetries) return true;
-
-  // Check mtime: if old enough, allow retry (return false)
-  const elapsed = Date.now() - entry.mtimeMs;
-  if (elapsed >= retryAfterMs) return false;
-
-  return true;
 }

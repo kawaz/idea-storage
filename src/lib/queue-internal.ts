@@ -1,0 +1,148 @@
+import { Database } from "bun:sqlite";
+import { dirname, join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { getStateDir } from "./paths.ts";
+import { applyMigrations } from "./queue-schema.ts";
+
+/**
+ * Internal helpers shared between the queue write API (queue.ts) and the
+ * state-reading API (queue-state.ts). Not part of the public surface — the
+ * stable entry point is `queue.ts`, which re-exports the items consumers need.
+ *
+ * Design rationale: extracted to break a would-be circular import between
+ * `queue.ts` and `queue-state.ts`. Both layers need `getDb`, the validators,
+ * and the pk lookup helpers; placing them here keeps either file free of
+ * sibling dependencies.
+ */
+
+export const DEFAULT_RETRY_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+export interface FailedMeta {
+  retryCount: number;
+  reason?: string;
+}
+
+export interface SkippedMeta {
+  reason?: string;
+}
+
+export interface RetryOptions {
+  retryAfterMs?: number;
+  maxRetries?: number;
+}
+
+export interface QueueDirs {
+  queueDir: string;
+  doneDir: string;
+  failedDir: string;
+}
+
+export type QueueStatus = "queued" | "processing" | "done" | "failed" | "skipped";
+
+/**
+ * History action vocabulary.
+ *
+ * Mapping to queue_entries.status:
+ * - enqueued  → queued
+ * - claimed   → processing
+ * - completed → done
+ * - failed    → failed
+ * - skipped   → skipped
+ * - reset     → queued
+ */
+export type HistoryAction = "enqueued" | "claimed" | "completed" | "failed" | "skipped" | "reset";
+
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+export function validateSessionId(sessionId: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`Invalid sessionId: "${sessionId}" (must be UUID format)`);
+  }
+}
+
+export function validateRecipeName(recipeName: string): void {
+  if (!RECIPE_NAME_RE.test(recipeName)) {
+    throw new Error(`Invalid recipeName: "${recipeName}" (must match ${RECIPE_NAME_RE})`);
+  }
+}
+
+/**
+ * Build a log-friendly key string for grep-able log lines.
+ *
+ * Design rationale: queue_entries no longer stores a string `key` column. The
+ * `${sessionId}.${recipeName}` format is kept only as a logging convention for
+ * grep-ability, not as a data identifier. Validation is the caller's responsibility
+ * (this function does not validate to keep logging cheap).
+ */
+export function formatLogKey(sessionId: string, recipeName: string): string {
+  return `${sessionId}.${recipeName}`;
+}
+
+function resolveDbPath(dirs?: QueueDirs): string {
+  if (dirs) {
+    // dirs.queueDir may have a trailing slash; strip it, then go to parent
+    const parent = dirname(dirs.queueDir.replace(/\/$/, ""));
+    return join(parent, "queue.db");
+  }
+  return join(getStateDir(), "queue.db");
+}
+
+export function getDb(dirs?: QueueDirs): Database {
+  const dbPath = resolveDbPath(dirs);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA busy_timeout = 5000");
+  applyMigrations(db);
+  return db;
+}
+
+// --- Internal helpers for pk lookup / creation ---
+
+export function getOrCreateSessionPk(db: Database, sessionId: string): number {
+  validateSessionId(sessionId);
+  db.run(`INSERT OR IGNORE INTO sessions (uuid) VALUES (?)`, [sessionId]);
+  const row = db.query(`SELECT pk FROM sessions WHERE uuid = ?`).get(sessionId) as {
+    pk: number;
+  };
+  return row.pk;
+}
+
+export function getOrCreateRecipePk(db: Database, recipeName: string): number {
+  validateRecipeName(recipeName);
+  db.run(`INSERT OR IGNORE INTO recipes (name) VALUES (?)`, [recipeName]);
+  const row = db.query(`SELECT pk FROM recipes WHERE name = ?`).get(recipeName) as {
+    pk: number;
+  };
+  return row.pk;
+}
+
+export function lookupSessionPk(db: Database, sessionId: string): number | null {
+  const row = db.query(`SELECT pk FROM sessions WHERE uuid = ?`).get(sessionId) as {
+    pk: number;
+  } | null;
+  return row?.pk ?? null;
+}
+
+export function lookupRecipePk(db: Database, recipeName: string): number | null {
+  const row = db.query(`SELECT pk FROM recipes WHERE name = ?`).get(recipeName) as {
+    pk: number;
+  } | null;
+  return row?.pk ?? null;
+}
+
+export function recordHistory(
+  db: Database,
+  sessionPk: number,
+  recipePk: number,
+  action: HistoryAction,
+  message: string | null,
+  timestamp: number,
+): void {
+  db.run(
+    `INSERT INTO history (timestamp, session_pk, recipe_pk, action, message)
+     VALUES (?, ?, ?, ?, ?)`,
+    [timestamp, sessionPk, recipePk, action, message],
+  );
+}
