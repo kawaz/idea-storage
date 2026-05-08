@@ -132,25 +132,28 @@ describe("lockfile", () => {
   });
 
   test("acquireLock parallel attempts - only one wins", async () => {
-    // Launch multiple concurrent acquireLock calls
-    const results = await Promise.all([
-      acquireLock(lockPath),
-      acquireLock(lockPath),
-      acquireLock(lockPath),
-    ]);
+    // Launch many concurrent acquireLock calls. With the write-then-link
+    // atomic creation pattern, the lock file is never observable in an
+    // empty state, so the losers always see a fresh, live-PID lock file
+    // and return null. Use a high concurrency to maximize the chance of
+    // exposing any creation-window race regression.
+    const N = 16;
+    const results = await Promise.all(Array.from({ length: N }, () => acquireLock(lockPath)));
 
     const winners = results.filter((r) => r !== null);
     const losers = results.filter((r) => r === null);
 
-    // Exactly one should win (or possibly some get stale-recovery, but at most one holds it)
-    expect(winners.length).toBeGreaterThanOrEqual(1);
-    // At least some should fail
-    expect(losers.length).toBeGreaterThanOrEqual(1);
+    // Exactly one caller must hold the lock at a time. Since all callers
+    // share the same live PID, no caller can reach the stale-recovery
+    // path, so we expect a single winner.
+    expect(winners.length).toBe(1);
+    expect(losers.length).toBe(N - 1);
 
-    // Clean up all winners
-    for (const release of winners) {
-      await release!();
-    }
+    // The winning lock file must contain our PID.
+    const content = await readFile(lockPath, "utf-8");
+    expect(content.trim()).toBe(String(process.pid));
+
+    await winners[0]!();
   });
 
   test("HEARTBEAT_INTERVAL_MS and STALE_THRESHOLD_MS are exported with expected values", () => {
