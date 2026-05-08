@@ -9,6 +9,7 @@
 - [DR-0005](DR-0005-rate-limits-aware-scheduling.md) — accepted (2026-04-13) — `ANTHROPIC_LOG=debug` ヘッダ抽出による rate_limits 観測と自律スキップ
 - [DR-0006](DR-0006-ci-with-github-actions.md) — accepted (2026-05-08) — GitHub Actions による CI 導入と旧 `build-check` ターゲットの撤廃
 - [DR-0007](DR-0007-session-convert-and-queue-state-model.md) — accepted (2026-05-08) — `session convert` サブコマンド追加と queue state モデル拡張 (`processing` / `skipped` / FK 正規化 / history)
+- [DR-0008](DR-0008-recipe-pipeline-quality-improvement.md) — accepted (2026-05-09) — レシピパイプラインの品質改善（ノイズ判定基盤 + LLM dispatcher 二段キュー + 品質ガード + 過去出力注入）
 
 ## Superseded
 
