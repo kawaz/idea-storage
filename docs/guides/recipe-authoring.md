@@ -178,14 +178,14 @@ PR を歓迎)。各レシピは「目的」「想定される使用頻度」「`
 | recipe にマッチしない                         | `match.min_turns` / `match.min_age` を満たしているか。`match.project` の glob が正しいか。`session list` でセッション側の cwd を確認 |
 | `match.project` の glob が効きすぎる/効かない | `*` は自動で `**` 化される (パス区切りを越える)。意図的に 1 階層だけにしたい場合は `?` 系の指定で代替できないか検討                  |
 | 出力が空 / `skipped` ログが出る               | `userTurns === 0` (空セッション)、または `on_existing: skip` で行数が増えていないケースが多い                                        |
-| Claude API のレートリミットで止まる           | `docs/dr-005-rate-limits-aware-scheduling.md` 参照。worker は自動で skip して次の launchd 起動まで待つ                               |
+| Claude API のレートリミットで止まる           | `docs/decisions/dr-005-rate-limits-aware-scheduling.md` 参照。worker は自動で skip して次の launchd 起動まで待つ                     |
 | 大きいセッションで一部しか反映されない        | `splitTimeline` でチャンク分割されている可能性大。各チャンクで完結するプロンプトに書き換える                                         |
 | frontmatter が解釈されない                    | `src/lib/frontmatter.ts` は最大 2 段ネストの簡易パーサ。リスト・複雑な YAML 機能は使えない。値はクォートしないと数値に解釈される     |
 
 ## Related docs
 
 - `README.md` -- CLI 全体の使い方とインストール
-- `docs/dr-002-chunked-processing.md` -- チャンク分割の設計判断
-- `docs/dr-003-fork-session-handling.md` -- フォークセッションの扱い
-- `docs/dr-004-queue-persistence.md` -- queue (SQLite) の構造
-- `docs/dr-005-rate-limits-aware-scheduling.md` -- レートリミット監視
+- `docs/decisions/dr-002-chunked-processing.md` -- チャンク分割の設計判断
+- `docs/decisions/dr-003-fork-session-handling.md` -- フォークセッションの扱い
+- `docs/decisions/dr-004-queue-persistence.md` -- queue (SQLite) の構造
+- `docs/decisions/dr-005-rate-limits-aware-scheduling.md` -- レートリミット監視
