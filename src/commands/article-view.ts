@@ -85,7 +85,6 @@ const view = define({
     sort: {
       type: "string",
       description: "Sort order: recipe, date, size",
-      short: "s",
     },
   },
   run: async (ctx) => {

@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { toJSTISOString, formatSmartSize } from "../lib/format.ts";
-import { validateSortOrder } from "./article-ls.ts";
+import { validateSortOrder, resolveSortOrder } from "./article-ls.ts";
 
 describe("article-ls", () => {
   describe("validateSortOrder", () => {
@@ -11,9 +11,34 @@ describe("article-ls", () => {
       expect(() => validateSortOrder(undefined)).not.toThrow();
     });
 
+    test("does not throw for article-list aliases", () => {
+      expect(() => validateSortOrder("rule")).not.toThrow();
+      expect(() => validateSortOrder("start")).not.toThrow();
+    });
+
     test("throws for invalid sort order with available values in message", () => {
       expect(() => validateSortOrder("bogus")).toThrow(/invalid sort order.*bogus/i);
-      expect(() => validateSortOrder("bogus")).toThrow(/recipe.*date.*size/);
+      expect(() => validateSortOrder("bogus")).toThrow(/recipe.*rule.*date.*start.*size/);
+    });
+  });
+
+  describe("resolveSortOrder", () => {
+    test("returns default when value is undefined", () => {
+      expect(resolveSortOrder(undefined, "date")).toBe("date");
+    });
+
+    test("normalizes article-list aliases (rule -> recipe)", () => {
+      expect(resolveSortOrder("rule", "date")).toBe("recipe");
+    });
+
+    test("normalizes article-list aliases (start -> date)", () => {
+      expect(resolveSortOrder("start", "recipe")).toBe("date");
+    });
+
+    test("preserves canonical values", () => {
+      expect(resolveSortOrder("recipe", "date")).toBe("recipe");
+      expect(resolveSortOrder("date", "recipe")).toBe("date");
+      expect(resolveSortOrder("size", "date")).toBe("size");
     });
   });
 

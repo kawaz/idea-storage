@@ -55,4 +55,49 @@ describe("CLI E2E", () => {
     const result = await run("extract");
     expect(result.exitCode).not.toBe(0);
   });
+
+  describe("--help shows positional arguments", () => {
+    test("extract --help describes the <target> positional", async () => {
+      const result = await run("extract", "--help");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("ARGUMENTS:");
+      expect(result.stdout).toContain("target");
+      expect(result.stdout).toContain("Session file path or session UUID");
+      // USAGE line should include the positional symbol
+      expect(result.stdout).toMatch(/extract\s+<OPTIONS>\s+<target>/);
+    });
+
+    test("article list --help describes the <pattern> positional", async () => {
+      const result = await run("article", "list", "--help");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("ARGUMENTS:");
+      expect(result.stdout).toContain("pattern");
+      expect(result.stdout).toContain("recipe name");
+      expect(result.stdout).toMatch(/article list\s+<OPTIONS>\s+\[<pattern>\s*\.\.\.\]/);
+    });
+  });
+
+  describe("--help cross-references between article ls and article list", () => {
+    test("article ls --help mentions article list", async () => {
+      const result = await run("article", "ls", "--help");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("article list");
+    });
+
+    test("article list --help mentions article ls", async () => {
+      const result = await run("article", "list", "--help");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("article ls");
+    });
+  });
+
+  describe("article view --sort no longer has -s short form", () => {
+    test("article view --help does not advertise -s", async () => {
+      const result = await run("article", "view", "--help");
+      expect(result.exitCode).toBe(0);
+      // sort line should not start with "-s, --sort"
+      expect(result.stdout).not.toMatch(/^\s*-s,\s*--sort/m);
+      expect(result.stdout).toMatch(/--sort\s+<sort>/);
+    });
+  });
 });

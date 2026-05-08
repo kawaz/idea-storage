@@ -8,16 +8,18 @@ const extract = define({
   name: "extract",
   description: "Extract conversation text from a session file",
   args: {
+    target: {
+      type: "positional",
+      description: "Session file path or session UUID",
+    },
     "max-chars": {
       type: "number",
       description: "Maximum characters (truncates from the beginning, keeping recent)",
     },
   },
   run: async (ctx) => {
-    const target = ctx.positionals[ctx.commandPath.length];
-    if (!target) {
-      exitWithError("Usage: idea-storage extract [--max-chars N] <session-file-or-uuid>");
-    }
+    // gunshi enforces the required positional via renderValidationErrors in cli().
+    const target = ctx.values.target as string;
 
     let filePath: string;
 

@@ -359,15 +359,21 @@ function formatLine(
 
 const articleList = define({
   name: "list",
-  description: "List all articles with rich formatting",
+  description: "List all articles with rich formatting (see also: `article ls` for plain output)",
   args: {
+    pattern: {
+      type: "positional",
+      multiple: true,
+      description:
+        "Filter regex(s): each pattern matches against recipe name first, falls back to project path",
+    },
     sort: {
       type: "string",
       description: "Sort keys (comma-separated): start, end, duration, turn, rule",
     },
     rule: {
       type: "string",
-      description: "Filter by rule name (regex)",
+      description: "Filter by rule (recipe) name (regex)",
     },
     path: {
       type: "string",
@@ -379,7 +385,7 @@ const articleList = define({
     const sortKeys = parseSortKeys(ctx.values.sort as string | undefined);
     const rulePattern = ctx.values.rule as string | undefined;
     const pathPattern = ctx.values.path as string | undefined;
-    const positional = (ctx.positionals as string[])?.slice(ctx.commandPath.length) ?? [];
+    const positional = (ctx.values.pattern as string[] | undefined) ?? [];
 
     const dataDir = getDataDir();
 
