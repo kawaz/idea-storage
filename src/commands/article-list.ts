@@ -342,9 +342,14 @@ const articleList = define({
       type: "string",
       description: "Filter by project path (regex)",
     },
+    format: {
+      type: "string",
+      description: `Output format: ${VALID_OUTPUT_FORMATS.join(", ")} (default: text)`,
+    },
   },
   run: async (ctx) => {
     validateSortKeys(ctx.values.sort as string | undefined);
+    const format = validateOutputFormat(ctx.values.format as string | undefined);
     const sortKeys = parseSortKeys(ctx.values.sort as string | undefined);
     const rulePattern = ctx.values.rule as string | undefined;
     const pathPattern = ctx.values.path as string | undefined;
@@ -380,7 +385,12 @@ const articleList = define({
     }
 
     if (articles.length === 0) {
-      console.log("No articles found.");
+      if (format === "json") console.log("[]");
+      else if (format === "jsonl") {
+        // empty: print nothing (each line is one entry)
+      } else {
+        console.log("No articles found.");
+      }
       return;
     }
 
@@ -410,12 +420,32 @@ const articleList = define({
     }
 
     if (entries.length === 0) {
-      console.log("No articles found.");
+      if (format === "json") console.log("[]");
+      else if (format === "jsonl") {
+        // empty: print nothing
+      } else {
+        console.log("No articles found.");
+      }
       return;
     }
 
     // Sort
     sortEntries(entries, sortKeys);
+
+    // JSON / JSONL output: serialize and skip text formatting entirely.
+    // Strings here come from data fields (path, recipe, project, ISO date),
+    // none of which carry ANSI escapes — so JSON output is plain by construction.
+    if (format === "json") {
+      const arr = entries.map(toArticleJsonEntry);
+      console.log(JSON.stringify(arr));
+      return;
+    }
+    if (format === "jsonl") {
+      for (const e of entries) {
+        console.log(JSON.stringify(toArticleJsonEntry(e)));
+      }
+      return;
+    }
 
     // Calculate column widths
     const maxRuleLen = Math.max(...entries.map((e) => e.recipe.length));

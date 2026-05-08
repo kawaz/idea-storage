@@ -2,6 +2,64 @@
 
 A CLI tool that transforms Claude Code session histories into articles using AI recipes.
 
+## Why this exists
+
+A long Claude Code session leaves behind a huge JSONL transcript. A week later, you ask
+yourself: _"What did I actually decide on Monday? What's still pending? What did I learn
+that I want to reuse next time?"_ — and you end up scrolling through hours of transcript
+to reconstruct your own work.
+
+idea-storage runs in the background and rewrites each finished session through a set of
+recipes. One recipe extracts an actionable TODO list, another writes a quiet diary of
+what the agent felt during the session, another distills reusable knowledge. The cost of
+looking back drops from "re-read the whole session" to "skim a 1-page article from the
+angle I care about right now."
+
+### Example use cases
+
+- **"What did I work on last week?"** → `summary` recipe gives you a per-section digest.
+- **"What did I leave unfinished?"** → `todo` recipe groups Next Action / Backlog /
+  Blocked / Questions.
+- **"How did this project actually evolve?"** → `diary` recipe reconstructs the felt
+  experience and turning points.
+- **"What did I learn that I want to reuse?"** → `knowledge` recipe captures TILs and
+  reusable patterns.
+
+## Sample output
+
+All snippets below are real excerpts from a single ~2.5 hour session that built a
+healthcheck agent from scratch (`session 64bac255…`). Each recipe was applied to the
+same transcript.
+
+**`todo`** — Next Action / Backlog / Blocked / Questions, ready to resume from:
+
+> ### Next Action — すぐやること
+>
+> 1. **キャッシュ方針の決定と組み込み** ← このチャンク末尾でユーザーから新たに出た要求
+>    - 直前の合意では「キャッシュは削る」だったが、ユーザーが**負荷観点で復活させても良い**と言い直した。スコープに再投入する必要がある
+>    - 決めるべきこと: キャッシュキー / TTL / 実装方式 / 対象範囲
+
+**`summary`** — concise per-section digest:
+
+> **一言まとめ**: Go で `/proc` 直読み型のポート監視 HTTP エージェント `port-peeker` を MVP 実装し、実機 (linux/arm64, AL2023) で全パターン動作確認まで完了。
+>
+> **結果・成果**: Phase 1 MVP 完了 — 外部コマンド依存ゼロ・cgo オフでクロスビルド可・全テスト race detector 通過。
+
+**`diary`** — first-person reflection on what the session felt like:
+
+> 設計書という「権威」を削るのは、ユーザの意図を読み間違えると失礼になる。でも残しすぎるとそれもまた違う。`/check` と `/healthz` だけに絞り、metrics・キャッシュ・proto・unit・loose・構造化ログ・systemd unit ファイルを「全部削る」と宣言したとき、内心ちょっとドキドキしていた。やりすぎかなと。
+>
+> 結果としてユーザの返事は「むしろ設計書がゴテゴテしすぎ、で十分と思う」。ホッとした。
+
+**`knowledge`** — reusable TILs and patterns extracted from the work:
+
+> ### `! cmd | grep -q . || fallback` パターン
+>
+> justfile のように「各行が独立・失敗で中断」な環境で「出力があれば処理、なければスキップして続行」を実現する定型句。`|| true` と違い、fallback 側の失敗は正しく伝播する。
+
+Other built-in-style recipes include `changelog`, `letter`, `report-for-boss`, `roast`,
+`blame`, and `story`. You write your own as plain Markdown.
+
 ## Install
 
 ```bash
