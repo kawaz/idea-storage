@@ -359,6 +359,20 @@ describe("session-convert", () => {
     expect(markDoneCalls).toHaveLength(0);
   });
 
+  test("不正な session_id (非UUID) は CLI バリデータで CliError として弾かれる", async () => {
+    const { validateSessionId } = await import("../lib/validate.ts");
+    const { CliError } = await import("../lib/errors.ts");
+    expect(() => validateSessionId("not-a-uuid")).toThrow(CliError);
+    expect(() => validateSessionId("not-a-uuid")).toThrow(/Invalid session ID/);
+  });
+
+  test("不正な recipe 名は CLI バリデータで CliError として弾かれる", async () => {
+    const { validateRecipeName } = await import("../lib/validate.ts");
+    const { CliError } = await import("../lib/errors.ts");
+    expect(() => validateRecipeName("BAD-RECIPE")).toThrow(CliError);
+    expect(() => validateRecipeName("BAD-RECIPE")).toThrow(/Invalid recipe name/);
+  });
+
   test("waitForCompletion で skipped を観測したら kind='skipped' で返す", async () => {
     const projectsDir = join(claudeDir, "projects");
     await writeSessionFile(projectsDir, VALID_SID);

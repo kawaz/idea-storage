@@ -6,6 +6,7 @@ import { getSessionMeta } from "../lib/conversation.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import { claim, markDone, markFailed, markSkipped, waitForCompletion } from "../lib/queue.ts";
 import { CliError, exitWithError } from "../lib/errors.ts";
+import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import {
@@ -187,6 +188,8 @@ const sessionConvert = define({
     }
 
     try {
+      validateSessionId(sessionId);
+      validateRecipeName(recipeName);
       const result = await runConvert({ sessionId, recipeName });
       switch (result.kind) {
         case "processed":

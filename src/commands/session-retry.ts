@@ -1,6 +1,7 @@
 import { define } from "gunshi";
 import { retry, formatLogKey } from "../lib/queue.ts";
 import { exitWithError } from "../lib/errors.ts";
+import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
 
 const sessionRetry = define({
   name: "retry",
@@ -26,6 +27,8 @@ const sessionRetry = define({
     }
 
     try {
+      validateSessionId(sessionId);
+      validateRecipeName(recipeName);
       await retry(sessionId, recipeName);
       console.log(`Moved to queue: ${formatLogKey(sessionId, recipeName)}`);
     } catch (err) {
