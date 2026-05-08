@@ -2,7 +2,7 @@ import { define } from "gunshi";
 import { getStatus } from "../lib/queue.ts";
 import { getLatestObservations } from "../lib/rate-limit-store.ts";
 import { shouldSkip } from "../lib/rate-limit-judge.ts";
-import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "./session-run.ts";
+import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
 
 function formatBucket(
   util: number | null,

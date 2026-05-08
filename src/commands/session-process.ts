@@ -23,6 +23,7 @@ import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { redactSecrets } from "../lib/redact.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
+import { CSA_TIMEOUT_MS } from "../lib/constants.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
 
 const csaBin = "claude-session-analysis";
@@ -43,9 +44,6 @@ function recordWorkerObservation(obs: RateLimitObservation): void {
     logError({ msg: "rate_limit_record_failed", error: String(err) });
   }
 }
-
-/** CSA subprocess timeout: 10 minutes (実測では1.7MBセッションでも50ms以内だが余裕を持たせる) */
-export const CSA_TIMEOUT_MS = 10 * 60 * 1000;
 
 function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
   return recipes.find((r) => r.name === name);

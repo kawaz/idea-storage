@@ -9,22 +9,12 @@ import { log } from "../lib/logging.ts";
 import { migrateIfNeeded } from "../lib/migrate-queue.ts";
 import { cleanupOldObservations, getLatestObservations } from "../lib/rate-limit-store.ts";
 import { shouldSkip } from "../lib/rate-limit-judge.ts";
-
-/** Default per-task timeout: 25 minutes */
-export const DEFAULT_TASK_TIMEOUT_MS = 25 * 60 * 1000;
-
-/** Bail out after this many consecutive failures */
-export const MAX_CONSECUTIVE_FAILURES = 5;
-
-/** Overall timeout: 50 minutes (must be shorter than launchd StartInterval=3600s=60min) */
-export const OVERALL_TIMEOUT_MS = 50 * 60 * 1000;
-
-/**
- * Rate limit observations older than this are considered stale and the judge
- * ignores them (treated as no-data → proceed). Keeps us from skipping forever
- * on a week-old sample.
- */
-export const RATE_LIMIT_STALE_THRESHOLD_SEC = 15 * 60; // 15 min
+import {
+  DEFAULT_TASK_TIMEOUT_MS,
+  MAX_CONSECUTIVE_FAILURES,
+  OVERALL_TIMEOUT_MS,
+  RATE_LIMIT_STALE_THRESHOLD_SEC,
+} from "../lib/constants.ts";
 
 /** Required external commands and their install instructions. */
 const REQUIRED_DEPS: ReadonlyArray<{ cmd: string; installHint: string }> = [

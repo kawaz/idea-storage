@@ -690,15 +690,6 @@ describe("processChunked external signal propagation", () => {
   });
 });
 
-// --- CSA_TIMEOUT_MS のテスト ---
-import { CSA_TIMEOUT_MS } from "./session-process.ts";
-
-describe("CSA_TIMEOUT_MS", () => {
-  test("10分（600000ms）に設定されている", () => {
-    expect(CSA_TIMEOUT_MS).toBe(10 * 60 * 1000);
-  });
-});
-
 // --- ProcessResult 型のテスト ---
 import type { ProcessResult } from "./session-process.ts";
 

@@ -2,9 +2,9 @@ import { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { getStateDir } from "./paths.ts";
+import { DEFAULT_MAX_RETRIES } from "./constants.ts";
 import type { QueueEntry } from "../types/index.ts";
 
-export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_RETRY_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** Default poll interval for waitForCompletion (ms). */
