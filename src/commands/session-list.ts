@@ -1,5 +1,6 @@
 import { define } from "gunshi";
 import { join, basename } from "node:path";
+import { stat } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
 import { getSessionMeta } from "../lib/conversation.ts";
 import { formatAge } from "../lib/format.ts";
@@ -10,16 +11,66 @@ function projectName(project: string): string {
   return basename(project);
 }
 
-export async function runList(): Promise<void> {
-  const config = await loadConfig();
+export const VALID_OUTPUT_FORMATS = ["text", "json", "jsonl"] as const;
+export type OutputFormat = (typeof VALID_OUTPUT_FORMATS)[number];
 
-  const sessions: {
-    id: string;
-    project: string;
-    lineCount: number;
-    ageSec: number;
-    status: string;
-  }[] = [];
+export function isOutputFormat(s: string): s is OutputFormat {
+  return (VALID_OUTPUT_FORMATS as readonly string[]).includes(s);
+}
+
+export function validateOutputFormat(value: string | undefined): OutputFormat {
+  if (value === undefined || value === "") return "text";
+  if (!isOutputFormat(value)) {
+    throw new Error(`Invalid format: ${value}. Valid values: ${VALID_OUTPUT_FORMATS.join(", ")}`);
+  }
+  return value;
+}
+
+interface SessionListEntry {
+  id: string;
+  filePath: string;
+  project: string;
+  projectShort: string;
+  lineCount: number;
+  ageSec: number;
+  hasEnd: boolean;
+  userTurns: number;
+  sessionBytes: number;
+}
+
+/**
+ * JSON-safe shape for a session entry. snake_case keys for consistency with
+ * `claude-session-analysis` JSON output.
+ */
+export interface SessionJsonEntry {
+  id: string;
+  path: string;
+  project: string;
+  user_turns: number;
+  session_bytes: number;
+  age_sec: number;
+  line_count: number;
+  has_end: boolean;
+  status: "ended" | "active";
+}
+
+export function toSessionJsonEntry(entry: SessionListEntry): SessionJsonEntry {
+  return {
+    id: entry.id,
+    path: entry.filePath,
+    project: entry.project,
+    user_turns: entry.userTurns,
+    session_bytes: entry.sessionBytes,
+    age_sec: entry.ageSec,
+    line_count: entry.lineCount,
+    has_end: entry.hasEnd,
+    status: entry.hasEnd ? "ended" : "active",
+  };
+}
+
+async function collectSessions(): Promise<SessionListEntry[]> {
+  const config = await loadConfig();
+  const sessions: SessionListEntry[] = [];
 
   for (const claudeDir of config.claudeDirs) {
     const projectsDir = join(claudeDir, "projects");
@@ -32,13 +83,24 @@ export async function runList(): Promise<void> {
 
         const filePath = join(projectsDir, relativePath);
         const meta = await getSessionMeta(filePath);
+        let sessionBytes = 0;
+        try {
+          const st = await stat(filePath);
+          sessionBytes = st.size;
+        } catch {
+          // best-effort: 0 if stat fails
+        }
 
         sessions.push({
           id: meta.id,
-          project: projectName(meta.project),
+          filePath,
+          project: meta.project,
+          projectShort: projectName(meta.project),
           lineCount: meta.lineCount,
           ageSec: meta.ageSec,
-          status: meta.hasEnd ? "ended" : "active",
+          hasEnd: meta.hasEnd,
+          userTurns: meta.userTurns,
+          sessionBytes,
         });
       }
     } catch (e: unknown) {
@@ -51,12 +113,34 @@ export async function runList(): Promise<void> {
   // Sort by age descending (oldest first)
   sessions.sort((a, b) => b.ageSec - a.ageSec);
 
+  return sessions;
+}
+
+export async function runList(format: OutputFormat = "text"): Promise<void> {
+  const sessions = await collectSessions();
+
   if (sessions.length === 0) {
-    console.log("No sessions found.");
+    if (format === "json") console.log("[]");
+    else if (format === "jsonl") {
+      // empty: print nothing
+    } else {
+      console.log("No sessions found.");
+    }
     return;
   }
 
-  // Calculate column widths
+  if (format === "json") {
+    console.log(JSON.stringify(sessions.map(toSessionJsonEntry)));
+    return;
+  }
+  if (format === "jsonl") {
+    for (const s of sessions) {
+      console.log(JSON.stringify(toSessionJsonEntry(s)));
+    }
+    return;
+  }
+
+  // Text output (existing behavior)
   const header = {
     id: "SESSION_ID",
     project: "PROJECT",
@@ -66,10 +150,10 @@ export async function runList(): Promise<void> {
   };
   const rows = sessions.map((s) => ({
     id: s.id.slice(0, 8) + "..",
-    project: s.project,
+    project: s.projectShort,
     lines: String(s.lineCount),
     age: formatAge(s.ageSec),
-    status: s.status,
+    status: s.hasEnd ? "ended" : "active",
   }));
 
   const colWidths = {
@@ -92,8 +176,15 @@ export async function runList(): Promise<void> {
 const sessionList = define({
   name: "list",
   description: "List all sessions",
-  run: async () => {
-    await runList();
+  args: {
+    format: {
+      type: "string",
+      description: `Output format: ${VALID_OUTPUT_FORMATS.join(", ")} (default: text)`,
+    },
+  },
+  run: async (ctx) => {
+    const format = validateOutputFormat(ctx.values.format as string | undefined);
+    await runList(format);
   },
 });
 

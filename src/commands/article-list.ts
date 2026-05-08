@@ -36,9 +36,7 @@ export function isOutputFormat(s: string): s is OutputFormat {
 export function validateOutputFormat(value: string | undefined): OutputFormat {
   if (value === undefined || value === "") return "text";
   if (!isOutputFormat(value)) {
-    throw new Error(
-      `Invalid format: ${value}. Valid values: ${VALID_OUTPUT_FORMATS.join(", ")}`,
-    );
+    throw new Error(`Invalid format: ${value}. Valid values: ${VALID_OUTPUT_FORMATS.join(", ")}`);
   }
   return value;
 }

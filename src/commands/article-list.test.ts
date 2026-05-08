@@ -6,7 +6,14 @@ import {
   parseProject,
   stripAnsi,
 } from "../lib/article-format.ts";
-import { parseSortKeys, sortEntries, validateRegex, validateSortKeys } from "./article-list.ts";
+import {
+  parseSortKeys,
+  sortEntries,
+  toArticleJsonEntry,
+  validateOutputFormat,
+  validateRegex,
+  validateSortKeys,
+} from "./article-list.ts";
 
 describe("article-list", () => {
   // Most tests in this file assert that ANSI color codes are present in the
@@ -491,6 +498,118 @@ describe("article-list", () => {
       process.env.CI = "true";
       process.env.FORCE_COLOR = "1";
       expect(ANY_ANSI.test(formatSmartSize(1024))).toBe(true);
+    });
+  });
+
+  describe("validateOutputFormat", () => {
+    test("returns 'text' when value is undefined", () => {
+      expect(validateOutputFormat(undefined)).toBe("text");
+    });
+
+    test("returns 'text' when value is empty string", () => {
+      expect(validateOutputFormat("")).toBe("text");
+    });
+
+    test("accepts canonical formats", () => {
+      expect(validateOutputFormat("text")).toBe("text");
+      expect(validateOutputFormat("json")).toBe("json");
+      expect(validateOutputFormat("jsonl")).toBe("jsonl");
+    });
+
+    test("throws for invalid format with available values in message", () => {
+      expect(() => validateOutputFormat("yaml")).toThrow(/invalid format.*yaml/i);
+      expect(() => validateOutputFormat("yaml")).toThrow(/text.*json.*jsonl/);
+    });
+  });
+
+  describe("toArticleJsonEntry", () => {
+    // oxlint-disable-next-line no-control-regex -- intentional: detect any ANSI escape
+    const ANY_ANSI_LOCAL = /\x1b\[/;
+
+    function makeEntry(
+      overrides: Partial<{
+        fullPath: string;
+        sizeBytes: number;
+        recipe: string;
+        sessionId: string;
+        sessionStart: Date | null;
+        sessionEnd: Date | null;
+        durationMs: number | null;
+        userTurns: number | null;
+        sessionBytes: number | null;
+        project: string;
+      }> = {},
+    ) {
+      // Use explicit "in" checks so callers can override values with null.
+      const defaults = {
+        fullPath: "/tmp/some/article.md",
+        sizeBytes: 1024,
+        recipe: "diary",
+        sessionId: "abcdef01-2345-6789-abcd-ef0123456789",
+        sessionStart: new Date("2026-03-07T00:00:00Z") as Date | null,
+        sessionEnd: new Date("2026-03-07T01:00:00Z") as Date | null,
+        durationMs: 3600_000 as number | null,
+        userTurns: 21 as number | null,
+        sessionBytes: 2496639 as number | null,
+        project: "/Users/kawaz/.local/share/repos/github.com/kawaz/idea-storage/main",
+      };
+      return { ...defaults, ...overrides };
+    }
+
+    test("returns snake_case fields with ISO dates", () => {
+      const j = toArticleJsonEntry(makeEntry());
+      expect(j.path).toBe("/tmp/some/article.md");
+      expect(j.size_bytes).toBe(1024);
+      expect(j.recipe).toBe("diary");
+      expect(j.session_id).toBe("abcdef01-2345-6789-abcd-ef0123456789");
+      expect(j.session_start).toBe("2026-03-07T00:00:00.000Z");
+      expect(j.session_end).toBe("2026-03-07T01:00:00.000Z");
+      expect(j.duration_ms).toBe(3600_000);
+      expect(j.user_turns).toBe(21);
+      expect(j.session_bytes).toBe(2496639);
+      expect(j.project).toContain("idea-storage");
+    });
+
+    test("nulls propagate through to JSON entry", () => {
+      const j = toArticleJsonEntry(
+        makeEntry({
+          sessionStart: null,
+          sessionEnd: null,
+          durationMs: null,
+          userTurns: null,
+          sessionBytes: null,
+        }),
+      );
+      expect(j.session_start).toBeNull();
+      expect(j.session_end).toBeNull();
+      expect(j.duration_ms).toBeNull();
+      expect(j.user_turns).toBeNull();
+      expect(j.session_bytes).toBeNull();
+    });
+
+    test("JSON serialization round-trips even with FORCE_COLOR=1", () => {
+      // FORCE_COLOR is set on the suite (see beforeAll). Simulating a
+      // typical user invocation: format=json should still produce ANSI-free
+      // output because we serialize raw data fields (no ANSI ever lands here).
+      const arr = [makeEntry(), makeEntry({ recipe: "code-review" })].map(toArticleJsonEntry);
+      const text = JSON.stringify(arr);
+      expect(ANY_ANSI_LOCAL.test(text)).toBe(false);
+      const parsed = JSON.parse(text);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[0].recipe).toBe("diary");
+      expect(parsed[1].recipe).toBe("code-review");
+    });
+
+    test("JSONL line is valid JSON per row", () => {
+      const entries = [makeEntry(), makeEntry({ recipe: "meeting" })].map(toArticleJsonEntry);
+      const lines = entries.map((e) => JSON.stringify(e));
+      // No newlines inside a single line
+      for (const line of lines) {
+        expect(line).not.toContain("\n");
+        const parsed = JSON.parse(line);
+        expect(typeof parsed.path).toBe("string");
+      }
     });
   });
 });
