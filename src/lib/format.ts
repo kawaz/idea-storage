@@ -30,6 +30,15 @@ export function toJSTISOString(date: Date): string {
   return `${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`;
 }
 
+/**
+ * Compact duration: top non-zero unit + the next unit (max 2 units, d/h/m/s).
+ * 例: 4d23h, 6h15m, 57m12s, 12s, 0s. ゼロパディングなし。
+ *
+ * Design rationale: 旧実装は `0m05s` `1h00m` のように常に 2 単位 + 下位 2 桁
+ * ゼロパディングで文字幅を 5 文字に揃えていたが、`0h57m` のような上位ゼロが
+ * 冗長というフィードバックを受けて新仕様に統一した。列幅は呼び出し側の
+ * padEnd/padStart で揃える。
+ */
 export function formatDuration(startMs: number, endMs: number): string {
   const sec = Math.floor((endMs - startMs) / 1000);
   if (sec < 0) return "-";
@@ -37,10 +46,18 @@ export function formatDuration(startMs: number, endMs: number): string {
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
-  if (d > 0) return `${d}d${String(h).padStart(2, "0")}h`;
-  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
-  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
-  return `0m${String(s).padStart(2, "0")}s`;
+  const parts: Array<[string, number]> = [
+    ["d", d],
+    ["h", h],
+    ["m", m],
+    ["s", s],
+  ];
+  const start = parts.findIndex(([, v]) => v > 0);
+  if (start === -1) return "0s";
+  return parts
+    .slice(start, start + 2)
+    .map(([u, v]) => `${v}${u}`)
+    .join("");
 }
 
 export function formatTimestamp(date: Date): string {

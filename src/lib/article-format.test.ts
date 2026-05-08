@@ -143,17 +143,17 @@ describe("article-format", () => {
       expect(stripAnsi(formatDuration(0, dur * 1000))).toBe("5m30s");
     });
 
-    test("formats sub-minute with dim 0m prefix", () => {
+    test("formats sub-minute with dim style", () => {
       const dur = 42;
       const result = formatDuration(0, dur * 1000);
-      expect(stripAnsi(result)).toBe("0m42s");
-      // Should contain ANSI codes for the 0m part
+      expect(stripAnsi(result)).toBe("42s");
+      // seconds-only output is colorized as dim (blackBright)
       expect(result).toContain("\x1b[");
     });
 
     test("formats 0 seconds", () => {
       const result = formatDuration(0, 0);
-      expect(stripAnsi(result)).toBe("0m00s");
+      expect(stripAnsi(result)).toBe("0s");
     });
 
     test("returns - for negative duration", () => {

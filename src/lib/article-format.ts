@@ -80,14 +80,15 @@ export function formatSmartSize(bytes: number): string {
   return `${color}${num}${C.reset}${unit}`;
 }
 
-/** Duration formatter with color: red(d) / yellow(h) / green(m,s) / dim(0m). */
+/** Duration formatter with color: red(d) / yellow(h) / green(m) / dim(s-only). */
 export function formatDuration(startMs: number, endMs: number): string {
   const plain = formatDurationPlain(startMs, endMs);
   if (plain === "-") return "-";
   if (plain.includes("d")) return `${C.red}${plain}${C.reset}`;
   if (plain.includes("h")) return `${C.yellow}${plain}${C.reset}`;
-  if (plain.startsWith("0m")) return `${C.blackBright}0m${C.green}${plain.slice(2)}${C.reset}`;
-  return `${C.green}${plain}${C.reset}`;
+  if (plain.includes("m")) return `${C.green}${plain}${C.reset}`;
+  // seconds-only (e.g. "5s", "0s"): dim, mirroring the old "0m" prefix dim.
+  return `${C.blackBright}${plain}${C.reset}`;
 }
 
 /** Timestamp formatter (JST) with the `T` separator dimmed. */

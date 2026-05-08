@@ -125,35 +125,35 @@ describe("article-list", () => {
       expect(stripAnsi(formatDuration(0, dur * 1000))).toBe("5m30s");
     });
 
-    test("formats sub-minute with dim 0m prefix", () => {
+    test("formats sub-minute with dim style", () => {
       const dur = 42;
       const result = formatDuration(0, dur * 1000);
-      expect(stripAnsi(result)).toBe("0m42s");
-      // Should contain ANSI codes for the 0m part
+      expect(stripAnsi(result)).toBe("42s");
+      // seconds-only output is colorized as dim
       expect(result).toContain("\x1b[");
     });
 
     test("formats 0 seconds", () => {
       const result = formatDuration(0, 0);
-      expect(stripAnsi(result)).toBe("0m00s");
+      expect(stripAnsi(result)).toBe("0s");
     });
 
     test("returns - for negative duration", () => {
       expect(formatDuration(1000, 0)).toBe("-");
     });
 
-    test("pads h/m/s with leading zero", () => {
-      // 1d 2h
+    test("omits leading zeros (compact format)", () => {
+      // 1d 2h → no zero pad
       const dur1 = 86400 + 2 * 3600;
-      expect(stripAnsi(formatDuration(0, dur1 * 1000))).toBe("1d02h");
+      expect(stripAnsi(formatDuration(0, dur1 * 1000))).toBe("1d2h");
 
       // 1h 5m
       const dur2 = 3600 + 5 * 60;
-      expect(stripAnsi(formatDuration(0, dur2 * 1000))).toBe("1h05m");
+      expect(stripAnsi(formatDuration(0, dur2 * 1000))).toBe("1h5m");
 
       // 1m 3s
       const dur3 = 60 + 3;
-      expect(stripAnsi(formatDuration(0, dur3 * 1000))).toBe("1m03s");
+      expect(stripAnsi(formatDuration(0, dur3 * 1000))).toBe("1m3s");
     });
   });
 

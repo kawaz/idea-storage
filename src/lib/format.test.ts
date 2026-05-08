@@ -93,24 +93,38 @@ describe("formatDuration", () => {
     expect(formatDuration(1000, 500)).toBe("-");
   });
 
-  test("formats seconds only (< 1 minute)", () => {
-    expect(formatDuration(0, 15000)).toBe("0m15s");
-    expect(formatDuration(0, 5000)).toBe("0m05s");
+  test("returns 0s for zero duration", () => {
+    expect(formatDuration(0, 0)).toBe("0s");
   });
 
-  test("formats minutes and seconds", () => {
+  test("seconds only when under a minute", () => {
+    expect(formatDuration(0, 5000)).toBe("5s");
+    expect(formatDuration(0, 15000)).toBe("15s");
+    expect(formatDuration(0, 59000)).toBe("59s");
+  });
+
+  test("minutes and seconds", () => {
     expect(formatDuration(0, 90000)).toBe("1m30s");
     expect(formatDuration(0, 45 * 60 * 1000 + 30 * 1000)).toBe("45m30s");
+    expect(formatDuration(0, 3 * 60 * 1000 + 28 * 1000)).toBe("3m28s");
+    expect(formatDuration(0, 57 * 60 * 1000 + 49 * 1000)).toBe("57m49s");
   });
 
-  test("formats hours and minutes", () => {
+  test("hours and minutes", () => {
     expect(formatDuration(0, 5 * 3600 * 1000 + 30 * 60 * 1000)).toBe("5h30m");
-    expect(formatDuration(0, 3600 * 1000)).toBe("1h00m");
+    expect(formatDuration(0, 6 * 3600 * 1000 + 15 * 60 * 1000)).toBe("6h15m");
+    expect(formatDuration(0, 3600 * 1000)).toBe("1h0m");
   });
 
-  test("formats days and hours", () => {
-    expect(formatDuration(0, 86400 * 1000 + 2 * 3600 * 1000)).toBe("1d02h");
-    expect(formatDuration(0, 3 * 86400 * 1000)).toBe("3d00h");
+  test("days and hours", () => {
+    expect(formatDuration(0, 86400 * 1000 + 2 * 3600 * 1000)).toBe("1d2h");
+    expect(formatDuration(0, 4 * 86400 * 1000 + 23 * 3600 * 1000)).toBe("4d23h");
+    expect(formatDuration(0, 3 * 86400 * 1000)).toBe("3d0h");
+  });
+
+  test("keeps a lower-unit zero when the top unit is non-zero", () => {
+    // 5d 0h 30m → "5d0h" (top-non-zero + next unit, never skip to '5d30m')
+    expect(formatDuration(0, 5 * 86400 * 1000 + 30 * 60 * 1000)).toBe("5d0h");
   });
 
   test("works with arbitrary start/end", () => {
