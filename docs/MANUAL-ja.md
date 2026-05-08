@@ -1,9 +1,15 @@
-# Recipe Authoring Guide
+# Manual
+
+> [English](./MANUAL.md) | 日本語
+
+idea-storage のエンドユーザ向けマニュアル。
+
+## Recipe Authoring
 
 `idea-storage` で自分用のレシピを書き足すためのガイドです。レシピの仕組み・配置場所・YAML
 frontmatter の仕様・プロンプトの書き方・動作確認の手順までを一通りカバーします。
 
-## What is a recipe?
+### What is a recipe?
 
 idea-storage は Claude Code のセッション JSONL を「記事 (article)」へ変換するパイプラインで、
 変換ルールを記述するのが **recipe** です。1 セッションを 1 つの recipe で処理すると、
@@ -11,7 +17,7 @@ idea-storage は Claude Code のセッション JSONL を「記事 (article)」�
 登録しておけば、同じセッションから異なる切り口の記事を並行して生成できます (作業日誌・
 未解決タスク・上司向け報告、など)。
 
-## File structure
+### File structure
 
 - ファイル名: `recipe-<name>.md` (例: `recipe-todo.md` → recipe 名 `todo`)
 - 配置場所: `~/.config/idea-storage/recipe-*.md` (XDG: `$XDG_CONFIG_HOME/idea-storage/`)
@@ -23,7 +29,7 @@ idea-storage は Claude Code のセッション JSONL を「記事 (article)」�
 レシピ名は `recipe-` プレフィックスを除いた部分が使われ、出力ディレクトリ名・
 コマンドラインの `--recipe` 引数・queue キーの後半 (`{sessionId}.{recipeName}`) に登場します。
 
-## YAML frontmatter spec
+### YAML frontmatter spec
 
 実装は `src/lib/recipe.ts` (`parseRecipe`) と `src/lib/recipe-matcher.ts` (`matchesRecipe`)。
 型定義は `src/types/index.ts` の `Recipe` インターフェース。
@@ -39,7 +45,7 @@ idea-storage は Claude Code のセッション JSONL を「記事 (article)」�
 > フォールバック)。タスク先行ドキュメント等で「default skip」と書かれているのは誤り。最新の
 > `src/lib/recipe.ts` を正とします。
 
-### `match.project` の glob ルール
+#### `match.project` の glob ルール
 
 ```typescript
 // src/lib/recipe-matcher.ts (抜粋)
@@ -52,7 +58,7 @@ Bun.Glob の `*` はパス区切り (`/`) を跨がないので、recipe 側で�
 **自動で `**`にアップグレード**されます。これにより`_/myapp/_`のような直感的な
 書き方でも`~/work/myapp/sub/dir` にマッチします。`\*\*` を明示しても OK。
 
-### `on_existing` の挙動
+#### `on_existing` の挙動
 
 | 値         | 挙動                                                                                                                                            |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -63,9 +69,9 @@ Bun.Glob の `*` はパス区切り (`/`) を跨がないので、recipe 側で�
 > `idea-storage session convert --session ... --recipe ...` は明示指示扱いなので
 > `forceProcess=true` で実行され、`on_existing` の判定をスキップして強制再生成します。
 
-## Examples
+### Examples
 
-### Minimal recipe
+#### Minimal recipe
 
 最低限の構成。frontmatter で対象を絞り、本文がそのままプロンプトとして Claude に渡る:
 
@@ -81,7 +87,7 @@ on_existing: skip
 各項目には「文脈 / 次にやるべきこと / blocker」を 1 行ずつ書いてください。
 ```
 
-### Filter by project
+#### Filter by project
 
 特定のプロジェクト配下のセッションだけ対象にする:
 
@@ -95,7 +101,7 @@ match:
 このセッションで myapp に対して行った変更をリリースノート風にまとめてください。
 ```
 
-### Re-run on session updates
+#### Re-run on session updates
 
 セッションが伸びるたびに追記したい (作業日誌など):
 
@@ -109,7 +115,7 @@ on_existing: append
 今日の作業日誌として、時系列で起きたことと感想を書いてください。
 ```
 
-## Prompt writing tips
+### Prompt writing tips
 
 1. **チャンク分割を意識する**
    - タイムラインが大きいと `splitTimeline` (`src/lib/chunker.ts`) によりターン境界 +
@@ -136,7 +142,7 @@ on_existing: append
      プロンプト末尾に「このセッションは元セッション {parentId} からフォークされたもの」という
      注釈が自動で付く
 
-## Reference: 既存 recipes
+### Reference: 既存 recipes
 
 ```bash
 ls ~/.config/idea-storage/recipe-*.md
@@ -146,7 +152,7 @@ ls ~/.config/idea-storage/recipe-*.md
 PR を歓迎)。各レシピは「目的」「想定される使用頻度」「`on_existing` の選択理由」を
 冒頭コメントで添えておくと再利用しやすくなります。
 
-## Testing your recipe
+### Testing your recipe
 
 新規 recipe を `~/.config/idea-storage/recipe-<name>.md` に置いた後の動作確認手順:
 
@@ -171,21 +177,21 @@ PR を歓迎)。各レシピは「目的」「想定される使用頻度」「`
    ```
    出力ファイル名は `{yyyymmddTHHMMSSZ}.{sessionId}.md` (セッション開始時刻 UTC ベース)。
 
-## Trouble shooting
+### Trouble shooting
 
 | 症状                                          | 確認ポイント                                                                                                                         |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | recipe にマッチしない                         | `match.min_turns` / `match.min_age` を満たしているか。`match.project` の glob が正しいか。`session list` でセッション側の cwd を確認 |
 | `match.project` の glob が効きすぎる/効かない | `*` は自動で `**` 化される (パス区切りを越える)。意図的に 1 階層だけにしたい場合は `?` 系の指定で代替できないか検討                  |
 | 出力が空 / `skipped` ログが出る               | `userTurns === 0` (空セッション)、または `on_existing: skip` で行数が増えていないケースが多い                                        |
-| Claude API のレートリミットで止まる           | `docs/decisions/dr-005-rate-limits-aware-scheduling.md` 参照。worker は自動で skip して次の launchd 起動まで待つ                     |
+| Claude API のレートリミットで止まる           | `docs/decisions/DR-0005-rate-limits-aware-scheduling.md` 参照。worker は自動で skip して次の launchd 起動まで待つ                    |
 | 大きいセッションで一部しか反映されない        | `splitTimeline` でチャンク分割されている可能性大。各チャンクで完結するプロンプトに書き換える                                         |
 | frontmatter が解釈されない                    | `src/lib/frontmatter.ts` は最大 2 段ネストの簡易パーサ。リスト・複雑な YAML 機能は使えない。値はクォートしないと数値に解釈される     |
 
-## Related docs
+### Related docs
 
 - `README.md` -- CLI 全体の使い方とインストール
-- `docs/decisions/dr-002-chunked-processing.md` -- チャンク分割の設計判断
-- `docs/decisions/dr-003-fork-session-handling.md` -- フォークセッションの扱い
-- `docs/decisions/dr-004-queue-persistence.md` -- queue (SQLite) の構造
-- `docs/decisions/dr-005-rate-limits-aware-scheduling.md` -- レートリミット監視
+- `docs/decisions/DR-0002-chunked-processing.md` -- チャンク分割の設計判断
+- `docs/decisions/DR-0003-fork-session-handling.md` -- フォークセッションの扱い
+- `docs/decisions/DR-0004-queue-persistence.md` -- queue (SQLite) の構造
+- `docs/decisions/DR-0005-rate-limits-aware-scheduling.md` -- レートリミット監視
