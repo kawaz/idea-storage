@@ -7,6 +7,11 @@ import type { QueueEntry } from "../types/index.ts";
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_RETRY_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+/** Default poll interval for waitForCompletion (ms). */
+export const DEFAULT_WAIT_POLL_INTERVAL_MS = 1000;
+/** Default timeout for waitForCompletion (ms). 30 minutes. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+
 export interface FailedMeta {
   retryCount: number;
   reason?: string;
@@ -30,9 +35,13 @@ export interface QueueStateFailedEntry {
 
 export interface QueueState {
   queued: Set<string>;
+  /** Entries currently being processed by a worker / convert. */
+  processing: Set<string>;
   done: Map<string, { lineCount: number }>;
   failed: Map<string, QueueStateFailedEntry>;
 }
+
+export type QueueStatus = "queued" | "processing" | "done" | "failed";
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -153,29 +162,179 @@ export async function enqueue(
   }
 }
 
+/**
+ * Dequeue the newest queued entry by transitioning it from 'queued' to 'processing'.
+ *
+ * Design rationale: 以前は SELECT → DELETE していたが、processing 状態を残すことで
+ * 同一 key を別プロセス（worker, convert, または並行 worker）が二重処理しないよう
+ * 排他制御できる。エントリは処理完了時に markDone/markFailed で done/failed に遷移し、
+ * 失敗したまま放置された orphan の回収は別タスクで実装予定。
+ *
+ * トランザクション内で SELECT + UPDATE を行い、複数 worker による同時 dequeue を排他する。
+ */
 export async function dequeue(dirs?: QueueDirs): Promise<QueueEntry | null> {
   const db = getDb(dirs);
   try {
-    const row = db
-      .query(
-        `SELECT key, session_id, recipe_name FROM queue_entries
-       WHERE status = 'queued'
-       ORDER BY updated_at DESC
-       LIMIT 1`,
-      )
-      .get() as { key: string; session_id: string; recipe_name: string } | null;
+    const now = Date.now();
+    let claimed: QueueEntry | null = null;
+    const tx = db.transaction(() => {
+      const row = db
+        .query(
+          `SELECT key, session_id, recipe_name FROM queue_entries
+           WHERE status = 'queued'
+           ORDER BY updated_at DESC
+           LIMIT 1`,
+        )
+        .get() as { key: string; session_id: string; recipe_name: string } | null;
 
-    if (!row) return null;
+      if (!row) return;
 
-    db.run(`DELETE FROM queue_entries WHERE key = ?`, [row.key]);
+      db.run(`UPDATE queue_entries SET status = 'processing', updated_at = ? WHERE key = ?`, [
+        now,
+        row.key,
+      ]);
 
-    return {
-      sessionId: row.session_id,
-      recipeName: row.recipe_name,
-      key: row.key,
-    };
+      claimed = {
+        sessionId: row.session_id,
+        recipeName: row.recipe_name,
+        key: row.key,
+      };
+    });
+    tx();
+    return claimed;
   } finally {
     db.close();
+  }
+}
+
+export interface ClaimResult {
+  /** True if this caller successfully claimed processing ownership of the key. */
+  claimed: boolean;
+  /** Status before the claim (null if entry did not exist). */
+  prevStatus: QueueStatus | null;
+}
+
+/**
+ * Atomically claim a key for processing.
+ *
+ * - Entry absent → INSERT with status='processing'. Returns claimed=true, prevStatus=null.
+ * - Entry queued / done / failed → UPDATE to status='processing'. Returns claimed=true, prevStatus=<old>.
+ * - Entry already 'processing' → no change. Returns claimed=false, prevStatus='processing'.
+ *
+ * 重複処理の排他制御を提供する。Convert コマンドは claim に成功した場合に処理を実行し、
+ * 失敗した場合は waitForCompletion で他プロセスの完了を待つ。
+ */
+export async function claim(
+  sessionId: string,
+  recipeName: string,
+  dirs?: QueueDirs,
+): Promise<ClaimResult> {
+  const key = makeKey(sessionId, recipeName);
+  const now = Date.now();
+  const db = getDb(dirs);
+  try {
+    let result: ClaimResult = { claimed: false, prevStatus: null };
+    const tx = db.transaction(() => {
+      const row = db.query(`SELECT status FROM queue_entries WHERE key = ?`).get(key) as {
+        status: QueueStatus;
+      } | null;
+
+      if (!row) {
+        db.run(
+          `INSERT INTO queue_entries (key, session_id, recipe_name, status, created_at, updated_at)
+           VALUES (?, ?, ?, 'processing', ?, ?)`,
+          [key, sessionId, recipeName, now, now],
+        );
+        result = { claimed: true, prevStatus: null };
+        return;
+      }
+
+      if (row.status === "processing") {
+        result = { claimed: false, prevStatus: "processing" };
+        return;
+      }
+
+      db.run(`UPDATE queue_entries SET status = 'processing', updated_at = ? WHERE key = ?`, [
+        now,
+        key,
+      ]);
+      result = { claimed: true, prevStatus: row.status };
+    });
+    tx();
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
+export type WaitForCompletionResult =
+  | { status: "done"; lineCount: number }
+  | { status: "failed"; failReason: string | null }
+  | { status: "timeout" };
+
+export interface WaitForCompletionOptions {
+  /** Polling interval in ms. Default: DEFAULT_WAIT_POLL_INTERVAL_MS. */
+  pollIntervalMs?: number;
+  /** Total timeout in ms. Default: DEFAULT_WAIT_TIMEOUT_MS. */
+  timeoutMs?: number;
+  /** Custom sleep function (for testing). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Custom now() function (for testing). */
+  now?: () => number;
+}
+
+/**
+ * Poll until the entry transitions to 'done' or 'failed', or the timeout expires.
+ *
+ * Returns:
+ * - { status: 'done', lineCount }  when the entry reaches 'done'
+ * - { status: 'failed', failReason }  when the entry reaches 'failed'
+ * - { status: 'timeout' }  when timeoutMs elapses without completion
+ *
+ * If the entry disappears (deleted), this also returns 'timeout' eventually
+ * (treated as no completion observed).
+ */
+export async function waitForCompletion(
+  key: string,
+  options: WaitForCompletionOptions = {},
+  dirs?: QueueDirs,
+): Promise<WaitForCompletionResult> {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const sleep = options.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const now = options.now ?? (() => Date.now());
+
+  const start = now();
+
+  while (true) {
+    const db = getDb(dirs);
+    let row: { status: QueueStatus; line_count: number | null; fail_reason: string | null } | null;
+    try {
+      row = db
+        .query(`SELECT status, line_count, fail_reason FROM queue_entries WHERE key = ?`)
+        .get(key) as {
+        status: QueueStatus;
+        line_count: number | null;
+        fail_reason: string | null;
+      } | null;
+    } finally {
+      db.close();
+    }
+
+    if (row) {
+      if (row.status === "done") {
+        return { status: "done", lineCount: row.line_count ?? 0 };
+      }
+      if (row.status === "failed") {
+        return { status: "failed", failReason: row.fail_reason };
+      }
+    }
+
+    if (now() - start >= timeoutMs) {
+      return { status: "timeout" };
+    }
+
+    await sleep(pollIntervalMs);
   }
 }
 
@@ -325,16 +484,17 @@ export async function retry(key: string, dirs?: QueueDirs): Promise<void> {
 
 export async function getStatus(
   dirs?: QueueDirs,
-): Promise<{ queued: number; done: number; failed: number }> {
+): Promise<{ queued: number; processing: number; done: number; failed: number }> {
   const db = getDb(dirs);
   try {
     const rows = db
       .query(`SELECT status, COUNT(*) as count FROM queue_entries GROUP BY status`)
       .all() as { status: string; count: number }[];
 
-    const result = { queued: 0, done: 0, failed: 0 };
+    const result = { queued: 0, processing: 0, done: 0, failed: 0 };
     for (const row of rows) {
       if (row.status === "queued") result.queued = row.count;
+      else if (row.status === "processing") result.processing = row.count;
       else if (row.status === "done") result.done = row.count;
       else if (row.status === "failed") result.failed = row.count;
     }
@@ -385,12 +545,15 @@ export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
     }[];
 
     const queued = new Set<string>();
+    const processing = new Set<string>();
     const done = new Map<string, { lineCount: number }>();
     const failed = new Map<string, QueueStateFailedEntry>();
 
     for (const row of rows) {
       if (row.status === "queued") {
         queued.add(row.key);
+      } else if (row.status === "processing") {
+        processing.add(row.key);
       } else if (row.status === "done") {
         done.set(row.key, { lineCount: row.line_count ?? 0 });
       } else if (row.status === "failed") {
@@ -402,7 +565,7 @@ export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
       }
     }
 
-    return { queued, done, failed };
+    return { queued, processing, done, failed };
   } finally {
     db.close();
   }

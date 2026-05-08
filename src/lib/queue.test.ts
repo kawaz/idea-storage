@@ -20,6 +20,8 @@ import {
   loadQueueState,
   isFailedByState,
   getDb,
+  claim,
+  waitForCompletion,
 } from "./queue.ts";
 
 // Test UUIDs (replacing short ids like 'sid-1' for validation compliance)
@@ -136,7 +138,7 @@ describe("queue", () => {
       expect(entry).toBeNull();
     });
 
-    test("returns the newest entry first and removes it", async () => {
+    test("returns the newest entry first and transitions it to processing", async () => {
       // enqueue two items with different updated_at
       await enqueue(SID1, "recipe-a", dirs);
 
@@ -156,8 +158,16 @@ describe("queue", () => {
       expect(entry!.recipeName).toBe("recipe-b");
       expect(entry!.key).toBe(`${SID2}.recipe-b`);
 
-      // Dequeued entry should no longer be queued
+      // Dequeued entry should no longer be queued (now processing)
       expect(await isQueued(SID2, "recipe-b", dirs)).toBe(false);
+
+      // Verify the entry remains in DB with status='processing' (排他制御のため)
+      const db2 = getDb(dirs);
+      const row = db2
+        .query(`SELECT status FROM queue_entries WHERE key = ?`)
+        .get(`${SID2}.recipe-b`) as { status: string } | null;
+      db2.close();
+      expect(row?.status).toBe("processing");
 
       // Older entry should still be queued
       expect(await isQueued(SID1, "recipe-a", dirs)).toBe(true);
@@ -277,15 +287,15 @@ describe("queue", () => {
       expect(await isFailed(SID1, "diary", dirs)).toBe(true);
     });
 
-    test("works after dequeue (entry already removed from DB)", async () => {
+    test("works after dequeue (entry transitions processing → failed)", async () => {
       await enqueue(SID1, "diary", dirs);
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
 
-      // Entry is already removed by dequeue
+      // Entry is no longer queued (now in processing status)
       expect(await isQueued(SID1, "diary", dirs)).toBe(false);
 
-      // markFailed should still succeed
+      // markFailed should overwrite processing → failed
       await markFailed(`${SID1}.diary`, undefined, dirs);
       expect(await isFailed(SID1, "diary", dirs)).toBe(true);
     });
@@ -775,6 +785,166 @@ describe("queue", () => {
       const state = await loadQueueState(dirs);
       // With defaults (24h, 3 retries), just-failed should return true
       expect(isFailedByState(state, `${SID1}.diary`)).toBe(true);
+    });
+  });
+
+  describe("claim", () => {
+    test("inserts a new processing entry when key is absent", async () => {
+      const result = await claim(SID1, "diary", dirs);
+      expect(result.claimed).toBe(true);
+      expect(result.prevStatus).toBeNull();
+
+      const db = getDb(dirs);
+      const row = db
+        .query(`SELECT status FROM queue_entries WHERE key = ?`)
+        .get(`${SID1}.diary`) as { status: string } | null;
+      db.close();
+      expect(row?.status).toBe("processing");
+    });
+
+    test("transitions queued entry to processing", async () => {
+      await enqueue(SID1, "diary", dirs);
+      const result = await claim(SID1, "diary", dirs);
+      expect(result.claimed).toBe(true);
+      expect(result.prevStatus).toBe("queued");
+      expect(await isQueued(SID1, "diary", dirs)).toBe(false);
+    });
+
+    test("transitions done entry back to processing", async () => {
+      await markDone(`${SID1}.diary`, 50, dirs);
+      const result = await claim(SID1, "diary", dirs);
+      expect(result.claimed).toBe(true);
+      expect(result.prevStatus).toBe("done");
+      expect(await isDone(SID1, "diary", 50, dirs)).toBe(false);
+    });
+
+    test("transitions failed entry back to processing", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await markFailed(`${SID1}.diary`, "boom", dirs);
+      const result = await claim(SID1, "diary", dirs);
+      expect(result.claimed).toBe(true);
+      expect(result.prevStatus).toBe("failed");
+      expect(await isFailed(SID1, "diary", dirs)).toBe(false);
+    });
+
+    test("returns claimed=false when entry is already processing", async () => {
+      // First claim succeeds
+      const r1 = await claim(SID1, "diary", dirs);
+      expect(r1.claimed).toBe(true);
+
+      // Second claim fails
+      const r2 = await claim(SID1, "diary", dirs);
+      expect(r2.claimed).toBe(false);
+      expect(r2.prevStatus).toBe("processing");
+    });
+
+    test("rejects invalid sessionId / recipeName", async () => {
+      await expect(claim("../etc", "diary", dirs)).rejects.toThrow(/Invalid sessionId/);
+      await expect(claim("550e8400-e29b-41d4-a716-446655440000", "../etc", dirs)).rejects.toThrow(
+        /Invalid recipeName/,
+      );
+    });
+  });
+
+  describe("waitForCompletion", () => {
+    test("returns done with lineCount when entry transitions to done", async () => {
+      // Pre-populate entry as done
+      await markDone(`${SID1}.diary`, 42, dirs);
+
+      const result = await waitForCompletion(
+        `${SID1}.diary`,
+        { pollIntervalMs: 1, timeoutMs: 1000 },
+        dirs,
+      );
+      expect(result.status).toBe("done");
+      if (result.status === "done") {
+        expect(result.lineCount).toBe(42);
+      }
+    });
+
+    test("returns failed with reason when entry transitions to failed", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await markFailed(`${SID1}.diary`, "boom", dirs);
+
+      const result = await waitForCompletion(
+        `${SID1}.diary`,
+        { pollIntervalMs: 1, timeoutMs: 1000 },
+        dirs,
+      );
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.failReason).toBe("boom");
+      }
+    });
+
+    test("returns timeout when entry remains in processing past timeout", async () => {
+      await claim(SID1, "diary", dirs); // processing
+
+      let nowMs = 1_000_000;
+      const sleep = async () => {
+        // Each "sleep" advances the virtual clock past the timeout.
+        nowMs += 100;
+      };
+      const now = () => nowMs;
+
+      const result = await waitForCompletion(
+        `${SID1}.diary`,
+        { pollIntervalMs: 50, timeoutMs: 50, sleep, now },
+        dirs,
+      );
+      expect(result.status).toBe("timeout");
+    });
+
+    test("polls until status changes", async () => {
+      await claim(SID1, "diary", dirs);
+
+      let pollCount = 0;
+      const sleep = async () => {
+        pollCount++;
+        if (pollCount === 2) {
+          // Mark done after 2 polls
+          await markDone(`${SID1}.diary`, 100, dirs);
+        }
+      };
+      const now = () => 0; // Never advance time so timeout never fires
+
+      const result = await waitForCompletion(
+        `${SID1}.diary`,
+        { pollIntervalMs: 1, timeoutMs: 60_000, sleep, now },
+        dirs,
+      );
+      expect(result.status).toBe("done");
+      if (result.status === "done") {
+        expect(result.lineCount).toBe(100);
+      }
+      expect(pollCount).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe("getStatus with processing", () => {
+    test("counts processing entries", async () => {
+      await claim(SID1, "diary", dirs);
+      await enqueue(SID2, "diary", dirs);
+      await markDone(`${SID3}.diary`, 10, dirs);
+      await enqueue(SID4, "diary", dirs);
+      await markFailed(`${SID4}.diary`, undefined, dirs);
+
+      const status = await getStatus(dirs);
+      expect(status.queued).toBe(1);
+      expect(status.processing).toBe(1);
+      expect(status.done).toBe(1);
+      expect(status.failed).toBe(1);
+    });
+  });
+
+  describe("loadQueueState with processing", () => {
+    test("populates processing set", async () => {
+      await claim(SID1, "diary", dirs);
+      await enqueue(SID2, "diary", dirs);
+
+      const state = await loadQueueState(dirs);
+      expect(state.processing.has(`${SID1}.diary`)).toBe(true);
+      expect(state.queued.has(`${SID2}.diary`)).toBe(true);
     });
   });
 });

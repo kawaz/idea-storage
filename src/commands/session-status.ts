@@ -28,7 +28,9 @@ const sessionStatus = define({
   description: "Show queue status and rate_limits observation",
   run: async () => {
     const status = await getStatus();
-    console.log(`Queued: ${status.queued} / Done: ${status.done} / Failed: ${status.failed}`);
+    console.log(
+      `Queued: ${status.queued} / Processing: ${status.processing} / Done: ${status.done} / Failed: ${status.failed}`,
+    );
 
     const nowSec = Math.floor(Date.now() / 1000);
     const rows = getLatestObservations(1);
