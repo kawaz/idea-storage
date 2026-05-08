@@ -240,10 +240,23 @@ export async function processChunked(
   let lastError: unknown = null;
 
   if (failedIndices.length > 0) {
+    // Bail out early if the external signal was already aborted. Step 1 may
+    // have succeeded on some chunks before the abort fired, which would leave
+    // failedIndices populated by genuine errors; without this guard we would
+    // pointlessly enter the retry loop with an aborted signal.
+    if (externalSignal?.aborted) {
+      throw new ClaudeAbortError();
+    }
+
     log({ msg: "chunk_retry", failedChunks: failedIndices.length, totalChunks: chunks.length });
 
     const retrySettled = await Promise.allSettled(
       failedIndices.map(async (idx) => {
+        // Re-check inside each task so that an abort racing with retry start
+        // does not get masked behind a cascade of follow-up errors.
+        if (externalSignal?.aborted) {
+          throw new ClaudeAbortError();
+        }
         const chunk = chunks[idx]!;
         const chunkText = extractChunkText(lines, chunk);
         const sectionPrompt = buildSectionPrompt(recipePrompt, chunk, chunkText, sessionInfo);
@@ -274,6 +287,11 @@ export async function processChunked(
 
     // --- Step 3: まだ失敗があり、全体サイズが許容内なら分割なしフォールバック ---
     if (stillFailedIndices.length > 0) {
+      // External abort raced with the retry phase: don't attempt the
+      // unsplit fallback either, just surface the abort.
+      if (externalSignal?.aborted || lastError instanceof ClaudeAbortError) {
+        throw new ClaudeAbortError();
+      }
       const totalBytes = new TextEncoder().encode(convText).length;
       if (totalBytes <= DEFAULT_MAX_CHUNK_BYTES) {
         log({ msg: "fallback_unsplit", totalBytes, maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES });
@@ -438,6 +456,22 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
   if (!convText.trim()) {
     log({ key, msg: "skip", reason: "no_conversation" });
     return { kind: "skipped", reason: "no_conversation", lineCount: meta.lineCount };
+  }
+
+  // Validate CSA timeline output structure. CSA timeline --md always emits a
+  // YAML-style frontmatter delimited by two `---` lines (open + close), then
+  // the actual blocks separated by additional `---` lines. If we see fewer
+  // than two `---` separators, exitCode==0 notwithstanding, the output is not
+  // a valid timeline (e.g. CSA wrote "error: ..." to stdout). Skip such
+  // sessions instead of feeding malformed text into the recipe prompt.
+  const separatorCount = convText.split("\n").filter((l) => l.trim() === "---").length;
+  if (separatorCount < 2) {
+    log({ key, msg: "skip", reason: "empty_or_invalid_timeline", separatorCount });
+    return {
+      kind: "skipped",
+      reason: "empty_or_invalid_timeline",
+      lineCount: meta.lineCount,
+    };
   }
 
   // フォークセッションの場合、タイムラインを切り詰め＋プロンプト調整

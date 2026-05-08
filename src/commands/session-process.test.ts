@@ -1001,3 +1001,342 @@ Fork content here`;
     expect(result).not.toContain("Uaaa11111");
   });
 });
+
+// --- #16/#17 processSession ガード条件テスト ---
+//
+// これらのテストは redact integration テストで仕込まれた
+// spawn-timeout / claude-runner の mock.module をテストごとに上書きして使う。
+
+describe("processSession fork guard (#16)", () => {
+  const baseMeta: import("../types/index.ts").SessionMeta = {
+    id: "fork-empty-session-id",
+    filePath: "/tmp/fork-empty-session.jsonl",
+    ageSec: 3600,
+    hasEnd: true,
+    startTime: new Date("2025-01-01T00:00:00Z"),
+    endTime: new Date("2025-01-01T01:00:00Z"),
+    project: "fork-test-project",
+    lineCount: 10,
+    userTurns: 1,
+  };
+
+  let workDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "fork-guard-"));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  test("forkInfo.firstNewUuid が空文字列なら markSkipped 相当の result を返し runClaude は呼ばれない", async () => {
+    // CSA は呼び出される前に skip されるはずだが、念のため有効な timeline を返すモックを置く
+    const fakeTimeline = `---
+session: fork-empty-session-id
+---
+2025-01-01T00:00:00+00:00 Uaaa11111 something`;
+    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
+      stdout: fakeTimeline,
+      stderr: "",
+      exitCode: 0,
+    }));
+    mock.module("../lib/spawn-timeout.ts", () => ({
+      spawnWithTimeout: spawnMock,
+      SpawnTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`subprocess timed out after ${timeoutMs}ms`);
+          this.name = "SpawnTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+    }));
+
+    const runClaudeCalls: Array<{ prompt: string }> = [];
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async (options: { prompt: string }) => {
+        runClaudeCalls.push({ prompt: options.prompt });
+        return "should-not-be-called";
+      }),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    const meta: import("../types/index.ts").SessionMeta = {
+      ...baseMeta,
+      forkInfo: {
+        parentSessionId: "parent-session-id",
+        firstNewUuid: "", // ← 空文字列: フォーク後の新規行が存在しないケース
+      },
+    };
+
+    const { processSession } = await import("./session-process.ts");
+    const result = await processSession({
+      sessionId: "fork-empty-session-id",
+      recipe: {
+        name: "diary",
+        filePath: "/tmp/recipe-diary.md",
+        match: {},
+        onExisting: "append",
+        prompt: "Write a diary",
+      } as import("../types/index.ts").Recipe,
+      meta,
+      sessionStats: { turns: 1, bytes: 100 },
+      dataDir: workDir,
+    });
+
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") {
+      expect(result.reason).toBe("fork_no_new_conversation");
+      expect(result.lineCount).toBe(meta.lineCount);
+    }
+    // runClaude は決して呼ばれてはならない
+    expect(runClaudeCalls.length).toBe(0);
+  });
+});
+
+describe("processSession CSA timeline validation (#17)", () => {
+  const baseMeta: import("../types/index.ts").SessionMeta = {
+    id: "invalid-csa-session-id",
+    filePath: "/tmp/invalid-csa-session.jsonl",
+    ageSec: 3600,
+    hasEnd: true,
+    startTime: new Date("2025-01-01T00:00:00Z"),
+    endTime: new Date("2025-01-01T01:00:00Z"),
+    project: "invalid-csa-project",
+    lineCount: 10,
+    userTurns: 1,
+  };
+
+  let workDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "csa-validate-"));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  test("CSA が exitCode=0 で `---` セパレータを含まない出力を返した場合、skipped 扱いになる", async () => {
+    // exitCode=0 だが stdout が "error: ..." のみで、--- が無い不正フォーマット
+    const malformedStdout = "error: something went wrong while building timeline\n";
+    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
+      stdout: malformedStdout,
+      stderr: "",
+      exitCode: 0,
+    }));
+    mock.module("../lib/spawn-timeout.ts", () => ({
+      spawnWithTimeout: spawnMock,
+      SpawnTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`subprocess timed out after ${timeoutMs}ms`);
+          this.name = "SpawnTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+    }));
+
+    const runClaudeCalls: Array<{ prompt: string }> = [];
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async (options: { prompt: string }) => {
+        runClaudeCalls.push({ prompt: options.prompt });
+        return "should-not-be-called";
+      }),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    const { processSession } = await import("./session-process.ts");
+    const result = await processSession({
+      sessionId: "invalid-csa-session-id",
+      recipe: {
+        name: "diary",
+        filePath: "/tmp/recipe-diary.md",
+        match: {},
+        onExisting: "append",
+        prompt: "Write a diary",
+      } as import("../types/index.ts").Recipe,
+      meta: baseMeta,
+      sessionStats: { turns: 1, bytes: 100 },
+      dataDir: workDir,
+    });
+
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") {
+      expect(result.reason).toBe("empty_or_invalid_timeline");
+      expect(result.lineCount).toBe(baseMeta.lineCount);
+    }
+    // 不正なタイムラインを Claude には絶対に渡さない
+    expect(runClaudeCalls.length).toBe(0);
+  });
+
+  test("`---` が1個しかない（閉じ ---  欠落）出力も skipped 扱いになる", async () => {
+    const malformedStdout = `---
+command: claude-session-analysis timeline foo
+2025-01-01T00:00:00+00:00 Uaaa11111 truncated output`;
+    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
+      stdout: malformedStdout,
+      stderr: "",
+      exitCode: 0,
+    }));
+    mock.module("../lib/spawn-timeout.ts", () => ({
+      spawnWithTimeout: spawnMock,
+      SpawnTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`subprocess timed out after ${timeoutMs}ms`);
+          this.name = "SpawnTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+    }));
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async () => "should-not-be-called"),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    const { processSession } = await import("./session-process.ts");
+    const result = await processSession({
+      sessionId: "invalid-csa-session-id",
+      recipe: {
+        name: "diary",
+        filePath: "/tmp/recipe-diary.md",
+        match: {},
+        onExisting: "append",
+        prompt: "Write a diary",
+      } as import("../types/index.ts").Recipe,
+      meta: baseMeta,
+      sessionStats: { turns: 1, bytes: 100 },
+      dataDir: workDir,
+    });
+
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") {
+      expect(result.reason).toBe("empty_or_invalid_timeline");
+    }
+  });
+});
+
+// --- #18 processChunked: 外部signal abort と Step 2 リトライの連携 ---
+
+describe("processChunked external abort during retry (#18)", () => {
+  const dummyMeta: import("../types/index.ts").SessionMeta = {
+    id: "abort-during-retry-session",
+    filePath: "/tmp/abort-during-retry.jsonl",
+    ageSec: 3600,
+    hasEnd: true,
+    startTime: new Date("2025-01-01T00:00:00Z"),
+    endTime: new Date("2025-01-01T01:00:00Z"),
+    project: "abort-test-project",
+    lineCount: 100,
+    userTurns: 5,
+  };
+
+  function makeChunks(count: number): import("../lib/chunker.ts").TimelineChunk[] {
+    return Array.from({ length: count }, (_, i) => ({
+      index: i,
+      turns: [],
+      startTime: new Date("2025-01-01T00:00:00Z"),
+      endTime: new Date("2025-01-01T01:00:00Z"),
+      bytes: 1000,
+      turnCount: 5,
+      lineStart: 1,
+      lineEnd: 50,
+      label: `chunk-${i}`,
+    }));
+  }
+
+  test("Step 1 中に externalSignal が abort されても、Step 2 リトライには入らず ClaudeAbortError を throw する", async () => {
+    // processChunked と ClaudeAbortError はファイル冒頭で import 済みのものを再利用する。
+    // 後段のテストで mock.module("../lib/claude-runner.ts") を当てた後だと
+    // 動的 import すると別クラスを掴んでしまい instanceof 検証に失敗するため。
+    const chunks = makeChunks(2);
+    const convText = "short timeline text";
+    const recipePrompt = "test prompt";
+
+    const externalController = new AbortController();
+    const callLog: string[] = [];
+    let chunk0Calls = 0;
+    let chunk1Calls = 0;
+
+    try {
+      await processChunked(
+        convText,
+        chunks,
+        recipePrompt,
+        "abort-during-retry-session",
+        dummyMeta,
+        undefined,
+        async (options) => {
+          // chunk 0 (チャンク: 1/) は成功し、その瞬間に外部 abort をトリガー
+          if (options.prompt.includes("チャンク: 1/")) {
+            chunk0Calls++;
+            callLog.push(`chunk0-call-${chunk0Calls}`);
+            externalController.abort();
+            return "## Section 1\nContent A";
+          }
+          // chunk 1 (チャンク: 2/) は通常エラーで失敗 → Step 2 リトライ対象
+          if (options.prompt.includes("チャンク: 2/")) {
+            chunk1Calls++;
+            callLog.push(`chunk1-call-${chunk1Calls}`);
+            throw new Error("transient API error");
+          }
+          // 合成や fallback-unsplit はチャンク情報を含まないため、この経路に落ちる
+          callLog.push("non-chunk-call");
+          return "## Section X\nUnexpected content";
+        },
+        externalController.signal,
+      );
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeAbortError);
+    }
+
+    // Step 1 で chunk0 と chunk1 が 1 回ずつ呼ばれる。
+    // Step 2 リトライは bail out されるため chunk1 は再呼び出しされない。
+    expect(chunk0Calls).toBe(1);
+    expect(chunk1Calls).toBe(1);
+    // フォールバックの全文プロンプト（チャンク情報なし）も呼ばれない
+    expect(callLog).not.toContain("non-chunk-call");
+  });
+});
