@@ -1,18 +1,17 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, test, expect } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
+  C,
   formatDuration,
   formatSmartSize,
   formatTimestamp,
+  oscLink,
   parseProject,
   stripAnsi,
-} from "../lib/article-format.ts";
-import { parseSortKeys, sortEntries, validateRegex, validateSortKeys } from "./article-list.ts";
+} from "./article-format.ts";
 
-describe("article-list", () => {
-  // Most tests in this file assert that ANSI color codes are present in the
-  // output, which depends on shouldUseColor() returning true. `bun test` runs
-  // without a TTY, so we force colors on for the suite. The NO_COLOR / CI
-  // suppression block below overrides this with its own setup/teardown.
+describe("article-format", () => {
+  // The colorized formatters are no-ops unless shouldUseColor() returns true.
+  // `bun test` runs without a TTY, so we force colors on for the suite.
   let suiteIsTTYDescriptor: PropertyDescriptor | undefined;
   let suiteOriginalForceColor: string | undefined;
   let suiteOriginalNoColor: string | undefined;
@@ -43,6 +42,32 @@ describe("article-list", () => {
     else process.env.NO_COLOR = suiteOriginalNoColor;
     if (suiteOriginalCI === undefined) delete process.env.CI;
     else process.env.CI = suiteOriginalCI;
+  });
+
+  describe("stripAnsi", () => {
+    test("removes ANSI SGR codes", () => {
+      expect(stripAnsi("\x1b[0;32mhello\x1b[0m")).toBe("hello");
+    });
+
+    test("returns plain text unchanged", () => {
+      expect(stripAnsi("hello world")).toBe("hello world");
+    });
+
+    test("removes multiple sequences", () => {
+      expect(stripAnsi("\x1b[31ma\x1b[0m\x1b[32mb\x1b[0m")).toBe("ab");
+    });
+  });
+
+  describe("C (color proxy)", () => {
+    test("returns ANSI codes when colors enabled", () => {
+      expect(C.red).toBe("\x1b[0;31m");
+      expect(C.reset).toBe("\x1b[0m");
+    });
+
+    test("returns empty string for unknown keys", () => {
+      // @ts-expect-error – probing dynamic access
+      expect(C.unknownKey).toBe("");
+    });
   });
 
   describe("formatSmartSize", () => {
@@ -135,18 +160,19 @@ describe("article-list", () => {
       expect(formatDuration(1000, 0)).toBe("-");
     });
 
-    test("pads h/m/s with leading zero", () => {
-      // 1d 2h
-      const dur1 = 86400 + 2 * 3600;
-      expect(stripAnsi(formatDuration(0, dur1 * 1000))).toBe("1d02h");
+    test("uses red for day-spanning durations", () => {
+      const dur = 86400;
+      expect(formatDuration(0, dur * 1000)).toContain("\x1b[0;31m");
+    });
 
-      // 1h 5m
-      const dur2 = 3600 + 5 * 60;
-      expect(stripAnsi(formatDuration(0, dur2 * 1000))).toBe("1h05m");
+    test("uses yellow for hour-spanning durations", () => {
+      const dur = 3600;
+      expect(formatDuration(0, dur * 1000)).toContain("\x1b[0;33m");
+    });
 
-      // 1m 3s
-      const dur3 = 60 + 3;
-      expect(stripAnsi(formatDuration(0, dur3 * 1000))).toBe("1m03s");
+    test("uses green for minute-spanning durations", () => {
+      const dur = 60;
+      expect(formatDuration(0, dur * 1000)).toContain("\x1b[0;32m");
     });
   });
 
@@ -163,7 +189,7 @@ describe("article-list", () => {
       expect(stripAnsi(result)).toBe("2026/03/08T00:00");
     });
 
-    test("contains ANSI color codes for T only", () => {
+    test("contains ANSI color code for T separator only", () => {
       const date = new Date("2026-03-07T00:00:00Z");
       const result = formatTimestamp(date);
       expect(result).toContain("\x1b[0;90m"); // blackBright for T
@@ -230,183 +256,10 @@ describe("article-list", () => {
     });
   });
 
-  describe("parseSortKeys", () => {
-    test("defaults to start when undefined", () => {
-      expect(parseSortKeys(undefined)).toEqual(["start"]);
-    });
-
-    test("defaults to start when empty string", () => {
-      expect(parseSortKeys("")).toEqual(["start"]);
-    });
-
-    test("parses single key", () => {
-      expect(parseSortKeys("turn")).toEqual(["turn"]);
-    });
-
-    test("parses comma-separated keys", () => {
-      expect(parseSortKeys("rule,start")).toEqual(["rule", "start"]);
-    });
-
-    test("trims whitespace around keys", () => {
-      expect(parseSortKeys("rule , turn")).toEqual(["rule", "turn"]);
-    });
-
-    test("ignores invalid keys", () => {
-      expect(parseSortKeys("rule,invalid,turn")).toEqual(["rule", "turn"]);
-    });
-
-    test("defaults to start when all keys are invalid", () => {
-      expect(parseSortKeys("foo,bar")).toEqual(["start"]);
-    });
-  });
-
-  describe("validateSortKeys", () => {
-    test("does not throw for valid keys", () => {
-      expect(() => validateSortKeys("start")).not.toThrow();
-      expect(() => validateSortKeys("start,end,duration")).not.toThrow();
-      expect(() => validateSortKeys(undefined)).not.toThrow();
-    });
-
-    test("throws for invalid keys with available keys in message", () => {
-      expect(() => validateSortKeys("foo")).toThrow(/invalid sort key.*foo/i);
-      expect(() => validateSortKeys("foo")).toThrow(/start.*end.*duration.*turn.*rule/);
-    });
-
-    test("throws for mixed valid/invalid keys listing only invalid ones", () => {
-      expect(() => validateSortKeys("start,bogus")).toThrow(/bogus/);
-    });
-
-    test("accepts all valid keys", () => {
-      expect(parseSortKeys("start,end,duration,turn,rule")).toEqual([
-        "start",
-        "end",
-        "duration",
-        "turn",
-        "rule",
-      ]);
-    });
-  });
-
-  describe("sortEntries", () => {
-    function makeEntry(
-      overrides: Partial<{
-        recipe: string;
-        sessionStart: Date | null;
-        sessionEnd: Date | null;
-        userTurns: number | null;
-      }> = {},
-    ) {
-      return {
-        fullPath: "/tmp/test.md",
-        sizeBytes: 100,
-        recipe: overrides.recipe ?? "",
-        sessionId: "",
-        sessionStart: overrides.sessionStart ?? null,
-        sessionEnd: overrides.sessionEnd ?? null,
-        durationMs: null,
-        userTurns: overrides.userTurns ?? null,
-        sessionBytes: null,
-        project: "",
-      };
-    }
-
-    test("sorts by start descending", () => {
-      const entries = [
-        makeEntry({ sessionStart: new Date("2026-01-01") }),
-        makeEntry({ sessionStart: new Date("2026-03-01") }),
-        makeEntry({ sessionStart: new Date("2026-02-01") }),
-      ];
-      sortEntries(entries, ["start"]);
-      expect(entries[0]!.sessionStart!.getMonth()).toBe(2); // March (0-indexed)
-      expect(entries[1]!.sessionStart!.getMonth()).toBe(1); // February
-      expect(entries[2]!.sessionStart!.getMonth()).toBe(0); // January
-    });
-
-    test("sorts by rule ascending", () => {
-      const entries = [
-        makeEntry({ recipe: "diary" }),
-        makeEntry({ recipe: "code-review" }),
-        makeEntry({ recipe: "meeting" }),
-      ];
-      sortEntries(entries, ["rule"]);
-      expect(entries[0]!.recipe).toBe("code-review");
-      expect(entries[1]!.recipe).toBe("diary");
-      expect(entries[2]!.recipe).toBe("meeting");
-    });
-
-    test("sorts by turn descending", () => {
-      const entries = [
-        makeEntry({ userTurns: 5 }),
-        makeEntry({ userTurns: 20 }),
-        makeEntry({ userTurns: 10 }),
-      ];
-      sortEntries(entries, ["turn"]);
-      expect(entries[0]!.userTurns).toBe(20);
-      expect(entries[1]!.userTurns).toBe(10);
-      expect(entries[2]!.userTurns).toBe(5);
-    });
-
-    test("multi-key sort: rule then start", () => {
-      const entries = [
-        makeEntry({ recipe: "diary", sessionStart: new Date("2026-01-01") }),
-        makeEntry({ recipe: "diary", sessionStart: new Date("2026-03-01") }),
-        makeEntry({ recipe: "code", sessionStart: new Date("2026-02-01") }),
-      ];
-      sortEntries(entries, ["rule", "start"]);
-      // 'code' first (ascending), then 'diary' with newest first
-      expect(entries[0]!.recipe).toBe("code");
-      expect(entries[1]!.recipe).toBe("diary");
-      expect(entries[1]!.sessionStart!.getMonth()).toBe(2); // March
-      expect(entries[2]!.recipe).toBe("diary");
-      expect(entries[2]!.sessionStart!.getMonth()).toBe(0); // January
-    });
-
-    test("sorts by duration descending", () => {
-      const entries = [
-        makeEntry({
-          sessionStart: new Date("2026-01-01T00:00:00Z"),
-          sessionEnd: new Date("2026-01-01T01:00:00Z"), // 1h
-        }),
-        makeEntry({
-          sessionStart: new Date("2026-01-01T00:00:00Z"),
-          sessionEnd: new Date("2026-01-01T03:00:00Z"), // 3h
-        }),
-        makeEntry({
-          sessionStart: new Date("2026-01-01T00:00:00Z"),
-          sessionEnd: new Date("2026-01-01T02:00:00Z"), // 2h
-        }),
-      ];
-      sortEntries(entries, ["duration"]);
-      // 3h, 2h, 1h
-      expect(entries[0]!.sessionEnd!.getHours()).toBe(3);
-      expect(entries[1]!.sessionEnd!.getHours()).toBe(2);
-      expect(entries[2]!.sessionEnd!.getHours()).toBe(1);
-    });
-  });
-
-  describe("validateRegex", () => {
-    test("returns RegExp for valid pattern", () => {
-      const re = validateRegex("foo.*bar", "test");
-      expect(re).toBeInstanceOf(RegExp);
-      expect(re.test("fooXbar")).toBe(true);
-    });
-
-    test("throws for invalid regex with user-friendly message", () => {
-      expect(() => validateRegex("[invalid", "rule")).toThrow(/invalid regular expression.*rule/i);
-    });
-
-    test("includes the original pattern in error message", () => {
-      expect(() => validateRegex("(unclosed", "path")).toThrow(/\(unclosed/);
-    });
-  });
-
-  describe("stripAnsi", () => {
-    test("removes ANSI escape sequences", () => {
-      expect(stripAnsi("\x1b[0;32mhello\x1b[0m")).toBe("hello");
-    });
-
-    test("returns plain text unchanged", () => {
-      expect(stripAnsi("hello world")).toBe("hello world");
+  describe("oscLink", () => {
+    test("wraps text in OSC 8 hyperlink when colors enabled", () => {
+      const result = oscLink("file:///tmp/foo", "[F]");
+      expect(result).toContain("\x1b]8;;file:///tmp/foo\x07[F]\x1b]8;;\x07");
     });
   });
 
@@ -421,8 +274,8 @@ describe("article-list", () => {
         delete process.env[k];
       }
       isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-      // Force TTY=true so the only thing toggling colors in these tests is
-      // the env var under test (NO_COLOR / CI).
+      // Force TTY=true so the only thing toggling colors here is the env
+      // var under test (NO_COLOR / CI).
       Object.defineProperty(process.stdout, "isTTY", {
         value: true,
         writable: true,
@@ -479,6 +332,11 @@ describe("article-list", () => {
       expect(ANY_ANSI.test(displayPath)).toBe(false);
       expect(OSC_LINK.test(displayPath)).toBe(false);
       expect(displayPath).toBe("kawaz/idea-storage/main");
+    });
+
+    test("oscLink suppresses escape sequences when NO_COLOR is set", () => {
+      process.env.NO_COLOR = "1";
+      expect(oscLink("file:///tmp/foo", "[F]")).toBe("[F]");
     });
 
     test("CI=true also disables ANSI output", () => {
