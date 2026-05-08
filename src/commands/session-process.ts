@@ -10,7 +10,7 @@ import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from "../lib/claude-r
 import type { ClaudeRunOptions } from "../lib/claude-runner.ts";
 import { recordObservation } from "../lib/rate-limit-store.ts";
 import type { RateLimitObservation } from "../lib/rate-limit-parser.ts";
-import { dequeue, markDone, markFailed, getDoneLineCount } from "../lib/queue.ts";
+import { dequeue, markDone, markFailed, markSkipped, getDoneLineCount } from "../lib/queue.ts";
 import { CliError } from "../lib/errors.ts";
 import {
   splitTimeline,
@@ -390,14 +390,16 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
   const recipeName = recipe.name;
   const key = input.logKey ?? `${sessionId}.${recipeName}`;
 
-  // Empty session checks (apply even with forceProcess=true: nothing to process)
+  // Empty session checks (apply even with forceProcess=true: nothing to process).
+  // Design rationale: Empty/no-user-turn sessions are not failures; they are
+  // intentionally skipped. The caller maps this to markSkipped().
   if (meta.lineCount === 0) {
     log({ key, msg: "empty_session" });
-    throw new Error("empty session (0 lines)");
+    return { kind: "skipped", reason: "empty_session", lineCount: meta.lineCount };
   }
   if ((meta.userTurns ?? 0) === 0) {
     log({ key, msg: "empty_session", reason: "no_user_turns" });
-    throw new Error("empty session (no user turns)");
+    return { kind: "skipped", reason: "no_user_turns", lineCount: meta.lineCount };
   }
 
   // Build prompt (apply append note only when not forced)
@@ -591,7 +593,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   const sessionFile = await findSessionFile(config.claudeDirs, sessionId);
   if (!sessionFile) {
     log({ key, msg: "session_file_not_found" });
-    await markFailed(key, "session file not found");
+    await markFailed(sessionId, recipeName, "session file not found");
     return "failed";
   }
 
@@ -601,7 +603,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   const recipe = findRecipeByName(recipes, recipeName);
   if (!recipe) {
     log({ key, msg: "recipe_not_found", recipe: recipeName });
-    await markFailed(key, `recipe not found: ${recipeName}`);
+    await markFailed(sessionId, recipeName, `recipe not found: ${recipeName}`);
     return "failed";
   }
 
@@ -623,6 +625,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
     switch (recipe.onExisting) {
       case "skip":
         log({ key, msg: "skip", reason: "already_processed" });
+        await markSkipped(sessionId, recipeName, "already_processed");
         return "processed";
       case "append":
         appendPreviousRunNote = true;
@@ -646,11 +649,15 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
       appendPreviousRunNote,
       logKey: key,
     });
-    await markDone(key, result.lineCount);
+    if (result.kind === "skipped") {
+      await markSkipped(sessionId, recipeName, result.reason);
+      return "processed";
+    }
+    await markDone(sessionId, recipeName, result.lineCount, result.outputFile);
     return "processed";
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    await markFailed(key, reason);
+    await markFailed(sessionId, recipeName, reason);
     return "failed";
   }
 }

@@ -29,7 +29,7 @@ const sessionStatus = define({
   run: async () => {
     const status = await getStatus();
     console.log(
-      `Queued: ${status.queued} / Processing: ${status.processing} / Done: ${status.done} / Failed: ${status.failed}`,
+      `Queued: ${status.queued} / Processing: ${status.processing} / Done: ${status.done} / Failed: ${status.failed} / Skipped: ${status.skipped}`,
     );
 
     const nowSec = Math.floor(Date.now() / 1000);

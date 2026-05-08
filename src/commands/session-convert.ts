@@ -4,7 +4,7 @@ import { loadConfig } from "../lib/config.ts";
 import { getDataDir } from "../lib/paths.ts";
 import { getSessionMeta } from "../lib/conversation.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
-import { claim, markDone, markFailed, waitForCompletion } from "../lib/queue.ts";
+import { claim, markDone, markFailed, markSkipped, waitForCompletion } from "../lib/queue.ts";
 import { CliError, exitWithError } from "../lib/errors.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
@@ -94,7 +94,8 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
     log({ key, msg: "convert_wait_for_other", prevStatus: claimResult.prevStatus });
 
     const waitResult = await waitForCompletion(
-      key,
+      sessionId,
+      recipeName,
       waitTimeoutMs !== undefined ? { timeoutMs: waitTimeoutMs } : {},
     );
 
@@ -105,10 +106,19 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
     }
 
     if (waitResult.status === "failed") {
-      logError({ key, msg: "convert_wait_failed", reason: waitResult.failReason });
+      logError({ key, msg: "convert_wait_failed", reason: waitResult.reason });
       throw new CliError(
-        `Other process failed while convert was waiting: ${waitResult.failReason ?? "unknown"}`,
+        `Other process failed while convert was waiting: ${waitResult.reason ?? "unknown"}`,
       );
+    }
+
+    if (waitResult.status === "skipped") {
+      log({ key, msg: "convert_wait_skipped", reason: waitResult.reason });
+      return {
+        kind: "skipped",
+        reason: waitResult.reason ?? "skipped_by_other_process",
+        lineCount: meta.lineCount,
+      };
     }
 
     // timeout
@@ -140,15 +150,15 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
       logKey: key,
     });
 
-    await markDone(key, result.lineCount);
-
     if (result.kind === "skipped") {
+      await markSkipped(sessionId, recipeName, result.reason);
       return { kind: "skipped", reason: result.reason, lineCount: result.lineCount };
     }
+    await markDone(sessionId, recipeName, result.lineCount, result.outputFile);
     return { kind: "processed", outputFile: result.outputFile, lineCount: result.lineCount };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    await markFailed(key, reason);
+    await markFailed(sessionId, recipeName, reason);
     throw err;
   }
 }

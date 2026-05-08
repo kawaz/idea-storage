@@ -3,29 +3,45 @@ import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// Track markFailed / markDone calls
+// Use valid UUID-format session IDs for the new validation logic.
+const MISSING_SID = "11111111-1111-4111-a111-111111111111";
+const EMPTY_SID = "22222222-2222-4222-a222-222222222222";
+const NORECIPE_SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+// Track markFailed / markDone / markSkipped calls.
+// Calls are keyed by the legacy `sessionId.recipeName` log key for easy assertion.
 const markFailedCalls: Array<{ key: string; reason?: string }> = [];
-const markDoneCalls: string[] = [];
+const markDoneCalls: Array<{ key: string; lineCount: number; outputFile: string | null }> = [];
+const markSkippedCalls: Array<{ key: string; reason?: string }> = [];
 
 let claudeDir: string;
 let tempDir: string;
 
 // Dynamic dequeue result (can be overridden per test)
 let dequeueResult: { sessionId: string; recipeName: string; key: string } | null = {
-  sessionId: "missing-session-id",
+  sessionId: MISSING_SID,
   recipeName: "diary",
-  key: "missing-session-id.diary",
+  key: `${MISSING_SID}.diary`,
 };
 
-// Mock modules before importing runProcess
+// Mock modules before importing runProcess. Note that the new queue API takes
+// (sessionId, recipeName) rather than a single key string.
 mock.module("../lib/queue.ts", () => ({
   dequeue: mock(async () => dequeueResult),
-  markDone: mock(async (key: string) => {
-    markDoneCalls.push(key);
+  markDone: mock(
+    async (sessionId: string, recipeName: string, lineCount: number, outputFile: string | null) => {
+      markDoneCalls.push({ key: `${sessionId}.${recipeName}`, lineCount, outputFile });
+    },
+  ),
+  markFailed: mock(async (sessionId: string, recipeName: string, reason?: string) => {
+    markFailedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
   }),
-  markFailed: mock(async (key: string, reason?: string) => {
-    markFailedCalls.push({ key, reason });
+  markSkipped: mock(async (sessionId: string, recipeName: string, reason?: string) => {
+    markSkippedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
   }),
+  // getDoneLineCount is consulted by runProcess; return null (no prior run) to
+  // keep tests focused on dequeue/markFailed/markDone paths.
+  getDoneLineCount: mock(async () => null),
 }));
 
 // loadConfig will be set up in beforeEach with real temp dir
@@ -56,6 +72,7 @@ describe("session-process", () => {
   beforeEach(async () => {
     markFailedCalls.length = 0;
     markDoneCalls.length = 0;
+    markSkippedCalls.length = 0;
     mockRecipesThrow = false;
     mockRecipes = [
       {
@@ -67,9 +84,9 @@ describe("session-process", () => {
       },
     ];
     dequeueResult = {
-      sessionId: "missing-session-id",
+      sessionId: MISSING_SID,
       recipeName: "diary",
-      key: "missing-session-id.diary",
+      key: `${MISSING_SID}.diary`,
     };
     tempDir = await mkdtemp(join(tmpdir(), "session-process-test-"));
     claudeDir = join(tempDir, "claude");
@@ -90,17 +107,16 @@ describe("session-process", () => {
     const result = await runProcess();
 
     expect(result).toBe("failed");
-    expect(markFailedCalls.map((c) => c.key)).toContain("missing-session-id.diary");
+    expect(markFailedCalls.map((c) => c.key)).toContain(`${MISSING_SID}.diary`);
   });
 
   test("レシピが見つからない場合のエラーメッセージに次のアクション案内が含まれる", async () => {
     mockRecipesThrow = true;
 
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     dequeueResult = {
-      sessionId,
+      sessionId: NORECIPE_SID,
       recipeName: "diary",
-      key: `${sessionId}.diary`,
+      key: `${NORECIPE_SID}.diary`,
     };
 
     // Create a session file so it gets past the session-not-found check
@@ -112,11 +128,11 @@ describe("session-process", () => {
     const jsonlLine = JSON.stringify({
       type: "user",
       timestamp: sessionStart,
-      uuid: `${sessionId.slice(0, 8)}-line-0001`,
+      uuid: `${NORECIPE_SID.slice(0, 8)}-line-0001`,
       cwd: "/tmp/test-project",
       message: { role: "user", content: "Hello" },
     });
-    await Bun.write(join(projectDir, `${sessionId}.jsonl`), jsonlLine + "\n");
+    await Bun.write(join(projectDir, `${NORECIPE_SID}.jsonl`), jsonlLine + "\n");
 
     const { runProcess } = await import("./session-process.ts");
     try {
@@ -129,26 +145,26 @@ describe("session-process", () => {
     }
   });
 
-  test("calls markFailed with empty_session when session file is empty (0 lines)", async () => {
-    const sessionId = "00000000-0000-0000-0000-000000000000";
-    const key = `${sessionId}.diary`;
-    dequeueResult = { sessionId, recipeName: "diary", key };
+  test("calls markSkipped with empty_session when session file is empty (0 lines)", async () => {
+    const key = `${EMPTY_SID}.diary`;
+    dequeueResult = { sessionId: EMPTY_SID, recipeName: "diary", key };
 
     // Create an empty session JSONL file (0 bytes)
     const projectDir = join(claudeDir, "projects", "test-project");
     await mkdir(projectDir, { recursive: true });
-    await Bun.write(join(projectDir, `${sessionId}.jsonl`), "");
+    await Bun.write(join(projectDir, `${EMPTY_SID}.jsonl`), "");
 
     const { runProcess } = await import("./session-process.ts");
     const result = await runProcess();
 
-    expect(result).toBe("failed");
-    // Should markFailed with reason containing "empty"
-    const failedEntry = markFailedCalls.find((c) => c.key === key);
-    expect(failedEntry).toBeDefined();
-    expect(failedEntry!.reason).toContain("empty");
-    // Should NOT have called markDone
-    expect(markDoneCalls).not.toContain(key);
+    // Empty session is now treated as a successful skip, not a failure
+    expect(result).toBe("processed");
+    const skipped = markSkippedCalls.find((c) => c.key === key);
+    expect(skipped).toBeDefined();
+    expect(skipped!.reason).toBe("empty_session");
+    // Should NOT have called markFailed or markDone
+    expect(markFailedCalls.find((c) => c.key === key)).toBeUndefined();
+    expect(markDoneCalls.find((c) => c.key === key)).toBeUndefined();
   });
 
   test("returns empty when queue is empty", async () => {

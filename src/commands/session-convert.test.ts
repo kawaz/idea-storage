@@ -40,8 +40,9 @@ mock.module("../lib/recipe.ts", () => ({
 
 // Track queue interactions
 const claimCalls: Array<{ sessionId: string; recipeName: string }> = [];
-const markDoneCalls: Array<{ key: string; lineCount: number }> = [];
+const markDoneCalls: Array<{ key: string; lineCount: number; outputFile: string | null }> = [];
 const markFailedCalls: Array<{ key: string; reason?: string }> = [];
+const markSkippedCalls: Array<{ key: string; reason?: string }> = [];
 const waitForCompletionCalls: string[] = [];
 
 let claimResult: { claimed: boolean; prevStatus: string | null } = {
@@ -50,7 +51,8 @@ let claimResult: { claimed: boolean; prevStatus: string | null } = {
 };
 let waitForCompletionResult:
   | { status: "done"; lineCount: number }
-  | { status: "failed"; failReason: string | null }
+  | { status: "failed"; reason: string | null }
+  | { status: "skipped"; reason: string | null }
   | { status: "timeout" } = { status: "done", lineCount: 0 };
 
 mock.module("../lib/queue.ts", () => ({
@@ -58,14 +60,19 @@ mock.module("../lib/queue.ts", () => ({
     claimCalls.push({ sessionId, recipeName });
     return claimResult;
   }),
-  markDone: mock(async (key: string, lineCount: number) => {
-    markDoneCalls.push({ key, lineCount });
+  markDone: mock(
+    async (sessionId: string, recipeName: string, lineCount: number, outputFile: string | null) => {
+      markDoneCalls.push({ key: `${sessionId}.${recipeName}`, lineCount, outputFile });
+    },
+  ),
+  markFailed: mock(async (sessionId: string, recipeName: string, reason?: string) => {
+    markFailedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
   }),
-  markFailed: mock(async (key: string, reason?: string) => {
-    markFailedCalls.push({ key, reason });
+  markSkipped: mock(async (sessionId: string, recipeName: string, reason?: string) => {
+    markSkippedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
   }),
-  waitForCompletion: mock(async (key: string) => {
-    waitForCompletionCalls.push(key);
+  waitForCompletion: mock(async (sessionId: string, recipeName: string) => {
+    waitForCompletionCalls.push(`${sessionId}.${recipeName}`);
     return waitForCompletionResult;
   }),
   // Other queue functions kept as default no-ops if anything imports them
@@ -183,6 +190,7 @@ describe("session-convert", () => {
     claimCalls.length = 0;
     markDoneCalls.length = 0;
     markFailedCalls.length = 0;
+    markSkippedCalls.length = 0;
     waitForCompletionCalls.length = 0;
 
     claimResult = { claimed: true, prevStatus: null };
@@ -301,7 +309,7 @@ describe("session-convert", () => {
     await writeSessionFile(projectsDir, VALID_SID);
 
     claimResult = { claimed: false, prevStatus: "processing" };
-    waitForCompletionResult = { status: "failed", failReason: "boom" };
+    waitForCompletionResult = { status: "failed", reason: "boom" };
 
     const { runConvert } = await import("./session-convert.ts");
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(/boom/);
@@ -327,22 +335,50 @@ describe("session-convert", () => {
     expect(waitForCompletionCalls).toHaveLength(1);
   });
 
-  test("processSession が例外を投げた場合、markFailed が呼ばれる", async () => {
+  test("空セッション (lineCount=0) は markSkipped で処理される (markFailed ではない)", async () => {
     const projectsDir = join(claudeDir, "projects");
-    // Empty session (lineCount=0) → processSession throws
+    // Empty session → processSession returns { kind: "skipped", reason: "empty_session" }
     const dir = join(projectsDir, "test-project");
     await mkdir(dir, { recursive: true });
     await Bun.write(join(dir, `${VALID_SID}.jsonl`), "");
 
     const { runConvert } = await import("./session-convert.ts");
-    await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
-      /empty session/,
-    );
+    const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
-    // claim succeeded, then processSession threw, so markFailed was called
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") {
+      expect(result.reason).toBe("empty_session");
+    }
+
+    // claim succeeded, then markSkipped was called (not markFailed)
     expect(claimCalls).toHaveLength(1);
-    expect(markFailedCalls).toHaveLength(1);
-    expect(markFailedCalls[0]!.key).toBe(`${VALID_SID}.diary`);
+    expect(markSkippedCalls).toHaveLength(1);
+    expect(markSkippedCalls[0]!.key).toBe(`${VALID_SID}.diary`);
+    expect(markSkippedCalls[0]!.reason).toBe("empty_session");
+    expect(markFailedCalls).toHaveLength(0);
+    expect(markDoneCalls).toHaveLength(0);
+  });
+
+  test("waitForCompletion で skipped を観測したら kind='skipped' で返す", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    await writeSessionFile(projectsDir, VALID_SID);
+
+    claimResult = { claimed: false, prevStatus: "processing" };
+    waitForCompletionResult = { status: "skipped", reason: "empty_session" };
+
+    const { runConvert } = await import("./session-convert.ts");
+    const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
+
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") {
+      expect(result.reason).toBe("empty_session");
+    }
+
+    expect(claimCalls).toHaveLength(1);
+    expect(waitForCompletionCalls).toHaveLength(1);
+    // We don't own — no mark calls of our own
+    expect(markSkippedCalls).toHaveLength(0);
+    expect(markFailedCalls).toHaveLength(0);
     expect(markDoneCalls).toHaveLength(0);
   });
 });
