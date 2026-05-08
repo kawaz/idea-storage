@@ -8,9 +8,10 @@ import {
   formatSmartSize as formatSmartSizePlain,
   formatDuration as formatDurationPlain,
   formatTimestamp as formatTimestampPlain,
+  shouldUseColor,
 } from "../lib/format.ts";
 
-const C = {
+const ANSI = {
   red: "\x1b[0;31m",
   redDim: "\x1b[2;31m",
   green: "\x1b[0;32m",
@@ -21,7 +22,20 @@ const C = {
   magenta: "\x1b[0;35m",
   blackBright: "\x1b[0;90m",
   reset: "\x1b[0m",
-};
+} as const;
+
+/**
+ * Color palette proxy. Each access returns the raw ANSI code when
+ * `shouldUseColor()` is true, otherwise an empty string. This lets the
+ * existing `${C.red}foo${C.reset}` template-literal call sites stay
+ * unchanged while honouring NO_COLOR / FORCE_COLOR / CI / TTY.
+ */
+const C: Record<keyof typeof ANSI, string> = new Proxy({} as Record<keyof typeof ANSI, string>, {
+  get(_target, prop: string) {
+    if (!(prop in ANSI)) return "";
+    return shouldUseColor() ? ANSI[prop as keyof typeof ANSI] : "";
+  },
+});
 
 interface ListEntry {
   fullPath: string;
@@ -43,6 +57,9 @@ function tildefy(path: string): string {
 }
 
 function oscLink(url: string, text: string): string {
+  // OSC 8 hyperlink is also a terminal escape sequence; suppress when colors
+  // are disabled so plain output (pipes, CI logs) stays clean.
+  if (!shouldUseColor()) return text;
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 

@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   formatSmartSize,
   formatAge,
   toJSTISOString,
   formatDuration,
   formatTimestamp,
+  shouldUseColor,
 } from "./format.ts";
 
 describe("formatSmartSize", () => {
@@ -133,5 +134,114 @@ describe("formatTimestamp", () => {
   test("pads single-digit values", () => {
     const date = new Date("2024-03-05T00:05:00Z");
     expect(formatTimestamp(date)).toBe("2024/03/05T09:05");
+  });
+});
+
+describe("shouldUseColor", () => {
+  const ENV_KEYS = ["NO_COLOR", "FORCE_COLOR", "CI"] as const;
+  const originalEnv: Record<string, string | undefined> = {};
+  let originalIsTTY: boolean | undefined;
+  let isTTYDescriptor: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      originalEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+    isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    originalIsTTY = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      const v = originalEnv[k];
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    }
+    if (isTTYDescriptor) {
+      Object.defineProperty(process.stdout, "isTTY", isTTYDescriptor);
+    } else {
+      Object.defineProperty(process.stdout, "isTTY", {
+        value: originalIsTTY,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
+
+  function setIsTTY(value: boolean | undefined) {
+    Object.defineProperty(process.stdout, "isTTY", {
+      value,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  test("returns false when NO_COLOR is defined (even empty)", () => {
+    process.env.NO_COLOR = "";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns false when NO_COLOR has any value", () => {
+    process.env.NO_COLOR = "1";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns false when FORCE_COLOR=0", () => {
+    process.env.FORCE_COLOR = "0";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns true when FORCE_COLOR=1 even without TTY", () => {
+    process.env.FORCE_COLOR = "1";
+    setIsTTY(false);
+    expect(shouldUseColor()).toBe(true);
+  });
+
+  test("returns true when FORCE_COLOR=true", () => {
+    process.env.FORCE_COLOR = "true";
+    setIsTTY(false);
+    expect(shouldUseColor()).toBe(true);
+  });
+
+  test("FORCE_COLOR overrides CI", () => {
+    process.env.FORCE_COLOR = "1";
+    process.env.CI = "true";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(true);
+  });
+
+  test("NO_COLOR overrides FORCE_COLOR", () => {
+    process.env.NO_COLOR = "1";
+    process.env.FORCE_COLOR = "1";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns false in CI environment", () => {
+    process.env.CI = "true";
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns false when stdout is not a TTY", () => {
+    setIsTTY(false);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns false when stdout.isTTY is undefined", () => {
+    setIsTTY(undefined);
+    expect(shouldUseColor()).toBe(false);
+  });
+
+  test("returns true when stdout is a TTY (no other overrides)", () => {
+    setIsTTY(true);
+    expect(shouldUseColor()).toBe(true);
   });
 });

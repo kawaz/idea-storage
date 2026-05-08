@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, test, expect } from "bun:test";
 import {
   formatSmartSize,
   formatDuration,
@@ -12,6 +12,42 @@ import {
 } from "./article-list.ts";
 
 describe("article-list", () => {
+  // Most tests in this file assert that ANSI color codes are present in the
+  // output, which depends on shouldUseColor() returning true. `bun test` runs
+  // without a TTY, so we force colors on for the suite. The NO_COLOR / CI
+  // suppression block below overrides this with its own setup/teardown.
+  let suiteIsTTYDescriptor: PropertyDescriptor | undefined;
+  let suiteOriginalForceColor: string | undefined;
+  let suiteOriginalNoColor: string | undefined;
+  let suiteOriginalCI: string | undefined;
+
+  beforeAll(() => {
+    suiteIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    suiteOriginalForceColor = process.env.FORCE_COLOR;
+    suiteOriginalNoColor = process.env.NO_COLOR;
+    suiteOriginalCI = process.env.CI;
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: true,
+      writable: true,
+      configurable: true,
+    });
+    process.env.FORCE_COLOR = "1";
+    delete process.env.NO_COLOR;
+    delete process.env.CI;
+  });
+
+  afterAll(() => {
+    if (suiteIsTTYDescriptor) {
+      Object.defineProperty(process.stdout, "isTTY", suiteIsTTYDescriptor);
+    }
+    if (suiteOriginalForceColor === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = suiteOriginalForceColor;
+    if (suiteOriginalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = suiteOriginalNoColor;
+    if (suiteOriginalCI === undefined) delete process.env.CI;
+    else process.env.CI = suiteOriginalCI;
+  });
+
   describe("formatSmartSize", () => {
     test("returns 0.1K for very small files", () => {
       expect(stripAnsi(formatSmartSize(0))).toBe("0.1K");
@@ -374,6 +410,90 @@ describe("article-list", () => {
 
     test("returns plain text unchanged", () => {
       expect(stripAnsi("hello world")).toBe("hello world");
+    });
+  });
+
+  describe("NO_COLOR / CI suppression", () => {
+    const ENV_KEYS = ["NO_COLOR", "FORCE_COLOR", "CI"] as const;
+    const originalEnv: Record<string, string | undefined> = {};
+    let isTTYDescriptor: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      for (const k of ENV_KEYS) {
+        originalEnv[k] = process.env[k];
+        delete process.env[k];
+      }
+      isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+      // Force TTY=true so the only thing toggling colors in these tests is
+      // the env var under test (NO_COLOR / CI).
+      Object.defineProperty(process.stdout, "isTTY", {
+        value: true,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    afterEach(() => {
+      for (const k of ENV_KEYS) {
+        const v = originalEnv[k];
+        if (v === undefined) {
+          delete process.env[k];
+        } else {
+          process.env[k] = v;
+        }
+      }
+      if (isTTYDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", isTTYDescriptor);
+      }
+    });
+
+    // oxlint-disable-next-line no-control-regex -- intentional: detect any ANSI escape
+    const ANY_ANSI = /\x1b\[/;
+    // oxlint-disable-next-line no-control-regex -- intentional: detect OSC 8 hyperlinks
+    const OSC_LINK = /\x1b\]8;;/;
+
+    test("formatSmartSize emits no ANSI codes when NO_COLOR is set", () => {
+      process.env.NO_COLOR = "1";
+      const out = formatSmartSize(1024);
+      expect(ANY_ANSI.test(out)).toBe(false);
+      expect(out).toBe("1.0K");
+    });
+
+    test("formatDuration emits no ANSI codes when NO_COLOR is set", () => {
+      process.env.NO_COLOR = "1";
+      const out = formatDuration(0, 90 * 1000);
+      expect(ANY_ANSI.test(out)).toBe(false);
+      expect(out).toBe("1m30s");
+    });
+
+    test("formatTimestamp emits no ANSI codes when NO_COLOR is set", () => {
+      process.env.NO_COLOR = "1";
+      const date = new Date("2026-03-07T00:00:00Z");
+      const out = formatTimestamp(date);
+      expect(ANY_ANSI.test(out)).toBe(false);
+      expect(out).toBe("2026/03/07T09:00");
+    });
+
+    test("parseProject displayPath has no ANSI codes when NO_COLOR is set", () => {
+      process.env.NO_COLOR = "1";
+      const { displayPath } = parseProject(
+        "/Users/kawaz/.local/share/repos/github.com/kawaz/idea-storage/main",
+      );
+      expect(ANY_ANSI.test(displayPath)).toBe(false);
+      expect(OSC_LINK.test(displayPath)).toBe(false);
+      expect(displayPath).toBe("kawaz/idea-storage/main");
+    });
+
+    test("CI=true also disables ANSI output", () => {
+      process.env.CI = "true";
+      expect(ANY_ANSI.test(formatSmartSize(1024))).toBe(false);
+      expect(ANY_ANSI.test(formatDuration(0, 90 * 1000))).toBe(false);
+    });
+
+    test("FORCE_COLOR=1 keeps ANSI output even when CI is set", () => {
+      process.env.CI = "true";
+      process.env.FORCE_COLOR = "1";
+      expect(ANY_ANSI.test(formatSmartSize(1024))).toBe(true);
     });
   });
 });

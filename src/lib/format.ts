@@ -67,6 +67,26 @@ export function formatFileTimestamp(date: Date): string {
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
 }
 
+/**
+ * Decide whether colorized (ANSI escape) output should be emitted.
+ *
+ * Order of precedence:
+ * 1. NO_COLOR defined (any value) → disable. https://no-color.org/
+ *    (Strictly the spec calls for "any non-empty value", but in practice
+ *    "defined at all" is the de-facto convention.)
+ * 2. FORCE_COLOR="0" → disable.
+ * 3. FORCE_COLOR defined to anything else → enable (overrides CI / non-TTY).
+ * 4. CI defined → disable (most CI runners pipe stdout, colors look like noise).
+ * 5. Otherwise: enable iff stdout is a TTY.
+ */
+export function shouldUseColor(): boolean {
+  if (process.env.NO_COLOR !== undefined) return false;
+  if (process.env.FORCE_COLOR === "0") return false;
+  if (process.env.FORCE_COLOR !== undefined) return true;
+  if (process.env.CI !== undefined) return false;
+  return Boolean(process.stdout.isTTY);
+}
+
 export type SortOrder = "recipe" | "date" | "size";
 export const SORT_ORDERS: SortOrder[] = ["recipe", "date", "size"];
 
