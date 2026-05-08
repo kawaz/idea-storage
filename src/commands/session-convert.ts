@@ -9,6 +9,9 @@ import { CliError, exitWithError } from "../lib/errors.ts";
 import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
+import { getLatestObservations } from "../lib/rate-limit-store.ts";
+import { shouldSkip } from "../lib/rate-limit-judge.ts";
+import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
 import {
   fetchSessionStats,
   findRecipeByName,
@@ -23,6 +26,13 @@ export interface RunConvertInput {
   signal?: AbortSignal;
   /** Override for waitForCompletion timeout (ms). */
   waitTimeoutMs?: number;
+  /**
+   * Bypass the rate-limit check. Defaults to false.
+   * Should be set only when an explicit user intent overrides the shared quota
+   * concern (Claude API 5h/7d limits) — convert is a manual command but it
+   * still consumes the same quota that the worker tries to pace.
+   */
+  force?: boolean;
 }
 
 export type RunConvertResult =
@@ -64,7 +74,25 @@ function computeOutputFile(
  */
 export async function runConvert(input: RunConvertInput): Promise<RunConvertResult> {
   const { sessionId, recipeName, taskTimeoutMs, signal, waitTimeoutMs } = input;
+  const force = input.force ?? false;
   const key = `${sessionId}.${recipeName}`;
+
+  // Rate-limit check (shared quota with worker). Bypass only when --force.
+  // Same logic as session-run.ts so manual convert and worker apply identical
+  // pacing rules to the Claude API 5h/7d budget.
+  if (!force) {
+    const latestObs = getLatestObservations(1);
+    const decision = shouldSkip(latestObs, Math.floor(Date.now() / 1000), {
+      staleThresholdSec: RATE_LIMIT_STALE_THRESHOLD_SEC,
+    });
+    if (decision.skip) {
+      log({ key, msg: "convert_rate_limit_skip", reason: decision.reason });
+      throw new CliError(
+        `Rate limits over pace: ${decision.reason}\n` +
+          `Use --force to bypass this check (this consumes shared quota; mainly for explicit user request).`,
+      );
+    }
+  }
 
   const config = await loadConfig();
   const dataDir = getDataDir();
@@ -133,6 +161,7 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
     msg: "convert_start",
     prevStatus: claimResult.prevStatus,
     forceProcess: true,
+    forcedRateLimit: force,
   });
 
   // Best-effort session stats fetch
@@ -178,10 +207,16 @@ const sessionConvert = define({
       description: "Recipe name (without 'recipe-' prefix)",
       required: true,
     },
+    force: {
+      type: "boolean",
+      description:
+        "Bypass rate-limit check (consumes shared quota; use only when explicit user intent overrides shared-quota concerns)",
+    },
   },
   run: async (ctx) => {
     const sessionId = ctx.values.session as string;
     const recipeName = ctx.values.recipe as string;
+    const force = (ctx.values.force as boolean | undefined) ?? false;
 
     if (!sessionId || !recipeName) {
       exitWithError("Both --session and --recipe are required");
@@ -190,7 +225,7 @@ const sessionConvert = define({
     try {
       validateSessionId(sessionId);
       validateRecipeName(recipeName);
-      const result = await runConvert({ sessionId, recipeName });
+      const result = await runConvert({ sessionId, recipeName, force });
       switch (result.kind) {
         case "processed":
           console.log(result.outputFile);

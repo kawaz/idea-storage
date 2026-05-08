@@ -114,9 +114,22 @@ mock.module("../lib/spawn-timeout.ts", () => ({
   SpawnTimeoutError: class SpawnTimeoutError extends Error {},
 }));
 
-// Mock rate-limit-store (best-effort recordObservation, no-op for tests)
+// Mock rate-limit-store. Default to "no observations" so shouldSkip returns proceed
+// (matches the worker first-iteration semantics).
+let mockObservations: Array<{
+  ts: number;
+  fiveHourUtil: number | null;
+  fiveHourReset: number | null;
+  fiveHourStatus: string | null;
+  sevenDayUtil: number | null;
+  sevenDayReset: number | null;
+  sevenDayStatus: string | null;
+  source: "worker" | "probe";
+}> = [];
+
 mock.module("../lib/rate-limit-store.ts", () => ({
   recordObservation: mock(() => {}),
+  getLatestObservations: mock(() => mockObservations),
 }));
 
 const VALID_SID = "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee";
@@ -195,6 +208,9 @@ describe("session-convert", () => {
 
     claimResult = { claimed: true, prevStatus: null };
     waitForCompletionResult = { status: "done", lineCount: 5 };
+
+    // Default: no observations → shouldSkip returns proceed
+    mockObservations = [];
   });
 
   afterEach(async () => {
@@ -371,6 +387,105 @@ describe("session-convert", () => {
     const { CliError } = await import("../lib/errors.ts");
     expect(() => validateRecipeName("BAD-RECIPE")).toThrow(CliError);
     expect(() => validateRecipeName("BAD-RECIPE")).toThrow(/Invalid recipe name/);
+  });
+
+  // --- Rate-limit gate tests ---
+
+  /**
+   * Build a synthetic observation row that triggers shouldSkip.
+   * 5-hour bucket: util=80%, elapsed=10% → util > elapsed * 0.9 と util > 30% で skip 確定。
+   */
+  function makeOverPaceObservation(nowSec: number) {
+    const fiveHourWindowSec = 5 * 3600;
+    const elapsedRatio = 0.1;
+    const reset = nowSec + fiveHourWindowSec * (1 - elapsedRatio);
+    return {
+      ts: nowSec,
+      fiveHourUtil: 0.8,
+      fiveHourReset: reset,
+      fiveHourStatus: "ok" as const,
+      sevenDayUtil: null,
+      sevenDayReset: null,
+      sevenDayStatus: null,
+      source: "worker" as const,
+    };
+  }
+
+  test("rate-limit 該当時は CliError で弾かれ、claim は呼ばれない", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    await writeSessionFile(projectsDir, VALID_SID);
+
+    mockObservations = [makeOverPaceObservation(Math.floor(Date.now() / 1000))];
+
+    const { runConvert } = await import("./session-convert.ts");
+    const { CliError } = await import("../lib/errors.ts");
+    await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
+      CliError,
+    );
+    await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
+      /Rate limits over pace/,
+    );
+
+    // Should not have claimed (early bail)
+    expect(claimCalls).toHaveLength(0);
+    expect(markDoneCalls).toHaveLength(0);
+    expect(markFailedCalls).toHaveLength(0);
+  });
+
+  test("rate-limit OK の時は通常通り claim → 処理続行", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    await writeSessionFile(projectsDir, VALID_SID);
+
+    // Single observation that doesn't trigger skip: util well below elapsed*0.9
+    const nowSec = Math.floor(Date.now() / 1000);
+    mockObservations = [
+      {
+        ts: nowSec,
+        fiveHourUtil: 0.05,
+        fiveHourReset: nowSec + 5 * 3600 * 0.5,
+        fiveHourStatus: "ok",
+        sevenDayUtil: null,
+        sevenDayReset: null,
+        sevenDayStatus: null,
+        source: "worker",
+      },
+    ];
+
+    const { runConvert } = await import("./session-convert.ts");
+    const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
+
+    expect(result.kind).toBe("processed");
+    expect(claimCalls).toHaveLength(1);
+    expect(markDoneCalls).toHaveLength(1);
+  });
+
+  test("--force 指定時は rate-limit 該当でもバイパスして処理続行", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    await writeSessionFile(projectsDir, VALID_SID);
+
+    mockObservations = [makeOverPaceObservation(Math.floor(Date.now() / 1000))];
+
+    const { runConvert } = await import("./session-convert.ts");
+    const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary", force: true });
+
+    expect(result.kind).toBe("processed");
+    expect(claimCalls).toHaveLength(1);
+    expect(markDoneCalls).toHaveLength(1);
+    expect(markFailedCalls).toHaveLength(0);
+  });
+
+  test("観測なし (no-observation) の時は通常通り処理続行", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    await writeSessionFile(projectsDir, VALID_SID);
+
+    mockObservations = []; // explicit: no rate-limit observations
+
+    const { runConvert } = await import("./session-convert.ts");
+    const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
+
+    expect(result.kind).toBe("processed");
+    expect(claimCalls).toHaveLength(1);
+    expect(markDoneCalls).toHaveLength(1);
   });
 
   test("waitForCompletion で skipped を観測したら kind='skipped' で返す", async () => {
