@@ -26,13 +26,7 @@ fmt-check:
 
 check: test typecheck lint fmt-check
 
-# バンドル整合性チェック（ビルドし直して差分があれば失敗）
-# dist/ は .gitignore されているため jj diff には出ない。stderr の Warning を
-# 除外し、"0 files changed" 行は差分なし扱いにする。
-build-check: build
-    jj diff --stat dist/ --no-pager 2>/dev/null | grep -v '^0 files changed' | grep -q . && { echo "ERROR: バンドルが最新ではありません。ビルド結果をコミットしてください。" >&2; exit 1; } || true
-
-push: check build-check
+push: check
     jj git push
 
 service-register:
