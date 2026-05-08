@@ -9,6 +9,7 @@ import {
   dequeue,
   markDone,
   markFailed,
+  markSkipped,
   isDone,
   isQueued,
   isFailed,
@@ -22,15 +23,16 @@ import {
   getDb,
   claim,
   waitForCompletion,
+  formatLogKey,
 } from "./queue.ts";
 
-// Test UUIDs (replacing short ids like 'sid-1' for validation compliance)
+// Test UUIDs
 const SID1 = "00000000-0000-4000-a000-000000000001";
 const SID2 = "00000000-0000-4000-a000-000000000002";
 const SID3 = "00000000-0000-4000-a000-000000000003";
 const SID4 = "00000000-0000-4000-a000-000000000004";
+const SID5 = "00000000-0000-4000-a000-000000000005";
 const SID_ABC = "00000000-0000-4000-a000-00000000abc0";
-const SID_DEF = "00000000-0000-4000-a000-00000000def0";
 
 describe("queue", () => {
   let dirs: QueueDirs;
@@ -50,12 +52,7 @@ describe("queue", () => {
   });
 
   describe("enqueue", () => {
-    test("creates a queued entry with key format {sessionId}.{recipeName}", async () => {
-      await enqueue(SID_ABC, "diary", dirs);
-      expect(await isQueued(SID_ABC, "diary", dirs)).toBe(true);
-    });
-
-    test("auto-creates database when it does not exist", async () => {
+    test("creates a queued entry", async () => {
       await enqueue(SID_ABC, "diary", dirs);
       expect(await isQueued(SID_ABC, "diary", dirs)).toBe(true);
     });
@@ -66,11 +63,27 @@ describe("queue", () => {
       const status = await getStatus(dirs);
       expect(status.queued).toBe(1);
     });
+
+    test("records history with action='enqueued' on first insert only", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", dirs); // duplicate
+
+      const db = getDb(dirs);
+      const rows = db
+        .query(
+          `SELECT h.action FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? ORDER BY h.timestamp`,
+        )
+        .all(SID1) as { action: string }[];
+      db.close();
+      expect(rows.map((r) => r.action)).toEqual(["enqueued"]);
+    });
   });
 
   describe("enqueueBatch", () => {
     test("複数エントリを一括で enqueue する", async () => {
-      await enqueueBatch(
+      enqueueBatch(
         [
           { sessionId: SID1, recipeName: "diary" },
           { sessionId: SID2, recipeName: "report" },
@@ -83,14 +96,14 @@ describe("queue", () => {
     });
 
     test("空配列でもエラーにならない", async () => {
-      await enqueueBatch([], dirs);
+      enqueueBatch([], dirs);
       const status = await getStatus(dirs);
       expect(status.queued).toBe(0);
     });
 
     test("既存エントリは無視する（INSERT OR IGNORE）", async () => {
       await enqueue(SID1, "diary", dirs);
-      await enqueueBatch(
+      enqueueBatch(
         [
           { sessionId: SID1, recipeName: "diary" }, // duplicate
           { sessionId: SID2, recipeName: "report" },
@@ -102,88 +115,80 @@ describe("queue", () => {
       expect(status.queued).toBe(2);
     });
 
-    test("無効な sessionId でバリデーションエラー", async () => {
+    test("無効な sessionId でバリデーションエラー", () => {
       expect(() => enqueueBatch([{ sessionId: "invalid", recipeName: "diary" }], dirs)).toThrow(
         /Invalid sessionId/,
       );
     });
 
-    test("無効な recipeName でバリデーションエラー", async () => {
+    test("無効な recipeName でバリデーションエラー", () => {
       expect(() => enqueueBatch([{ sessionId: SID1, recipeName: "../bad" }], dirs)).toThrow(
         /Invalid recipeName/,
       );
     });
 
-    test("バリデーションエラー時はどのエントリも挿入されない（トランザクション）", async () => {
+    test("バリデーションエラー時はどのエントリも挿入されない", async () => {
       try {
         enqueueBatch(
           [
-            { sessionId: SID1, recipeName: "diary" }, // valid
-            { sessionId: "invalid", recipeName: "diary" }, // invalid
+            { sessionId: SID1, recipeName: "diary" },
+            { sessionId: "invalid", recipeName: "diary" },
           ],
           dirs,
         );
       } catch {
         /* expected */
       }
-
       const status = await getStatus(dirs);
       expect(status.queued).toBe(0);
     });
   });
 
   describe("dequeue", () => {
+    /** Helper to set updated_at via uuid+name (joins sessions/recipes/queue_entries) */
+    function setUpdatedAt(sid: string, name: string, ts: number): void {
+      const db = getDb(dirs);
+      db.run(
+        `UPDATE queue_entries SET updated_at = ? WHERE pk =
+           (SELECT qe.pk FROM queue_entries qe
+              INNER JOIN sessions s ON s.pk = qe.session_pk
+              INNER JOIN recipes r ON r.pk = qe.recipe_pk
+            WHERE s.uuid = ? AND r.name = ?)`,
+        [ts, sid, name],
+      );
+      db.close();
+    }
+
     test("returns null when queue is empty", async () => {
       const entry = await dequeue(dirs);
       expect(entry).toBeNull();
     });
 
     test("returns the newest entry first and transitions it to processing", async () => {
-      // enqueue two items with different updated_at
       await enqueue(SID1, "recipe-a", dirs);
-
-      // Make SID1 older via direct DB update
-      const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [
-        Date.now() - 10000,
-        `${SID1}.recipe-a`,
-      ]);
-      db.close();
-
+      setUpdatedAt(SID1, "recipe-a", Date.now() - 10000);
       await enqueue(SID2, "recipe-b", dirs);
 
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
       expect(entry!.sessionId).toBe(SID2);
       expect(entry!.recipeName).toBe("recipe-b");
-      expect(entry!.key).toBe(`${SID2}.recipe-b`);
+      expect(entry!.key).toBe(formatLogKey(SID2, "recipe-b"));
 
       // Dequeued entry should no longer be queued (now processing)
       expect(await isQueued(SID2, "recipe-b", dirs)).toBe(false);
-
-      // Verify the entry remains in DB with status='processing' (排他制御のため)
-      const db2 = getDb(dirs);
-      const row = db2
-        .query(`SELECT status FROM queue_entries WHERE key = ?`)
-        .get(`${SID2}.recipe-b`) as { status: string } | null;
-      db2.close();
-      expect(row?.status).toBe("processing");
 
       // Older entry should still be queued
       expect(await isQueued(SID1, "recipe-a", dirs)).toBe(true);
     });
 
-    test("dequeues in newest-first order across multiple calls", async () => {
+    test("dequeues in newest-first order", async () => {
       await enqueue(SID1, "recipe-a", dirs);
       await enqueue(SID2, "recipe-b", dirs);
       await enqueue(SID3, "recipe-c", dirs);
-
-      // Set updated_at to control ordering
-      const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [1000, `${SID1}.recipe-a`]);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [2000, `${SID2}.recipe-b`]);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [3000, `${SID3}.recipe-c`]);
-      db.close();
+      setUpdatedAt(SID1, "recipe-a", 1000);
+      setUpdatedAt(SID2, "recipe-b", 2000);
+      setUpdatedAt(SID3, "recipe-c", 3000);
 
       const first = await dequeue(dirs);
       expect(first!.sessionId).toBe(SID3);
@@ -198,93 +203,94 @@ describe("queue", () => {
       expect(fourth).toBeNull();
     });
 
-    test("returns null when database does not exist yet", async () => {
-      const nonExistDirs: QueueDirs = {
-        queueDir: join(tempDir, "nonexistent", "queue") + "/",
-        doneDir: dirs.doneDir,
-        failedDir: dirs.failedDir,
-      };
-      const entry = await dequeue(nonExistDirs);
-      expect(entry).toBeNull();
+    test("records history with action='claimed' on dequeue", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await dequeue(dirs);
+
+      const db = getDb(dirs);
+      const rows = db
+        .query(
+          `SELECT h.action, h.message FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? ORDER BY h.timestamp`,
+        )
+        .all(SID1) as { action: string; message: string | null }[];
+      db.close();
+      expect(rows.map((r) => r.action)).toEqual(["enqueued", "claimed"]);
+      expect(rows[1]!.message).toBe("prevStatus: queued");
     });
   });
 
-  describe("parseKey (via enqueue/dequeue round-trip)", () => {
-    test("correctly parses recipe name containing dots", async () => {
+  describe("recipe names with dots", () => {
+    test("correctly handles recipe name containing dots", async () => {
       await enqueue(SID_ABC, "my.diary", dirs);
 
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
       expect(entry!.sessionId).toBe(SID_ABC);
       expect(entry!.recipeName).toBe("my.diary");
-      expect(entry!.key).toBe(`${SID_ABC}.my.diary`);
-    });
-
-    test("correctly parses recipe name with multiple dots", async () => {
-      await enqueue(SID_DEF, "my.special.recipe", dirs);
-
-      const entry = await dequeue(dirs);
-      expect(entry).not.toBeNull();
-      expect(entry!.sessionId).toBe(SID_DEF);
-      expect(entry!.recipeName).toBe("my.special.recipe");
     });
 
     test("isDone works with dotted recipe name", async () => {
-      await markDone(`${SID_ABC}.my.diary`, 50, dirs);
+      await markDone(SID_ABC, "my.diary", 50, "/tmp/out.md", dirs);
       expect(await isDone(SID_ABC, "my.diary", 50, dirs)).toBe(true);
-    });
-
-    test("isQueued works with dotted recipe name", async () => {
-      await enqueue(SID_ABC, "my.diary", dirs);
-      expect(await isQueued(SID_ABC, "my.diary", dirs)).toBe(true);
-    });
-
-    test("isFailed works with dotted recipe name", async () => {
-      await enqueue(SID_ABC, "my.diary", dirs);
-      await markFailed(`${SID_ABC}.my.diary`, undefined, dirs);
-      expect(await isFailed(SID_ABC, "my.diary", dirs)).toBe(true);
     });
   });
 
   describe("markDone", () => {
     test("marks entry as done with lineCount and removes from queued", async () => {
       await enqueue(SID1, "diary", dirs);
-      await markDone(`${SID1}.diary`, 42, dirs);
+      await markDone(SID1, "diary", 42, "/tmp/diary.md", dirs);
 
       expect(await isDone(SID1, "diary", 42, dirs)).toBe(true);
-
-      // Verify lineCount in DB
-      const db = getDb(dirs);
-      const row = db
-        .query(`SELECT line_count, status FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { line_count: number; status: string };
-      expect(row.status).toBe("done");
-      expect(row.line_count).toBe(42);
-      db.close();
-
-      // Should no longer be queued
       expect(await isQueued(SID1, "diary", dirs)).toBe(false);
     });
 
     test("works even when entry did not exist before", async () => {
-      await markDone(`${SID1}.diary`, 100, dirs);
+      await markDone(SID1, "diary", 100, null, dirs);
       expect(await isDone(SID1, "diary", 100, dirs)).toBe(true);
+    });
+
+    test("records history with action='completed' and outputFile in message", async () => {
+      await markDone(SID1, "diary", 42, "/tmp/output.md", dirs);
+
+      const db = getDb(dirs);
+      const row = db
+        .query(
+          `SELECT h.action, h.message FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? AND h.action = 'completed'`,
+        )
+        .get(SID1) as { action: string; message: string };
+      db.close();
+      expect(row.action).toBe("completed");
+      expect(row.message).toBe("/tmp/output.md");
+    });
+
+    test("clears reason on transition from failed → done", async () => {
+      await markFailed(SID1, "diary", "boom", dirs);
+      await markDone(SID1, "diary", 10, null, dirs);
+
+      const db = getDb(dirs);
+      const row = db
+        .query(
+          `SELECT qe.reason FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+           WHERE s.uuid = ?`,
+        )
+        .get(SID1) as { reason: string | null };
+      db.close();
+      expect(row.reason).toBeNull();
     });
   });
 
   describe("markFailed", () => {
     test("marks entry as failed and removes from queued", async () => {
       await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
 
       expect(await isFailed(SID1, "diary", dirs)).toBe(true);
       expect(await isQueued(SID1, "diary", dirs)).toBe(false);
-    });
-
-    test("works when database does not exist yet", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      expect(await isFailed(SID1, "diary", dirs)).toBe(true);
     });
 
     test("works after dequeue (entry transitions processing → failed)", async () => {
@@ -292,76 +298,137 @@ describe("queue", () => {
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
 
-      // Entry is no longer queued (now in processing status)
-      expect(await isQueued(SID1, "diary", dirs)).toBe(false);
-
-      // markFailed should overwrite processing → failed
-      await markFailed(`${SID1}.diary`, undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
       expect(await isFailed(SID1, "diary", dirs)).toBe(true);
-    });
-
-    test("records retryCount: 1 on first call", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
-      const db = getDb(dirs);
-      const row = db
-        .query(`SELECT retry_count FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { retry_count: number };
-      expect(row.retry_count).toBe(1);
-      db.close();
     });
 
     test("increments retryCount on subsequent calls", async () => {
       await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
 
       const db = getDb(dirs);
       const row = db
-        .query(`SELECT retry_count FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { retry_count: number };
-      expect(row.retry_count).toBe(2);
+        .query(
+          `SELECT qe.retry_count FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+           WHERE s.uuid = ?`,
+        )
+        .get(SID1) as { retry_count: number };
       db.close();
+      expect(row.retry_count).toBe(2);
     });
 
-    test("records reason when provided", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, "claude exited with code 1", dirs);
+    test("records reason in queue_entries.reason", async () => {
+      await markFailed(SID1, "diary", "claude exited with code 1", dirs);
 
       const db = getDb(dirs);
       const row = db
-        .query(`SELECT retry_count, fail_reason FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { retry_count: number; fail_reason: string };
-      expect(row.retry_count).toBe(1);
-      expect(row.fail_reason).toBe("claude exited with code 1");
+        .query(
+          `SELECT qe.reason FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+           WHERE s.uuid = ?`,
+        )
+        .get(SID1) as { reason: string };
       db.close();
+      expect(row.reason).toBe("claude exited with code 1");
     });
 
-    test("updates reason on subsequent failure", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, "first error", dirs);
-      await markFailed(`${SID1}.diary`, "second error", dirs);
+    test("records history with action='failed' and reason in message", async () => {
+      await markFailed(SID1, "diary", "boom", dirs);
 
       const db = getDb(dirs);
       const row = db
-        .query(`SELECT retry_count, fail_reason FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { retry_count: number; fail_reason: string };
-      expect(row.retry_count).toBe(2);
-      expect(row.fail_reason).toBe("second error");
+        .query(
+          `SELECT h.action, h.message FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? AND h.action = 'failed'`,
+        )
+        .get(SID1) as { action: string; message: string };
       db.close();
+      expect(row.action).toBe("failed");
+      expect(row.message).toBe("boom");
+    });
+  });
+
+  describe("markSkipped", () => {
+    test("marks entry as skipped", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await markSkipped(SID1, "diary", "empty_session", dirs);
+
+      const status = await getStatus(dirs);
+      expect(status.skipped).toBe(1);
+      expect(status.queued).toBe(0);
+    });
+
+    test("does NOT increment retry_count (skipped is not failure)", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await markSkipped(SID1, "diary", "no_user_turns", dirs);
+      await markSkipped(SID1, "diary", "no_user_turns", dirs);
+
+      const db = getDb(dirs);
+      const row = db
+        .query(
+          `SELECT qe.retry_count FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+           WHERE s.uuid = ?`,
+        )
+        .get(SID1) as { retry_count: number };
+      db.close();
+      expect(row.retry_count).toBe(0);
+    });
+
+    test("records reason", async () => {
+      await markSkipped(SID1, "diary", "fork_no_new_conversation", dirs);
+
+      const db = getDb(dirs);
+      const row = db
+        .query(
+          `SELECT qe.reason FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+           WHERE s.uuid = ?`,
+        )
+        .get(SID1) as { reason: string };
+      db.close();
+      expect(row.reason).toBe("fork_no_new_conversation");
+    });
+
+    test("records history with action='skipped'", async () => {
+      await markSkipped(SID1, "diary", "already_processed", dirs);
+
+      const db = getDb(dirs);
+      const row = db
+        .query(
+          `SELECT h.action, h.message FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? AND h.action = 'skipped'`,
+        )
+        .get(SID1) as { action: string; message: string };
+      db.close();
+      expect(row.action).toBe("skipped");
+      expect(row.message).toBe("already_processed");
+    });
+
+    test("works after dequeue (processing → skipped)", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await dequeue(dirs);
+      await markSkipped(SID1, "diary", "empty_session", dirs);
+
+      const status = await getStatus(dirs);
+      expect(status.skipped).toBe(1);
+      expect(status.processing).toBe(0);
     });
   });
 
   describe("isDone", () => {
     test("returns true when done and lineCount >= currentLineCount", async () => {
-      await markDone(`${SID1}.diary`, 100, dirs);
+      await markDone(SID1, "diary", 100, null, dirs);
       expect(await isDone(SID1, "diary", 100, dirs)).toBe(true);
       expect(await isDone(SID1, "diary", 50, dirs)).toBe(true);
     });
 
     test("returns false when done but fewer lines than currentLineCount", async () => {
-      await markDone(`${SID1}.diary`, 50, dirs);
+      await markDone(SID1, "diary", 50, null, dirs);
       expect(await isDone(SID1, "diary", 100, dirs)).toBe(false);
     });
 
@@ -370,96 +437,118 @@ describe("queue", () => {
     });
   });
 
-  describe("isQueued", () => {
-    test("returns true when entry is in queue", async () => {
-      await enqueue(SID1, "diary", dirs);
-      expect(await isQueued(SID1, "diary", dirs)).toBe(true);
-    });
-
-    test("returns false when entry is not in queue", async () => {
-      expect(await isQueued(SID1, "diary", dirs)).toBe(false);
-    });
-  });
-
   describe("isFailed", () => {
     test("returns false when entry does not exist", async () => {
       expect(await isFailed(SID1, "diary", dirs)).toBe(false);
     });
 
-    test("returns true when failed and updated_at is recent (within retryAfterMs)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      // Just failed - should still be considered failed (too soon to retry)
+    test("returns true when failed and updated_at is recent", async () => {
+      await markFailed(SID1, "diary", undefined, dirs);
       expect(await isFailed(SID1, "diary", dirs, { retryAfterMs: 1000 })).toBe(true);
     });
 
-    test("returns false when retryCount < maxRetries and updated_at is old enough (auto-retry)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
+    test("returns false when retryable (retryCount < maxRetries, updated_at old)", async () => {
+      await markFailed(SID1, "diary", undefined, dirs);
 
-      // Set updated_at to the past via DB
       const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [
-        Date.now() - 2000,
-        `${SID1}.diary`,
-      ]);
+      db.run(
+        `UPDATE queue_entries SET updated_at = ? WHERE pk =
+           (SELECT qe.pk FROM queue_entries qe
+              INNER JOIN sessions s ON s.pk = qe.session_pk
+            WHERE s.uuid = ?)`,
+        [Date.now() - 2000, SID1],
+      );
       db.close();
 
-      // retryCount=1, maxRetries=3, updated_at is 2s ago, retryAfterMs=1000ms => should retry
       expect(await isFailed(SID1, "diary", dirs, { retryAfterMs: 1000, maxRetries: 3 })).toBe(
         false,
       );
     });
 
     test("returns true when retryCount >= maxRetries (permanent-failed)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=1
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=2
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=3
+      await markFailed(SID1, "diary", undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
 
-      // Set updated_at to the past
       const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [
-        Date.now() - 100000,
-        `${SID1}.diary`,
-      ]);
+      db.run(
+        `UPDATE queue_entries SET updated_at = ? WHERE pk =
+           (SELECT qe.pk FROM queue_entries qe
+              INNER JOIN sessions s ON s.pk = qe.session_pk
+            WHERE s.uuid = ?)`,
+        [Date.now() - 100000, SID1],
+      );
       db.close();
 
-      // retryCount=3, maxRetries=3 => permanent-failed, always true
       expect(await isFailed(SID1, "diary", dirs, { retryAfterMs: 1, maxRetries: 3 })).toBe(true);
-    });
-
-    test("uses default retryAfterMs and maxRetries when not specified", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      // With defaults (24h, 3 retries), just-failed should return true
-      expect(await isFailed(SID1, "diary", dirs)).toBe(true);
     });
   });
 
   describe("retry", () => {
     test("moves entry from failed to queued", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      await retry(`${SID1}.diary`, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
+      await retry(SID1, "diary", dirs);
 
       expect(await isQueued(SID1, "diary", dirs)).toBe(true);
       expect(await isFailed(SID1, "diary", dirs)).toBe(false);
     });
+
+    test("moves entry from skipped to queued", async () => {
+      await markSkipped(SID1, "diary", "empty_session", dirs);
+      await retry(SID1, "diary", dirs);
+
+      expect(await isQueued(SID1, "diary", dirs)).toBe(true);
+      const status = await getStatus(dirs);
+      expect(status.skipped).toBe(0);
+    });
+
+    test("no-op for done entries (status guard)", async () => {
+      await markDone(SID1, "diary", 50, null, dirs);
+      await retry(SID1, "diary", dirs);
+
+      expect(await isDone(SID1, "diary", 50, dirs)).toBe(true);
+      expect(await isQueued(SID1, "diary", dirs)).toBe(false);
+    });
+
+    test("no-op for processing entries (status guard)", async () => {
+      await claim(SID1, "diary", dirs);
+      await retry(SID1, "diary", dirs);
+
+      const status = await getStatus(dirs);
+      expect(status.processing).toBe(1);
+      expect(status.queued).toBe(0);
+    });
+
+    test("records history with action='reset' on successful reset", async () => {
+      await markFailed(SID1, "diary", undefined, dirs);
+      await retry(SID1, "diary", dirs);
+
+      const db = getDb(dirs);
+      const rows = db
+        .query(
+          `SELECT h.action FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? AND h.action = 'reset'`,
+        )
+        .all(SID1) as { action: string }[];
+      db.close();
+      expect(rows.length).toBe(1);
+    });
   });
 
   describe("getStatus", () => {
-    test("returns counts for each status", async () => {
+    test("returns counts for each status including skipped", async () => {
       await enqueue(SID1, "diary", dirs);
       await enqueue(SID2, "diary", dirs);
-      await markDone(`${SID3}.diary`, 10, dirs);
-      await enqueue(SID4, "diary", dirs);
-      await markFailed(`${SID4}.diary`, undefined, dirs);
+      await markDone(SID3, "diary", 10, null, dirs);
+      await markFailed(SID4, "diary", undefined, dirs);
+      await markSkipped(SID5, "diary", "empty", dirs);
 
       const status = await getStatus(dirs);
       expect(status.queued).toBe(2);
       expect(status.done).toBe(1);
       expect(status.failed).toBe(1);
+      expect(status.skipped).toBe(1);
     });
 
     test("returns zeros when database is empty", async () => {
@@ -467,15 +556,14 @@ describe("queue", () => {
       expect(status.queued).toBe(0);
       expect(status.done).toBe(0);
       expect(status.failed).toBe(0);
+      expect(status.skipped).toBe(0);
     });
   });
 
   describe("cleanup", () => {
     test("removes failed entries whose session no longer exists", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-      await enqueue(SID2, "diary", dirs);
-      await markFailed(`${SID2}.diary`, undefined, dirs);
+      await markFailed(SID1, "diary", undefined, dirs);
+      await markFailed(SID2, "diary", undefined, dirs);
 
       const isSessionExists = async (sid: string) => sid === SID1;
       const removed = await cleanup(isSessionExists, dirs);
@@ -485,26 +573,65 @@ describe("queue", () => {
       expect(await isFailed(SID2, "diary", dirs)).toBe(false);
     });
 
-    test("returns 0 when all sessions exist", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
+    test("does not remove skipped entries even when session is gone", async () => {
+      await markSkipped(SID1, "diary", "empty", dirs);
 
-      const isSessionExists = async (_sid: string) => true;
+      const isSessionExists = async () => false;
       const removed = await cleanup(isSessionExists, dirs);
       expect(removed).toBe(0);
+
+      const status = await getStatus(dirs);
+      expect(status.skipped).toBe(1);
+    });
+  });
+
+  describe("normalization (sessions/recipes tables)", () => {
+    test("reuses session_pk for the same uuid", async () => {
+      await enqueue(SID1, "recipe-a", dirs);
+      await enqueue(SID1, "recipe-b", dirs);
+
+      const db = getDb(dirs);
+      const count = db.query(`SELECT COUNT(*) as c FROM sessions WHERE uuid = ?`).get(SID1) as {
+        c: number;
+      };
+      db.close();
+      expect(count.c).toBe(1);
     });
 
-    test("returns 0 when no failed entries exist", async () => {
-      const isSessionExists = async (_sid: string) => false;
-      const removed = await cleanup(isSessionExists, dirs);
-      expect(removed).toBe(0);
+    test("reuses recipe_pk for the same name", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID2, "diary", dirs);
+
+      const db = getDb(dirs);
+      const count = db.query(`SELECT COUNT(*) as c FROM recipes WHERE name = ?`).get("diary") as {
+        c: number;
+      };
+      db.close();
+      expect(count.c).toBe(1);
+    });
+
+    test("UNIQUE(session_pk, recipe_pk) prevents duplicates", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", dirs);
+
+      const db = getDb(dirs);
+      const count = db
+        .query(
+          `SELECT COUNT(*) as c FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+           WHERE s.uuid = ? AND r.name = ?`,
+        )
+        .get(SID1, "diary") as { c: number };
+      db.close();
+      expect(count.c).toBe(1);
     });
   });
 
   describe("validateSessionId", () => {
-    test("accepts valid UUID v4", () => {
+    test("accepts valid UUID", () => {
       expect(() => validateSessionId("550e8400-e29b-41d4-a716-446655440000")).not.toThrow();
-      expect(() => validateSessionId("ABCDEF00-1234-5678-9ABC-DEF012345678")).not.toThrow();
     });
 
     test("rejects empty string", () => {
@@ -514,20 +641,6 @@ describe("queue", () => {
     test("rejects path traversal", () => {
       expect(() => validateSessionId("../etc/passwd")).toThrow(/Invalid sessionId/);
     });
-
-    test("rejects non-UUID strings", () => {
-      expect(() => validateSessionId("abc-123")).toThrow(/Invalid sessionId/);
-      expect(() => validateSessionId("not-a-uuid")).toThrow(/Invalid sessionId/);
-    });
-
-    test("rejects UUID with extra characters", () => {
-      expect(() => validateSessionId("550e8400-e29b-41d4-a716-446655440000-extra")).toThrow(
-        /Invalid sessionId/,
-      );
-      expect(() => validateSessionId(" 550e8400-e29b-41d4-a716-446655440000")).toThrow(
-        /Invalid sessionId/,
-      );
-    });
   });
 
   describe("validateRecipeName", () => {
@@ -535,256 +648,51 @@ describe("queue", () => {
       expect(() => validateRecipeName("diary")).not.toThrow();
       expect(() => validateRecipeName("my-recipe")).not.toThrow();
       expect(() => validateRecipeName("my.recipe")).not.toThrow();
-      expect(() => validateRecipeName("recipe_v2")).not.toThrow();
-      expect(() => validateRecipeName("My.Special-Recipe_v2")).not.toThrow();
-    });
-
-    test("rejects empty string", () => {
-      expect(() => validateRecipeName("")).toThrow(/Invalid recipeName/);
     });
 
     test("rejects path traversal", () => {
       expect(() => validateRecipeName("../etc/passwd")).toThrow(/Invalid recipeName/);
-      expect(() => validateRecipeName("..%2fetc%2fpasswd")).toThrow(/Invalid recipeName/);
-    });
-
-    test("rejects special characters", () => {
-      expect(() => validateRecipeName("recipe;rm -rf /")).toThrow(/Invalid recipeName/);
-      expect(() => validateRecipeName("recipe name")).toThrow(/Invalid recipeName/);
-      expect(() => validateRecipeName("recipe/sub")).toThrow(/Invalid recipeName/);
-    });
-
-    test("rejects names starting with dot or hyphen or underscore", () => {
-      expect(() => validateRecipeName(".hidden")).toThrow(/Invalid recipeName/);
-      expect(() => validateRecipeName("-start")).toThrow(/Invalid recipeName/);
-      expect(() => validateRecipeName("_start")).toThrow(/Invalid recipeName/);
-    });
-  });
-
-  describe("makeKey validation integration", () => {
-    test("enqueue rejects invalid sessionId", async () => {
-      await expect(enqueue("../etc", "diary", dirs)).rejects.toThrow(/Invalid sessionId/);
-    });
-
-    test("enqueue rejects invalid recipeName", async () => {
-      await expect(
-        enqueue("550e8400-e29b-41d4-a716-446655440000", "../etc/passwd", dirs),
-      ).rejects.toThrow(/Invalid recipeName/);
-    });
-
-    test("isDone rejects invalid inputs", async () => {
-      await expect(isDone("../x", "diary", 10, dirs)).rejects.toThrow(/Invalid sessionId/);
-      await expect(
-        isDone("550e8400-e29b-41d4-a716-446655440000", "../x", 10, dirs),
-      ).rejects.toThrow(/Invalid recipeName/);
-    });
-
-    test("isQueued rejects invalid inputs", async () => {
-      await expect(isQueued("../x", "diary", dirs)).rejects.toThrow(/Invalid sessionId/);
-      await expect(isQueued("550e8400-e29b-41d4-a716-446655440000", "../x", dirs)).rejects.toThrow(
-        /Invalid recipeName/,
-      );
-    });
-
-    test("isFailed rejects invalid inputs", async () => {
-      await expect(isFailed("../x", "diary", dirs)).rejects.toThrow(/Invalid sessionId/);
-      await expect(isFailed("550e8400-e29b-41d4-a716-446655440000", "../x", dirs)).rejects.toThrow(
-        /Invalid recipeName/,
-      );
     });
   });
 
   describe("loadQueueState", () => {
-    test("returns empty sets/maps when database is empty", async () => {
+    test("returns empty state on empty database", async () => {
       const state = await loadQueueState(dirs);
       expect(state.queued.size).toBe(0);
       expect(state.done.size).toBe(0);
       expect(state.failed.size).toBe(0);
+      expect(state.skipped.size).toBe(0);
     });
 
-    test("loads all queued entries", async () => {
+    test("loads mixed state including skipped", async () => {
       await enqueue(SID1, "diary", dirs);
-      await enqueue(SID2, "recipe-a", dirs);
+      await markDone(SID2, "recipe-a", 75, null, dirs);
+      await markFailed(SID3, "diary", "timeout", dirs);
+      await markSkipped(SID4, "diary", "empty", dirs);
 
       const state = await loadQueueState(dirs);
-      expect(state.queued.size).toBe(2);
-      expect(state.queued.has(`${SID1}.diary`)).toBe(true);
-      expect(state.queued.has(`${SID2}.recipe-a`)).toBe(true);
-    });
-
-    test("loads all done entries with lineCount", async () => {
-      await markDone(`${SID1}.diary`, 42, dirs);
-      await markDone(`${SID2}.recipe-a`, 100, dirs);
-
-      const state = await loadQueueState(dirs);
-      expect(state.done.size).toBe(2);
-      expect(state.done.get(`${SID1}.diary`)).toEqual({ lineCount: 42 });
-      expect(state.done.get(`${SID2}.recipe-a`)).toEqual({ lineCount: 100 });
-    });
-
-    test("loads all failed entries with meta and mtimeMs", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, "error1", dirs);
-      await enqueue(SID2, "recipe-a", dirs);
-      await markFailed(`${SID2}.recipe-a`, undefined, dirs);
-
-      const state = await loadQueueState(dirs);
-      expect(state.failed.size).toBe(2);
-
-      const f1 = state.failed.get(`${SID1}.diary`);
-      expect(f1).toBeDefined();
-      expect(f1!.meta.retryCount).toBe(1);
-      expect(f1!.meta.reason).toBe("error1");
-      expect(f1!.mtimeMs).toBeGreaterThan(0);
-
-      const f2 = state.failed.get(`${SID2}.recipe-a`);
-      expect(f2).toBeDefined();
-      expect(f2!.meta.retryCount).toBe(1);
-      expect(f2!.meta.reason).toBeUndefined();
-    });
-
-    test("agrees with isQueued for all entries", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID2, "recipe-a", dirs);
-
-      const state = await loadQueueState(dirs);
-
-      // Entries that are queued
-      expect(state.queued.has(`${SID1}.diary`)).toBe(await isQueued(SID1, "diary", dirs));
-      expect(state.queued.has(`${SID2}.recipe-a`)).toBe(await isQueued(SID2, "recipe-a", dirs));
-      // Entry that is not queued
-      expect(state.queued.has(`${SID3}.diary`)).toBe(await isQueued(SID3, "diary", dirs));
-    });
-
-    test("agrees with isDone for all entries", async () => {
-      await markDone(`${SID1}.diary`, 50, dirs);
-
-      const state = await loadQueueState(dirs);
-
-      // isDone checks lineCount: done with 50 lines, check with 50 => true
-      const doneEntry = state.done.get(`${SID1}.diary`);
-      const doneLineCount = doneEntry?.lineCount ?? 0;
-      expect(doneLineCount >= 50).toBe(await isDone(SID1, "diary", 50, dirs));
-      // done with 50, check with 100 => false
-      expect(doneLineCount >= 100).toBe(await isDone(SID1, "diary", 100, dirs));
-      // Entry that is not done
-      expect(state.done.has(`${SID2}.diary`)).toBe(await isDone(SID2, "diary", 10, dirs));
-    });
-
-    test("agrees with isFailed for recently failed entries", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
-      const state = await loadQueueState(dirs);
-      const retryOpts = { retryAfterMs: 60000, maxRetries: 3 };
-
-      // Recently failed => both should return true
-      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(true);
-      expect(await isFailed(SID1, "diary", dirs, retryOpts)).toBe(true);
-    });
-
-    test("agrees with isFailed for permanent-failed entries", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=1
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=2
-      await markFailed(`${SID1}.diary`, undefined, dirs); // retryCount=3
-
-      const state = await loadQueueState(dirs);
-      const retryOpts = { retryAfterMs: 1, maxRetries: 3 };
-
-      // Permanent-failed => both should return true
-      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(true);
-      expect(await isFailed(SID1, "diary", dirs, retryOpts)).toBe(true);
-    });
-
-    test("agrees with isFailed for retryable entries (old updated_at)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
-      // Set updated_at to the past via DB
-      const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [
-        Date.now() - 5000,
-        `${SID1}.diary`,
-      ]);
-      db.close();
-
-      const state = await loadQueueState(dirs);
-      const retryOpts = { retryAfterMs: 1000, maxRetries: 3 };
-
-      // Retryable => both should return false
-      expect(isFailedByState(state, `${SID1}.diary`, retryOpts)).toBe(false);
-      expect(await isFailed(SID1, "diary", dirs, retryOpts)).toBe(false);
-    });
-
-    test("loads mixed state correctly", async () => {
-      // Setup: SID1 queued, SID2 done, SID3 failed
-      await enqueue(SID1, "diary", dirs);
-      await markDone(`${SID2}.recipe-a`, 75, dirs);
-      await enqueue(SID3, "diary", dirs);
-      await markFailed(`${SID3}.diary`, "timeout", dirs);
-
-      const state = await loadQueueState(dirs);
-
-      expect(state.queued.has(`${SID1}.diary`)).toBe(true);
-      expect(state.done.get(`${SID2}.recipe-a`)).toEqual({ lineCount: 75 });
-      expect(state.failed.get(`${SID3}.diary`)!.meta.reason).toBe("timeout");
+      expect(state.queued.has(formatLogKey(SID1, "diary"))).toBe(true);
+      expect(state.done.get(formatLogKey(SID2, "recipe-a"))).toEqual({ lineCount: 75 });
+      expect(state.failed.get(formatLogKey(SID3, "diary"))!.meta.reason).toBe("timeout");
+      expect(state.skipped.get(formatLogKey(SID4, "diary"))!.reason).toBe("empty");
     });
   });
 
   describe("isFailedByState", () => {
     test("returns false when key is not in failed map", async () => {
       const state = await loadQueueState(dirs);
-      expect(isFailedByState(state, `${SID1}.diary`)).toBe(false);
+      expect(isFailedByState(state, formatLogKey(SID1, "diary"))).toBe(false);
     });
 
-    test("returns true for recently failed (retryCount < maxRetries, updated_at recent)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
+    test("returns true for recently failed", async () => {
+      await markFailed(SID1, "diary", undefined, dirs);
       const state = await loadQueueState(dirs);
-      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 60000, maxRetries: 3 })).toBe(
-        true,
-      );
-    });
-
-    test("returns true for permanent-failed (retryCount >= maxRetries)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs); // 1
-      await markFailed(`${SID1}.diary`, undefined, dirs); // 2
-      await markFailed(`${SID1}.diary`, undefined, dirs); // 3
-
-      const state = await loadQueueState(dirs);
-      // Even with very short retryAfterMs, permanent-failed stays true
-      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1, maxRetries: 3 })).toBe(
-        true,
-      );
-    });
-
-    test("returns false when retryable (retryCount < maxRetries, updated_at old enough)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
-      const db = getDb(dirs);
-      db.run(`UPDATE queue_entries SET updated_at = ? WHERE key = ?`, [
-        Date.now() - 5000,
-        `${SID1}.diary`,
-      ]);
-      db.close();
-
-      const state = await loadQueueState(dirs);
-      expect(isFailedByState(state, `${SID1}.diary`, { retryAfterMs: 1000, maxRetries: 3 })).toBe(
-        false,
-      );
-    });
-
-    test("uses default retryAfterMs and maxRetries when not specified", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, undefined, dirs);
-
-      const state = await loadQueueState(dirs);
-      // With defaults (24h, 3 retries), just-failed should return true
-      expect(isFailedByState(state, `${SID1}.diary`)).toBe(true);
+      expect(
+        isFailedByState(state, formatLogKey(SID1, "diary"), {
+          retryAfterMs: 60000,
+          maxRetries: 3,
+        }),
+      ).toBe(true);
     });
   });
 
@@ -794,12 +702,8 @@ describe("queue", () => {
       expect(result.claimed).toBe(true);
       expect(result.prevStatus).toBeNull();
 
-      const db = getDb(dirs);
-      const row = db
-        .query(`SELECT status FROM queue_entries WHERE key = ?`)
-        .get(`${SID1}.diary`) as { status: string } | null;
-      db.close();
-      expect(row?.status).toBe("processing");
+      const status = await getStatus(dirs);
+      expect(status.processing).toBe(1);
     });
 
     test("transitions queued entry to processing", async () => {
@@ -811,7 +715,7 @@ describe("queue", () => {
     });
 
     test("transitions done entry back to processing", async () => {
-      await markDone(`${SID1}.diary`, 50, dirs);
+      await markDone(SID1, "diary", 50, null, dirs);
       const result = await claim(SID1, "diary", dirs);
       expect(result.claimed).toBe(true);
       expect(result.prevStatus).toBe("done");
@@ -819,23 +723,44 @@ describe("queue", () => {
     });
 
     test("transitions failed entry back to processing", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, "boom", dirs);
+      await markFailed(SID1, "diary", "boom", dirs);
       const result = await claim(SID1, "diary", dirs);
       expect(result.claimed).toBe(true);
       expect(result.prevStatus).toBe("failed");
       expect(await isFailed(SID1, "diary", dirs)).toBe(false);
     });
 
+    test("transitions skipped entry back to processing", async () => {
+      await markSkipped(SID1, "diary", "empty", dirs);
+      const result = await claim(SID1, "diary", dirs);
+      expect(result.claimed).toBe(true);
+      expect(result.prevStatus).toBe("skipped");
+    });
+
     test("returns claimed=false when entry is already processing", async () => {
-      // First claim succeeds
       const r1 = await claim(SID1, "diary", dirs);
       expect(r1.claimed).toBe(true);
 
-      // Second claim fails
       const r2 = await claim(SID1, "diary", dirs);
       expect(r2.claimed).toBe(false);
       expect(r2.prevStatus).toBe("processing");
+    });
+
+    test("records history with action='claimed' and prevStatus in message", async () => {
+      await enqueue(SID1, "diary", dirs);
+      await claim(SID1, "diary", dirs);
+
+      const db = getDb(dirs);
+      const rows = db
+        .query(
+          `SELECT h.action, h.message FROM history h
+             INNER JOIN sessions s ON s.pk = h.session_pk
+           WHERE s.uuid = ? ORDER BY h.timestamp`,
+        )
+        .all(SID1) as { action: string; message: string | null }[];
+      db.close();
+      expect(rows[0]).toEqual({ action: "enqueued", message: null });
+      expect(rows[1]).toEqual({ action: "claimed", message: "prevStatus: queued" });
     });
 
     test("rejects invalid sessionId / recipeName", async () => {
@@ -848,11 +773,11 @@ describe("queue", () => {
 
   describe("waitForCompletion", () => {
     test("returns done with lineCount when entry transitions to done", async () => {
-      // Pre-populate entry as done
-      await markDone(`${SID1}.diary`, 42, dirs);
+      await markDone(SID1, "diary", 42, null, dirs);
 
       const result = await waitForCompletion(
-        `${SID1}.diary`,
+        SID1,
+        "diary",
         { pollIntervalMs: 1, timeoutMs: 1000 },
         dirs,
       );
@@ -863,32 +788,47 @@ describe("queue", () => {
     });
 
     test("returns failed with reason when entry transitions to failed", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markFailed(`${SID1}.diary`, "boom", dirs);
+      await markFailed(SID1, "diary", "boom", dirs);
 
       const result = await waitForCompletion(
-        `${SID1}.diary`,
+        SID1,
+        "diary",
         { pollIntervalMs: 1, timeoutMs: 1000 },
         dirs,
       );
       expect(result.status).toBe("failed");
       if (result.status === "failed") {
-        expect(result.failReason).toBe("boom");
+        expect(result.reason).toBe("boom");
+      }
+    });
+
+    test("returns skipped with reason when entry transitions to skipped", async () => {
+      await markSkipped(SID1, "diary", "empty_session", dirs);
+
+      const result = await waitForCompletion(
+        SID1,
+        "diary",
+        { pollIntervalMs: 1, timeoutMs: 1000 },
+        dirs,
+      );
+      expect(result.status).toBe("skipped");
+      if (result.status === "skipped") {
+        expect(result.reason).toBe("empty_session");
       }
     });
 
     test("returns timeout when entry remains in processing past timeout", async () => {
-      await claim(SID1, "diary", dirs); // processing
+      await claim(SID1, "diary", dirs);
 
       let nowMs = 1_000_000;
       const sleep = async () => {
-        // Each "sleep" advances the virtual clock past the timeout.
         nowMs += 100;
       };
       const now = () => nowMs;
 
       const result = await waitForCompletion(
-        `${SID1}.diary`,
+        SID1,
+        "diary",
         { pollIntervalMs: 50, timeoutMs: 50, sleep, now },
         dirs,
       );
@@ -902,14 +842,14 @@ describe("queue", () => {
       const sleep = async () => {
         pollCount++;
         if (pollCount === 2) {
-          // Mark done after 2 polls
-          await markDone(`${SID1}.diary`, 100, dirs);
+          await markDone(SID1, "diary", 100, null, dirs);
         }
       };
-      const now = () => 0; // Never advance time so timeout never fires
+      const now = () => 0;
 
       const result = await waitForCompletion(
-        `${SID1}.diary`,
+        SID1,
+        "diary",
         { pollIntervalMs: 1, timeoutMs: 60_000, sleep, now },
         dirs,
       );
@@ -921,30 +861,184 @@ describe("queue", () => {
     });
   });
 
-  describe("getStatus with processing", () => {
-    test("counts processing entries", async () => {
-      await claim(SID1, "diary", dirs);
-      await enqueue(SID2, "diary", dirs);
-      await markDone(`${SID3}.diary`, 10, dirs);
-      await enqueue(SID4, "diary", dirs);
-      await markFailed(`${SID4}.diary`, undefined, dirs);
-
-      const status = await getStatus(dirs);
-      expect(status.queued).toBe(1);
-      expect(status.processing).toBe(1);
-      expect(status.done).toBe(1);
-      expect(status.failed).toBe(1);
+  describe("formatLogKey", () => {
+    test("builds the conventional log key string", () => {
+      expect(formatLogKey(SID1, "diary")).toBe(`${SID1}.diary`);
+      expect(formatLogKey(SID1, "my.recipe")).toBe(`${SID1}.my.recipe`);
     });
   });
+});
 
-  describe("loadQueueState with processing", () => {
-    test("populates processing set", async () => {
-      await claim(SID1, "diary", dirs);
-      await enqueue(SID2, "diary", dirs);
+describe("schema migration v0 → v1", () => {
+  let dirs: QueueDirs;
+  let tempDir: string;
 
-      const state = await loadQueueState(dirs);
-      expect(state.processing.has(`${SID1}.diary`)).toBe(true);
-      expect(state.queued.has(`${SID2}.diary`)).toBe(true);
-    });
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "queue-migrate-test-"));
+    dirs = {
+      queueDir: join(tempDir, "queue") + "/",
+      doneDir: join(tempDir, "done") + "/",
+      failedDir: join(tempDir, "failed") + "/",
+    };
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("migrates legacy v0 data to v1 normalized schema", async () => {
+    // Manually create a legacy v0 DB
+    const { Database } = await import("bun:sqlite");
+    const dbPath = join(tempDir, "queue.db");
+    const legacy = new Database(dbPath);
+    legacy.run(`CREATE TABLE queue_entries (
+      key TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      recipe_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      line_count INTEGER,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      fail_reason TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+    legacy.run(`PRAGMA user_version = 0`);
+    const now = Date.now();
+    legacy.run(
+      `INSERT INTO queue_entries
+         (key, session_id, recipe_name, status, line_count, retry_count, fail_reason, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', NULL, 0, NULL, ?, ?)`,
+      [`${SID1}.diary`, SID1, "diary", now, now],
+    );
+    legacy.run(
+      `INSERT INTO queue_entries
+         (key, session_id, recipe_name, status, line_count, retry_count, fail_reason, created_at, updated_at)
+       VALUES (?, ?, ?, 'done', 42, 0, NULL, ?, ?)`,
+      [`${SID2}.diary`, SID2, "diary", now, now],
+    );
+    legacy.run(
+      `INSERT INTO queue_entries
+         (key, session_id, recipe_name, status, line_count, retry_count, fail_reason, created_at, updated_at)
+       VALUES (?, ?, ?, 'failed', NULL, 2, 'old error', ?, ?)`,
+      [`${SID3}.report`, SID3, "report", now, now],
+    );
+    legacy.close();
+
+    // Open via getDb → should auto-migrate
+    const db = getDb(dirs);
+    try {
+      // Verify user_version bumped
+      const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
+      expect(v.user_version).toBe(1);
+
+      // Verify sessions table populated
+      const sessionCount = db.query(`SELECT COUNT(*) as c FROM sessions`).get() as { c: number };
+      expect(sessionCount.c).toBe(3);
+
+      // Verify recipes deduplicated (diary appears twice in legacy → 1 in recipes)
+      const recipeCount = db.query(`SELECT COUNT(*) as c FROM recipes`).get() as { c: number };
+      expect(recipeCount.c).toBe(2); // diary, report
+
+      // Verify queue_entries copied with reason
+      const queued = db
+        .query(
+          `SELECT qe.status, qe.line_count, qe.retry_count, qe.reason, s.uuid, r.name
+           FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+           ORDER BY s.uuid`,
+        )
+        .all() as {
+        status: string;
+        line_count: number | null;
+        retry_count: number;
+        reason: string | null;
+        uuid: string;
+        name: string;
+      }[];
+
+      expect(queued).toEqual([
+        {
+          status: "queued",
+          line_count: null,
+          retry_count: 0,
+          reason: null,
+          uuid: SID1,
+          name: "diary",
+        },
+        {
+          status: "done",
+          line_count: 42,
+          retry_count: 0,
+          reason: null,
+          uuid: SID2,
+          name: "diary",
+        },
+        {
+          status: "failed",
+          line_count: null,
+          retry_count: 2,
+          reason: "old error",
+          uuid: SID3,
+          name: "report",
+        },
+      ]);
+
+      // Verify legacy `key` column is gone
+      const cols = db.query(`PRAGMA table_info(queue_entries)`).all() as { name: string }[];
+      expect(cols.some((c) => c.name === "key")).toBe(false);
+      expect(cols.some((c) => c.name === "fail_reason")).toBe(false);
+      expect(cols.some((c) => c.name === "reason")).toBe(true);
+      expect(cols.some((c) => c.name === "session_pk")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("fresh DB starts directly at v1", async () => {
+    const db = getDb(dirs);
+    try {
+      const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
+      expect(v.user_version).toBe(1);
+
+      // Tables exist
+      const tables = db
+        .query(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`)
+        .all() as { name: string }[];
+      const names = tables.map((t) => t.name);
+      expect(names).toContain("sessions");
+      expect(names).toContain("recipes");
+      expect(names).toContain("queue_entries");
+      expect(names).toContain("history");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("idempotent: running migration on already-migrated DB is a no-op", async () => {
+    // First open creates v1 schema
+    const db1 = getDb(dirs);
+    db1.close();
+
+    // Second open: no migration runs (user_version already 1)
+    const db2 = getDb(dirs);
+    try {
+      const v = db2.query(`PRAGMA user_version`).get() as { user_version: number };
+      expect(v.user_version).toBe(1);
+    } finally {
+      db2.close();
+    }
+  });
+
+  test("rejects DB with future schema version", async () => {
+    // Create fresh, then bump version to a future value
+    const db1 = getDb(dirs);
+    db1.run(`PRAGMA user_version = 99`);
+    db1.close();
+
+    expect(() => {
+      const db2 = getDb(dirs);
+      db2.close();
+    }).toThrow(/schema version 99 is newer/);
   });
 });

@@ -48,8 +48,24 @@ async function readFiles(dirPath: string): Promise<string[]> {
 }
 
 /**
- * ファイルベースのキューデータを SQLite に移行する。
+ * Parse legacy filename of the form `${sessionId}.${recipeName}`.
+ * UUID is exactly 36 chars; first dot separates sessionId from recipeName.
+ */
+function parseLegacyKey(key: string): { sessionId: string; recipeName: string } {
+  const firstDot = key.indexOf(".");
+  return {
+    sessionId: key.slice(0, firstDot),
+    recipeName: key.slice(firstDot + 1),
+  };
+}
+
+/**
+ * ファイルベースのキューデータを SQLite (v1 normalized schema) に移行する。
  * 既にマイグレーション済み（.bak ディレクトリが存在）の場合はスキップ。
+ *
+ * Design rationale: getDb() が PRAGMA user_version を見て v0→v1 のスキーマ移行
+ * （単一テーブル → 正規化）は自動で行うため、ここではファイル → 正規化済み
+ * SQLite への一段階移行に集中する。
  *
  * @returns 移行したエントリ数、またはスキップ時は null
  */
@@ -66,13 +82,26 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
     return null;
   }
 
-  // 3. SQLite DB を open
+  // 3. SQLite DB を open（getDb() が新スキーマを CREATE する）
   const db = getDb(dirs);
   let count = 0;
 
   try {
-    // 4. トランザクション内で移行
     db.run("BEGIN");
+
+    const insertSession = db.prepare(`INSERT OR IGNORE INTO sessions (uuid) VALUES (?)`);
+    const selectSessionPk = db.prepare(`SELECT pk FROM sessions WHERE uuid = ?`);
+    const insertRecipe = db.prepare(`INSERT OR IGNORE INTO recipes (name) VALUES (?)`);
+    const selectRecipePk = db.prepare(`SELECT pk FROM recipes WHERE name = ?`);
+
+    function getSessionPk(sessionId: string): number {
+      insertSession.run(sessionId);
+      return (selectSessionPk.get(sessionId) as { pk: number }).pk;
+    }
+    function getRecipePk(recipeName: string): number {
+      insertRecipe.run(recipeName);
+      return (selectRecipePk.get(recipeName) as { pk: number }).pk;
+    }
 
     // Collect done keys first to handle queue/done duplicates
     const doneKeys = new Set<string>();
@@ -85,37 +114,37 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
       const lineCount = content.trim() === "" ? 0 : parseInt(content.trim(), 10);
       const fileStat = await stat(filePath);
 
-      const key = filename;
-      const firstDot = key.indexOf(".");
-      const sessionId = key.slice(0, firstDot);
-      const recipeName = key.slice(firstDot + 1);
+      const { sessionId, recipeName } = parseLegacyKey(filename);
+      const sessionPk = getSessionPk(sessionId);
+      const recipePk = getRecipePk(recipeName);
 
       db.run(
-        `INSERT OR REPLACE INTO queue_entries (key, session_id, recipe_name, status, line_count, retry_count, created_at, updated_at)
-         VALUES (?, ?, ?, 'done', ?, 0, ?, ?)`,
-        [key, sessionId, recipeName, lineCount, fileStat.mtimeMs, fileStat.mtimeMs],
+        `INSERT OR REPLACE INTO queue_entries
+           (session_pk, recipe_pk, status, line_count, retry_count, created_at, updated_at)
+         VALUES (?, ?, 'done', ?, 0, ?, ?)`,
+        [sessionPk, recipePk, lineCount, fileStat.mtimeMs, fileStat.mtimeMs],
       );
-      doneKeys.add(key);
+      doneKeys.add(filename);
       count++;
     }
 
     // 4a. queue/ の全ファイルを読む（done にある key はスキップ）
     const queueFiles = await readFiles(resolved.queueDir);
     for (const filename of queueFiles) {
-      const key = filename;
-      if (doneKeys.has(key)) continue; // done を優先
+      if (doneKeys.has(filename)) continue;
 
       const filePath = join(resolved.queueDir, filename);
       const fileStat = await stat(filePath);
 
-      const firstDot = key.indexOf(".");
-      const sessionId = key.slice(0, firstDot);
-      const recipeName = key.slice(firstDot + 1);
+      const { sessionId, recipeName } = parseLegacyKey(filename);
+      const sessionPk = getSessionPk(sessionId);
+      const recipePk = getRecipePk(recipeName);
 
       db.run(
-        `INSERT OR IGNORE INTO queue_entries (key, session_id, recipe_name, status, retry_count, created_at, updated_at)
-         VALUES (?, ?, ?, 'queued', 0, ?, ?)`,
-        [key, sessionId, recipeName, fileStat.mtimeMs, fileStat.mtimeMs],
+        `INSERT OR IGNORE INTO queue_entries
+           (session_pk, recipe_pk, status, retry_count, created_at, updated_at)
+         VALUES (?, ?, 'queued', 0, ?, ?)`,
+        [sessionPk, recipePk, fileStat.mtimeMs, fileStat.mtimeMs],
       );
       count++;
     }
@@ -142,15 +171,15 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
         }
       }
 
-      const key = filename;
-      const firstDot = key.indexOf(".");
-      const sessionId = key.slice(0, firstDot);
-      const recipeName = key.slice(firstDot + 1);
+      const { sessionId, recipeName } = parseLegacyKey(filename);
+      const sessionPk = getSessionPk(sessionId);
+      const recipePk = getRecipePk(recipeName);
 
       db.run(
-        `INSERT OR IGNORE INTO queue_entries (key, session_id, recipe_name, status, retry_count, fail_reason, created_at, updated_at)
-         VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)`,
-        [key, sessionId, recipeName, retryCount, reason, fileStat.mtimeMs, fileStat.mtimeMs],
+        `INSERT OR IGNORE INTO queue_entries
+           (session_pk, recipe_pk, status, retry_count, reason, created_at, updated_at)
+         VALUES (?, ?, 'failed', ?, ?, ?, ?)`,
+        [sessionPk, recipePk, retryCount, reason, fileStat.mtimeMs, fileStat.mtimeMs],
       );
       count++;
     }
@@ -160,11 +189,10 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
     db.run("ROLLBACK");
     throw err;
   } finally {
-    // 5. DB を close
     db.close();
   }
 
-  // 6. ディレクトリをリネーム
+  // 5. ディレクトリをリネーム
   if (await dirExists(resolved.queueDir)) {
     await rename(resolved.queueDir.replace(/\/$/, ""), bakPath(resolved.queueDir));
   }
@@ -175,6 +203,5 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
     await rename(resolved.failedDir.replace(/\/$/, ""), bakPath(resolved.failedDir));
   }
 
-  // 7. 移行したエントリ数を返す
   return count;
 }

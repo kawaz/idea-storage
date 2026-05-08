@@ -41,7 +41,7 @@ describe("migrateIfNeeded", () => {
     expect(result).toBeNull();
   });
 
-  test("queue ファイルを SQLite に移行する", async () => {
+  test("queue ファイルを SQLite (v1) に移行する", async () => {
     await mkdir(dirs.queueDir, { recursive: true });
     await Bun.write(join(dirs.queueDir, `${SID1}.diary`), "");
     await Bun.write(join(dirs.queueDir, `${SID2}.report`), "");
@@ -49,17 +49,25 @@ describe("migrateIfNeeded", () => {
     const result = await migrateIfNeeded(dirs);
     expect(result).toBe(2);
 
-    // DB に queued エントリが存在する
     const db = getDb(dirs);
     const rows = db
-      .query("SELECT key, status FROM queue_entries WHERE status = 'queued'")
-      .all() as { key: string; status: string }[];
+      .query(
+        `SELECT s.uuid, r.name, qe.status FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+           INNER JOIN recipes r ON r.pk = qe.recipe_pk
+         WHERE qe.status = 'queued'
+         ORDER BY s.uuid`,
+      )
+      .all() as { uuid: string; name: string; status: string }[];
     db.close();
-    expect(rows.length).toBe(2);
+    expect(rows).toEqual([
+      { uuid: SID1, name: "diary", status: "queued" },
+      { uuid: SID2, name: "report", status: "queued" },
+    ]);
   });
 
   test("done ファイルを SQLite に移行する", async () => {
-    await mkdir(dirs.queueDir, { recursive: true }); // queue dir must exist for migration trigger
+    await mkdir(dirs.queueDir, { recursive: true });
     await mkdir(dirs.doneDir, { recursive: true });
     await Bun.write(join(dirs.doneDir, `${SID1}.diary`), "42");
 
@@ -68,8 +76,13 @@ describe("migrateIfNeeded", () => {
 
     const db = getDb(dirs);
     const row = db
-      .query("SELECT line_count FROM queue_entries WHERE key = ? AND status = 'done'")
-      .get(`${SID1}.diary`) as { line_count: number } | null;
+      .query(
+        `SELECT qe.line_count FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+           INNER JOIN recipes r ON r.pk = qe.recipe_pk
+         WHERE s.uuid = ? AND r.name = ? AND qe.status = 'done'`,
+      )
+      .get(SID1, "diary") as { line_count: number } | null;
     db.close();
     expect(row).not.toBeNull();
     expect(row!.line_count).toBe(42);
@@ -89,13 +102,16 @@ describe("migrateIfNeeded", () => {
     const db = getDb(dirs);
     const row = db
       .query(
-        "SELECT retry_count, fail_reason FROM queue_entries WHERE key = ? AND status = 'failed'",
+        `SELECT qe.retry_count, qe.reason FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+           INNER JOIN recipes r ON r.pk = qe.recipe_pk
+         WHERE s.uuid = ? AND r.name = ? AND qe.status = 'failed'`,
       )
-      .get(`${SID1}.diary`) as { retry_count: number; fail_reason: string | null } | null;
+      .get(SID1, "diary") as { retry_count: number; reason: string | null } | null;
     db.close();
     expect(row).not.toBeNull();
     expect(row!.retry_count).toBe(2);
-    expect(row!.fail_reason).toBe("timeout");
+    expect(row!.reason).toBe("timeout");
   });
 
   test("failed の空ファイルは retryCount=0 で移行する", async () => {
@@ -107,8 +123,12 @@ describe("migrateIfNeeded", () => {
 
     const db = getDb(dirs);
     const row = db
-      .query("SELECT retry_count FROM queue_entries WHERE key = ?")
-      .get(`${SID1}.diary`) as { retry_count: number } | null;
+      .query(
+        `SELECT qe.retry_count FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+         WHERE s.uuid = ?`,
+      )
+      .get(SID1) as { retry_count: number } | null;
     db.close();
     expect(row!.retry_count).toBe(0);
   });
@@ -133,8 +153,12 @@ describe("migrateIfNeeded", () => {
 
     const db = getDb(dirs);
     const row = db
-      .query("SELECT status, line_count FROM queue_entries WHERE key = ?")
-      .get(`${SID1}.diary`) as { status: string; line_count: number | null } | null;
+      .query(
+        `SELECT qe.status, qe.line_count FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+         WHERE s.uuid = ?`,
+      )
+      .get(SID1) as { status: string; line_count: number | null } | null;
     db.close();
     expect(row!.status).toBe("done");
     expect(row!.line_count).toBe(100);
@@ -172,15 +196,19 @@ describe("migrateIfNeeded", () => {
     expect(result).toBe(3);
 
     const db = getDb(dirs);
-    const all = db.query("SELECT key, status FROM queue_entries ORDER BY key").all() as {
-      key: string;
-      status: string;
-    }[];
+    const all = db
+      .query(
+        `SELECT s.uuid, r.name, qe.status FROM queue_entries qe
+           INNER JOIN sessions s ON s.pk = qe.session_pk
+           INNER JOIN recipes r ON r.pk = qe.recipe_pk
+         ORDER BY s.uuid`,
+      )
+      .all() as { uuid: string; name: string; status: string }[];
     db.close();
     expect(all).toEqual([
-      { key: `${SID1}.diary`, status: "queued" },
-      { key: `${SID2}.report`, status: "done" },
-      { key: `${SID3}.summary`, status: "failed" },
+      { uuid: SID1, name: "diary", status: "queued" },
+      { uuid: SID2, name: "report", status: "done" },
+      { uuid: SID3, name: "summary", status: "failed" },
     ]);
   });
 });
