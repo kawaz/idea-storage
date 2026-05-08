@@ -26,6 +26,60 @@ interface ListEntry {
   project: string;
 }
 
+export const VALID_OUTPUT_FORMATS = ["text", "json", "jsonl"] as const;
+export type OutputFormat = (typeof VALID_OUTPUT_FORMATS)[number];
+
+export function isOutputFormat(s: string): s is OutputFormat {
+  return (VALID_OUTPUT_FORMATS as readonly string[]).includes(s);
+}
+
+export function validateOutputFormat(value: string | undefined): OutputFormat {
+  if (value === undefined || value === "") return "text";
+  if (!isOutputFormat(value)) {
+    throw new Error(
+      `Invalid format: ${value}. Valid values: ${VALID_OUTPUT_FORMATS.join(", ")}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * JSON-safe shape for an article entry. All fields are plain JS values with
+ * snake_case keys (matching `claude-session-analysis` conventions).
+ *
+ * - Dates → ISO 8601 strings (or null)
+ * - File path is the absolute path to the article .md
+ * - `size_bytes` is the article file size; `session_bytes` is the source
+ *   session JSONL size as reported by CSA / frontmatter
+ */
+export interface ArticleJsonEntry {
+  path: string;
+  size_bytes: number;
+  recipe: string;
+  session_id: string;
+  project: string;
+  session_start: string | null;
+  session_end: string | null;
+  duration_ms: number | null;
+  user_turns: number | null;
+  session_bytes: number | null;
+}
+
+export function toArticleJsonEntry(entry: ListEntry): ArticleJsonEntry {
+  return {
+    path: entry.fullPath,
+    size_bytes: entry.sizeBytes,
+    recipe: entry.recipe,
+    session_id: entry.sessionId,
+    project: entry.project,
+    session_start: entry.sessionStart ? entry.sessionStart.toISOString() : null,
+    session_end: entry.sessionEnd ? entry.sessionEnd.toISOString() : null,
+    duration_ms: entry.durationMs,
+    user_turns: entry.userTurns,
+    session_bytes: entry.sessionBytes,
+  };
+}
+
 const VALID_SORT_KEYS = ["start", "end", "duration", "turn", "rule"] as const;
 type SortKey = (typeof VALID_SORT_KEYS)[number];
 

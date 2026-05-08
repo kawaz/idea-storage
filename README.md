@@ -18,11 +18,17 @@ bun run build
 idea-storage session run               # Scan sessions, enqueue, and process until done
 idea-storage session enqueue           # Find matching sessions and add to queue
 idea-storage session process           # Process one item from the queue
+idea-storage session convert \
+    --session <id> --recipe <name>     # Convert a specific (session, recipe) pair directly
 idea-storage session list              # List all sessions
 idea-storage session status            # Show queue status
 idea-storage session retry <KEY>       # Re-queue a failed entry
 idea-storage session cleanup           # Remove orphaned failed entries
 ```
+
+`session convert` runs a specific session/recipe pair directly, bypassing queue order
+(useful for re-running a single recipe or testing a new one). If the queue worker is
+already processing, it waits for completion before running.
 
 ### `article` -- Browse generated articles
 
