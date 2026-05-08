@@ -1,9 +1,9 @@
-export class SpawnTimeoutError extends Error {
-  readonly timeoutMs: number;
+import { BaseTimeoutError } from "./timeout-error.ts";
+
+export class SpawnTimeoutError extends BaseTimeoutError {
   constructor(timeoutMs: number) {
-    super(`subprocess timed out after ${timeoutMs}ms`);
+    super(`subprocess timed out after ${timeoutMs}ms`, timeoutMs);
     this.name = "SpawnTimeoutError";
-    this.timeoutMs = timeoutMs;
   }
 }
 
