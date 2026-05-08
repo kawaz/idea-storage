@@ -332,97 +332,78 @@ export interface RunProcessOptions {
   signal?: AbortSignal;
 }
 
-export async function runProcess(options: RunProcessOptions = {}): Promise<ProcessResult> {
-  const entry = await dequeue();
-  if (!entry) {
-    log({ msg: "no_items_in_queue" });
-    return "empty";
-  }
+// --- Pure session processing function ---
 
-  const { sessionId, recipeName, key } = entry;
-  const config = await loadConfig();
-  const dataDir = getDataDir();
+/**
+ * 純粋なセッション処理関数。
+ * queue 操作（dequeue/markDone/markFailed/getDoneLineCount）は呼ばない。
+ *
+ * 入力で受け取った meta/recipe/sessionStats を使って、CSA timeline 取得 →
+ * Claude 呼び出し → 出力ファイル書き出しを行う。
+ *
+ * 戻り値:
+ * - kind: "processed": 出力ファイルを書き出した
+ * - kind: "skipped":   会話が空などで処理不要だった (lineCount は markDone 用)
+ *
+ * 例外:
+ * - 処理失敗（CSA エラー、claude エラー、空セッションなど）は Error を throw する
+ */
+export interface ProcessSessionInput {
+  sessionId: string;
+  recipe: Recipe;
+  meta: SessionMeta;
+  sessionStats: { turns?: number; bytes?: number; duration_ms?: number };
+  dataDir: string;
+  taskTimeoutMs?: number;
+  signal?: AbortSignal;
+  /**
+   * true の場合、recipe.onExisting と previousLineCount による
+   * 「append note 追加」「skip 判定」を全てスキップして強制的に処理する。
+   * Convert コマンドのように明示指示で実行する場合に使う。
+   */
+  forceProcess?: boolean;
+  /**
+   * append note を付けるかどうか (forceProcess=false かつ runProcess が
+   * recipe.onExisting === "append" と判定した場合に true を渡す)。
+   */
+  appendPreviousRunNote?: boolean;
+  /** ロギング用の key (デフォルト: `${sessionId}.${recipe.name}`) */
+  logKey?: string;
+}
 
-  // Find session file
-  const sessionFile = await findSessionFile(config.claudeDirs, sessionId);
-  if (!sessionFile) {
-    log({ key, msg: "session_file_not_found" });
-    await markFailed(key, "session file not found");
-    return "failed";
-  }
+export type ProcessSessionResult =
+  | { kind: "processed"; outputFile: string; lineCount: number }
+  | { kind: "skipped"; reason: string; lineCount: number };
 
-  // Find recipe
-  let recipes: Recipe[];
-  try {
-    recipes = await loadRecipes(getRecipesDir());
-  } catch {
-    throw new CliError(
-      `No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`,
-    );
-  }
+export async function processSession(input: ProcessSessionInput): Promise<ProcessSessionResult> {
+  const {
+    sessionId,
+    recipe,
+    meta,
+    sessionStats,
+    dataDir,
+    taskTimeoutMs,
+    signal,
+    forceProcess = false,
+    appendPreviousRunNote = false,
+  } = input;
+  const recipeName = recipe.name;
+  const key = input.logKey ?? `${sessionId}.${recipeName}`;
 
-  const recipe = findRecipeByName(recipes, recipeName);
-  if (!recipe) {
-    log({ key, msg: "recipe_not_found", recipe: recipeName });
-    await markFailed(key, `recipe not found: ${recipeName}`);
-    return "failed";
-  }
-
-  // Get session metadata
-  const meta = await getSessionMeta(sessionFile);
-
-  // Early skip for empty session files (0 lines = no parseable JSONL content)
+  // Empty session checks (apply even with forceProcess=true: nothing to process)
   if (meta.lineCount === 0) {
     log({ key, msg: "empty_session" });
-    await markFailed(key, "empty session (0 lines)");
-    return "failed";
+    throw new Error("empty session (0 lines)");
   }
-
-  // Early skip for sessions that have no user/assistant turns.
-  // Some sessions contain only summary + file-history-snapshot and would cause
-  // claude to fail because there is nothing to summarize/analyze.
   if ((meta.userTurns ?? 0) === 0) {
     log({ key, msg: "empty_session", reason: "no_user_turns" });
-    await markFailed(key, "empty session (no user turns)");
-    return "failed";
+    throw new Error("empty session (no user turns)");
   }
 
-  // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
-  let sessionStats: { turns?: number; bytes?: number; duration_ms?: number } = {};
-  try {
-    const statsResult = await spawnWithTimeout({
-      cmd: [csaBin, "sessions", "--format", "jsonl", sessionId],
-      timeoutMs: CSA_TIMEOUT_MS,
-    });
-    const line = statsResult.stdout.trim().split("\n")[0];
-    if (line) sessionStats = JSON.parse(line);
-  } catch (err) {
-    if (err instanceof SpawnTimeoutError) {
-      logError({ key, msg: "csa_stats_timeout", timeoutMs: CSA_TIMEOUT_MS });
-    }
-    // fallback: use meta values
-  }
-
-  // Determine mode based on on_existing and done state
+  // Build prompt (apply append note only when not forced)
   let prompt = recipe.prompt;
-  let hasPreviousRun = false;
-  const prevLineCount = await getDoneLineCount(sessionId, recipeName);
-  if (prevLineCount !== null && meta.lineCount > prevLineCount) {
-    hasPreviousRun = true;
-  }
-
-  if (hasPreviousRun) {
-    switch (recipe.onExisting) {
-      case "skip":
-        log({ key, msg: "skip", reason: "already_processed" });
-        return "processed";
-      case "append":
-        prompt += "\n\n---\nNote: Session continued. Please append to existing entry.";
-        break;
-      case "separate":
-        // New file, no modification needed
-        break;
-    }
+  if (!forceProcess && appendPreviousRunNote) {
+    prompt += "\n\n---\nNote: Session continued. Please append to existing entry.";
   }
 
   const sizeBytes = sessionStats.bytes ?? null;
@@ -440,23 +421,20 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
 
     if (csaResult.exitCode !== 0) {
       logError({ key, msg: "csa_failed", exitCode: csaResult.exitCode, stderr: csaResult.stderr });
-      await markFailed(key, `csa failed with exit code ${csaResult.exitCode}`);
-      return "failed";
+      throw new Error(`csa failed with exit code ${csaResult.exitCode}`);
     }
     convText = csaResult.stdout;
   } catch (err) {
     if (err instanceof SpawnTimeoutError) {
       logError({ key, msg: "csa_timeline_timeout", timeoutMs: CSA_TIMEOUT_MS });
-      await markFailed(key, `csa timeline timed out after ${CSA_TIMEOUT_MS}ms`);
-      return "failed";
+      throw new Error(`csa timeline timed out after ${CSA_TIMEOUT_MS}ms`);
     }
     throw err;
   }
 
   if (!convText.trim()) {
     log({ key, msg: "skip", reason: "no_conversation" });
-    await markDone(key, meta.lineCount);
-    return "processed";
+    return { kind: "skipped", reason: "no_conversation", lineCount: meta.lineCount };
   }
 
   // フォークセッションの場合、タイムラインを切り詰め＋プロンプト調整
@@ -466,8 +444,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
 
     if (!meta.forkInfo.firstNewUuid) {
       log({ key, msg: "skip", reason: "fork_no_new_conversation" });
-      await markDone(key, meta.lineCount);
-      return "processed";
+      return { kind: "skipped", reason: "fork_no_new_conversation", lineCount: meta.lineCount };
     }
 
     const originalLen = convText.length;
@@ -479,12 +456,10 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   // チャンク分割の判定
   const chunks = splitTimeline(timelineText);
 
-  const { taskTimeoutMs, signal } = options;
+  let output: string;
+  const sessionStart = meta.startTime.toISOString();
 
   try {
-    let output: string;
-    const sessionStart = meta.startTime.toISOString();
-
     if (chunks.length > 1) {
       log({ key, msg: "chunked", chunks: chunks.length });
       output = await processChunked(
@@ -518,54 +493,166 @@ ${timelineText}`;
         onUsageObserved: recordWorkerObservation,
       });
     }
-
-    // Generate frontmatter
-    const sessionEnd = meta.endTime ? meta.endTime.toISOString() : "unknown";
-    const generatedAt = new Date().toISOString();
-    const fmData: Record<string, unknown> = {
-      session_id: sessionId,
-      project: meta.project || "unknown",
-      session_start: sessionStart,
-      session_end: sessionEnd,
-      generated_at: generatedAt,
-      recipe: recipeName,
-      user_turns: sessionStats.turns ?? meta.userTurns,
-      session_bytes: sessionStats.bytes,
-      duration_ms: sessionStats.duration_ms,
-    };
-    if (meta.forkInfo) {
-      fmData.forked_from = meta.forkInfo.parentSessionId;
-    }
-    const fm = generateFrontmatter(fmData);
-
-    // Output file path: {dataDir}/{recipeName}/YYYY/MM/DD/{yyyymmddTHHMMSSZ}.{sessionId}.md
-    const datePath = formatDatePath(meta.startTime);
-    const outputDir = join(dataDir, recipeName, datePath);
-    await mkdir(outputDir, { recursive: true });
-
-    const fileTs = formatFileTimestamp(meta.startTime);
-    const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`);
-
-    await Bun.write(outputFile, fm + output);
-    await markDone(key, meta.lineCount);
-    log({ key, msg: "success", output: outputFile });
   } catch (err) {
-    const reason =
-      err instanceof ClaudeTimeoutError
-        ? `task timeout after ${err.timeoutMs}ms`
-        : err instanceof Error
-          ? err.message
-          : String(err);
     if (err instanceof ClaudeTimeoutError) {
       logError({ key, msg: "task_timeout", timeoutMs: err.timeoutMs });
-    } else {
-      logError({ key, msg: "failed", error: reason });
+      throw new Error(`task timeout after ${err.timeoutMs}ms`);
     }
-    await markFailed(key, reason);
+    const reason = err instanceof Error ? err.message : String(err);
+    logError({ key, msg: "failed", error: reason });
+    throw err instanceof Error ? err : new Error(reason);
+  }
+
+  // Generate frontmatter
+  const sessionEnd = meta.endTime ? meta.endTime.toISOString() : "unknown";
+  const generatedAt = new Date().toISOString();
+  const fmData: Record<string, unknown> = {
+    session_id: sessionId,
+    project: meta.project || "unknown",
+    session_start: sessionStart,
+    session_end: sessionEnd,
+    generated_at: generatedAt,
+    recipe: recipeName,
+    user_turns: sessionStats.turns ?? meta.userTurns,
+    session_bytes: sessionStats.bytes,
+    duration_ms: sessionStats.duration_ms,
+  };
+  if (meta.forkInfo) {
+    fmData.forked_from = meta.forkInfo.parentSessionId;
+  }
+  const fm = generateFrontmatter(fmData);
+
+  // Output file path: {dataDir}/{recipeName}/YYYY/MM/DD/{yyyymmddTHHMMSSZ}.{sessionId}.md
+  const datePath = formatDatePath(meta.startTime);
+  const outputDir = join(dataDir, recipeName, datePath);
+  await mkdir(outputDir, { recursive: true });
+
+  const fileTs = formatFileTimestamp(meta.startTime);
+  const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`);
+
+  await Bun.write(outputFile, fm + output);
+  log({ key, msg: "success", output: outputFile });
+
+  return { kind: "processed", outputFile, lineCount: meta.lineCount };
+}
+
+/**
+ * Fetch session stats from claude-session-analysis.
+ * Best-effort: returns empty object if CSA fails or times out.
+ */
+export async function fetchSessionStats(
+  sessionId: string,
+  logKey: string,
+): Promise<{ turns?: number; bytes?: number; duration_ms?: number }> {
+  try {
+    const statsResult = await spawnWithTimeout({
+      cmd: [csaBin, "sessions", "--format", "jsonl", sessionId],
+      timeoutMs: CSA_TIMEOUT_MS,
+    });
+    const line = statsResult.stdout.trim().split("\n")[0];
+    if (line) return JSON.parse(line);
+    return {};
+  } catch (err) {
+    if (err instanceof SpawnTimeoutError) {
+      logError({ key: logKey, msg: "csa_stats_timeout", timeoutMs: CSA_TIMEOUT_MS });
+    }
+    return {};
+  }
+}
+
+/**
+ * Load recipes, throwing a CliError with a helpful message if the recipes dir
+ * doesn't exist. Shared by runProcess and runConvert.
+ */
+export async function loadRecipesOrFail(): Promise<Recipe[]> {
+  try {
+    return await loadRecipes(getRecipesDir());
+  } catch {
+    throw new CliError(
+      `No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`,
+    );
+  }
+}
+
+export { findRecipeByName };
+
+export async function runProcess(options: RunProcessOptions = {}): Promise<ProcessResult> {
+  const entry = await dequeue();
+  if (!entry) {
+    log({ msg: "no_items_in_queue" });
+    return "empty";
+  }
+
+  const { sessionId, recipeName, key } = entry;
+  const config = await loadConfig();
+  const dataDir = getDataDir();
+
+  // Find session file
+  const sessionFile = await findSessionFile(config.claudeDirs, sessionId);
+  if (!sessionFile) {
+    log({ key, msg: "session_file_not_found" });
+    await markFailed(key, "session file not found");
     return "failed";
   }
 
-  return "processed";
+  // Find recipe
+  const recipes = await loadRecipesOrFail();
+
+  const recipe = findRecipeByName(recipes, recipeName);
+  if (!recipe) {
+    log({ key, msg: "recipe_not_found", recipe: recipeName });
+    await markFailed(key, `recipe not found: ${recipeName}`);
+    return "failed";
+  }
+
+  // Get session metadata
+  const meta = await getSessionMeta(sessionFile);
+
+  // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
+  const sessionStats = await fetchSessionStats(sessionId, key);
+
+  // Determine mode based on on_existing and done state
+  let hasPreviousRun = false;
+  const prevLineCount = await getDoneLineCount(sessionId, recipeName);
+  if (prevLineCount !== null && meta.lineCount > prevLineCount) {
+    hasPreviousRun = true;
+  }
+
+  let appendPreviousRunNote = false;
+  if (hasPreviousRun) {
+    switch (recipe.onExisting) {
+      case "skip":
+        log({ key, msg: "skip", reason: "already_processed" });
+        return "processed";
+      case "append":
+        appendPreviousRunNote = true;
+        break;
+      case "separate":
+        // New file, no modification needed
+        break;
+    }
+  }
+
+  try {
+    const result = await processSession({
+      sessionId,
+      recipe,
+      meta,
+      sessionStats,
+      dataDir,
+      taskTimeoutMs: options.taskTimeoutMs,
+      signal: options.signal,
+      forceProcess: false,
+      appendPreviousRunNote,
+      logKey: key,
+    });
+    await markDone(key, result.lineCount);
+    return "processed";
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    await markFailed(key, reason);
+    return "failed";
+  }
 }
 
 const sessionProcess = define({
