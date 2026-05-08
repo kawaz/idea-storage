@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- Added DR-006 covering the CI/CD setup with GitHub Actions.
+- Added DR-0006 covering the CI/CD setup with GitHub Actions.
 
 ## [0.1.0] - 2026-05-08
 
@@ -90,7 +90,7 @@ First tagged snapshot of the TypeScript/Bun rewrite of idea-storage.
 
 ### Documentation
 
-- Added design records, including DR-004 (queue persistence design).
+- Added design records, including DR-0004 (queue persistence design).
 - Added a rate-limit-aware scheduling section to the README.
 
 [Unreleased]: https://github.com/kawaz/idea-storage/compare/v0.1.0...HEAD

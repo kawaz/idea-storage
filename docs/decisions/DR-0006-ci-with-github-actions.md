@@ -1,4 +1,4 @@
-# DR-006: CI/CD with GitHub Actions
+# DR-0006: CI/CD with GitHub Actions
 
 ## 背景
 

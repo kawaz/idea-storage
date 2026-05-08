@@ -1,8 +1,8 @@
-# DR-007: session convert subcommand and queue state model extension
+# DR-0007: session convert subcommand and queue state model extension
 
 ## 背景
 
-queue は newest-first で dequeue する設計（DR-004 / `feedback_dequeue_newest_first.md`）のため、新規エンキューが続くと古いセッションのレシピが永遠に処理されない構造的な問題があった。さらに「特定の (session, recipe) を明示的に再変換したい」というニーズに対し、CLI からそれを指示する手段が存在しなかった。
+queue は newest-first で dequeue する設計（DR-0004 / `feedback_dequeue_newest_first.md`）のため、新規エンキューが続くと古いセッションのレシピが永遠に処理されない構造的な問題があった。さらに「特定の (session, recipe) を明示的に再変換したい」というニーズに対し、CLI からそれを指示する手段が存在しなかった。
 
 加えて、worker を並列で動かしたい / CLI 経由で手動再変換したい場合に、同じ (session, recipe) を二重処理するレースを防ぐ機構が無かった（旧設計は dequeue = `DELETE` で取り出してから処理する形式）。
 

@@ -1,4 +1,4 @@
-# DR-005: Rate Limits を考慮した自律スキップ
+# DR-0005: Rate Limits を考慮した自律スキップ
 
 ## 背景
 

@@ -147,7 +147,7 @@ your own interactive usage is outpacing elapsed time.
 - `idea-storage session status` shows the latest observation and the current
   skip/proceed decision.
 
-See `docs/decisions/dr-005-rate-limits-aware-scheduling.md` for the full design.
+See `docs/decisions/DR-0005-rate-limits-aware-scheduling.md` for the full design.
 
 ## Data Paths
 
