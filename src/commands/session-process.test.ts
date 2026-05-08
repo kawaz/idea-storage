@@ -800,6 +800,130 @@ describe("processChunked single chunk", () => {
   });
 });
 
+// --- redact integration テスト ---
+
+describe("processSession redact integration", () => {
+  const dummyMeta: import("../types/index.ts").SessionMeta = {
+    id: "redact-session-id",
+    filePath: "/tmp/redact-session.jsonl",
+    ageSec: 3600,
+    hasEnd: true,
+    startTime: new Date("2025-01-01T00:00:00Z"),
+    endTime: new Date("2025-01-01T01:00:00Z"),
+    project: "redact-test-project",
+    lineCount: 10,
+    userTurns: 1,
+  };
+
+  let workDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "redact-integration-"));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  test("タイムラインに含まれる secret は Claude に渡される前に redact される", async () => {
+    // CSA timeline 取得を spawnWithTimeout モックでシミュレート
+    const akia = "AKIAIOSFODNN7EXAMPLE";
+    const fakeTimeline = `---
+session: redact-session-id
+---
+2025-01-01T00:00:00+00:00 Uaaa11111
+my aws key is ${akia} please be careful`;
+
+    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
+      stdout: fakeTimeline,
+      stderr: "",
+      exitCode: 0,
+    }));
+    mock.module("../lib/spawn-timeout.ts", () => ({
+      spawnWithTimeout: spawnMock,
+      SpawnTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`subprocess timed out after ${timeoutMs}ms`);
+          this.name = "SpawnTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+    }));
+
+    // runClaude を spy: prompt を捕捉する
+    const runClaudeCalls: Array<{ prompt: string }> = [];
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async (options: { prompt: string }) => {
+        runClaudeCalls.push({ prompt: options.prompt });
+        return "# Title\n\nFake article output";
+      }),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    // log を console.log 経由で捕捉
+    const logLines: string[] = [];
+    const origLog = console.log;
+    console.log = (line: string) => {
+      logLines.push(line);
+    };
+
+    try {
+      const { processSession } = await import("./session-process.ts");
+      const result = await processSession({
+        sessionId: "redact-session-id",
+        recipe: {
+          name: "diary",
+          filePath: "/tmp/recipe-diary.md",
+          match: {},
+          onExisting: "append",
+          prompt: "Write a diary",
+        } as import("../types/index.ts").Recipe,
+        meta: dummyMeta,
+        sessionStats: { turns: 1, bytes: 100 },
+        dataDir: workDir,
+      });
+      expect(result.kind).toBe("processed");
+    } finally {
+      console.log = origLog;
+    }
+
+    // runClaude が呼ばれた
+    expect(runClaudeCalls.length).toBe(1);
+    const passedPrompt = runClaudeCalls[0]!.prompt;
+
+    // プロンプトに redact 後のプレースホルダが含まれ、AKIA キーは含まれない
+    expect(passedPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
+    expect(passedPrompt).not.toContain(akia);
+
+    // redacted ログが count >= 1 で出ている
+    const redactLog = logLines
+      .map((l) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry && entry.msg === "redacted");
+    expect(redactLog).toBeDefined();
+    expect(redactLog!.count).toBeGreaterThanOrEqual(1);
+  });
+});
+
 // --- フォークセッションのタイムライン切り詰めテスト ---
 import { trimTimelineForFork } from "./session-process.ts";
 

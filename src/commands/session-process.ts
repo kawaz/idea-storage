@@ -21,6 +21,7 @@ import {
 import { spawnWithTimeout, SpawnTimeoutError } from "../lib/spawn-timeout.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
+import { redactSecrets } from "../lib/redact.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
 
@@ -453,6 +454,15 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
     timelineText = trimTimelineForFork(convText, meta.forkInfo.firstNewUuid);
     log({ key, msg: "trimmed", from: originalLen, to: timelineText.length });
     prompt += `\n\n---\nNote: このセッションは元セッション ${meta.forkInfo.parentSessionId} からフォークされたものです。以下のタイムラインはフォーク後の新規会話のみです。`;
+  }
+
+  // Redact secrets from the timeline before sending to Claude.
+  // Best-effort filter: applies to both the prompt sent to the API and (by
+  // extension) anything the model may transcribe into the output article.
+  const redacted = redactSecrets(timelineText);
+  timelineText = redacted.text;
+  if (redacted.count > 0) {
+    log({ key, msg: "redacted", count: redacted.count });
   }
 
   // チャンク分割の判定
