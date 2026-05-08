@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withIsolatedClaudeEnv } from "../lib/test-fixtures.ts";
 
 // Use valid UUID-format session IDs for the new validation logic.
 const MISSING_SID = "11111111-1111-4111-a111-111111111111";
@@ -89,9 +90,11 @@ describe("session-process", () => {
       key: `${MISSING_SID}.diary`,
     };
     tempDir = await mkdtemp(join(tmpdir(), "session-process-test-"));
-    claudeDir = join(tempDir, "claude");
+    // Dotted name so CSA's `$HOME/.claude*/settings.json` glob discovers it.
+    claudeDir = join(tempDir, ".claude");
     // Create projects dir so Bun.Glob.scan doesn't throw
     await mkdir(join(claudeDir, "projects"), { recursive: true });
+    await Bun.write(join(claudeDir, "settings.json"), "{}");
     loadConfigResult = {
       claudeDirs: [claudeDir],
       minAgeMinutes: 120,
@@ -129,6 +132,8 @@ describe("session-process", () => {
       type: "user",
       timestamp: sessionStart,
       uuid: `${NORECIPE_SID.slice(0, 8)}-line-0001`,
+      // Include sessionId so CSA stamps the correct id on its record.
+      sessionId: NORECIPE_SID,
       cwd: "/tmp/test-project",
       message: { role: "user", content: "Hello" },
     });
@@ -155,7 +160,10 @@ describe("session-process", () => {
     await Bun.write(join(projectDir, `${EMPTY_SID}.jsonl`), "");
 
     const { runProcess } = await import("./session-process.ts");
-    const result = await runProcess();
+    // Isolate CSA discovery to our temp claudeDir so the empty fixture file
+    // is the one CSA finds (and then returns no record for, exercising the
+    // zero-meta synth in getSessionMetaBatch for 0-byte files).
+    const result = await withIsolatedClaudeEnv(tempDir, () => runProcess());
 
     // Empty session is now treated as a successful skip, not a failure
     expect(result).toBe("processed");
@@ -289,12 +297,12 @@ describe("processChunked", () => {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "test-project",
     lineCount: 100,
     userTurns: 5,
+    effectiveUserTurns: 3,
   };
 
   function makeChunks(
@@ -547,12 +555,12 @@ describe("processChunked external signal propagation", () => {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "test-project",
     lineCount: 100,
     userTurns: 5,
+    effectiveUserTurns: 3,
   };
 
   function makeChunks(count: number): import("../lib/chunker.ts").TimelineChunk[] {
@@ -708,12 +716,12 @@ describe("processChunked single chunk", () => {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "test-project",
     lineCount: 100,
     userTurns: 5,
+    effectiveUserTurns: 3,
   };
 
   function makeChunks(count: number): import("../lib/chunker.ts").TimelineChunk[] {
@@ -798,12 +806,12 @@ describe("processSession redact integration", () => {
     id: "redact-session-id",
     filePath: "/tmp/redact-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "redact-test-project",
     lineCount: 10,
     userTurns: 1,
+    effectiveUserTurns: 1,
   };
 
   let workDir: string;
@@ -1003,12 +1011,12 @@ describe("processSession fork guard (#16)", () => {
     id: "fork-empty-session-id",
     filePath: "/tmp/fork-empty-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "fork-test-project",
     lineCount: 10,
     userTurns: 1,
+    effectiveUserTurns: 1,
   };
 
   let workDir: string;
@@ -1104,12 +1112,12 @@ describe("processSession CSA timeline validation (#17)", () => {
     id: "invalid-csa-session-id",
     filePath: "/tmp/invalid-csa-session.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "invalid-csa-project",
     lineCount: 10,
     userTurns: 1,
+    effectiveUserTurns: 1,
   };
 
   let workDir: string;
@@ -1255,12 +1263,12 @@ describe("processChunked external abort during retry (#18)", () => {
     id: "abort-during-retry-session",
     filePath: "/tmp/abort-during-retry.jsonl",
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00Z"),
     endTime: new Date("2025-01-01T01:00:00Z"),
     project: "abort-test-project",
     lineCount: 100,
     userTurns: 5,
+    effectiveUserTurns: 3,
   };
 
   function makeChunks(count: number): import("../lib/chunker.ts").TimelineChunk[] {

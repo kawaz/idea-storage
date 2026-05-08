@@ -35,11 +35,16 @@ describe("session-list", () => {
         projectShort: string;
         lineCount: number;
         ageSec: number;
-        hasEnd: boolean;
         userTurns: number;
         sessionBytes: number;
+        startTime: Date | null;
+        endTime: Date | null;
       }> = {},
     ) {
+      const startTime =
+        overrides.startTime === undefined ? new Date("2026-05-26T01:00:00Z") : overrides.startTime;
+      const endTime =
+        overrides.endTime === undefined ? new Date("2026-05-26T03:30:00Z") : overrides.endTime;
       return {
         id: overrides.id ?? "abcdef01-2345-6789-abcd-ef0123456789",
         filePath:
@@ -49,9 +54,10 @@ describe("session-list", () => {
         projectShort: overrides.projectShort ?? "foo",
         lineCount: overrides.lineCount ?? 234,
         ageSec: overrides.ageSec ?? 12345,
-        hasEnd: overrides.hasEnd ?? true,
         userTurns: overrides.userTurns ?? 21,
         sessionBytes: overrides.sessionBytes ?? 1234567,
+        startTime,
+        endTime,
       };
     }
 
@@ -68,10 +74,24 @@ describe("session-list", () => {
       expect(j.status).toBe("ended");
     });
 
-    test("status reflects hasEnd=false as 'active'", () => {
-      const j = toSessionJsonEntry(makeEntry({ hasEnd: false }));
+    test("status reflects missing endTime as 'active'", () => {
+      const j = toSessionJsonEntry(makeEntry({ endTime: null }));
       expect(j.status).toBe("active");
       expect(j.has_end).toBe(false);
+    });
+
+    test("includes started_at / ended_at / duration_sec", () => {
+      const j = toSessionJsonEntry(makeEntry());
+      expect(j.started_at).toBe("2026-05-26T01:00:00.000Z");
+      expect(j.ended_at).toBe("2026-05-26T03:30:00.000Z");
+      expect(j.duration_sec).toBe(2 * 3600 + 30 * 60);
+    });
+
+    test("null timestamps yield null duration", () => {
+      const j = toSessionJsonEntry(makeEntry({ startTime: null, endTime: null }));
+      expect(j.started_at).toBeNull();
+      expect(j.ended_at).toBeNull();
+      expect(j.duration_sec).toBeNull();
     });
 
     test("JSON output contains no ANSI escape sequences", () => {
@@ -86,7 +106,7 @@ describe("session-list", () => {
     });
 
     test("JSONL line is valid JSON per row and single-line", () => {
-      const entries = [makeEntry(), makeEntry({ hasEnd: false })].map(toSessionJsonEntry);
+      const entries = [makeEntry(), makeEntry({ endTime: null })].map(toSessionJsonEntry);
       const lines = entries.map((e) => JSON.stringify(e));
       for (const line of lines) {
         expect(line).not.toContain("\n");

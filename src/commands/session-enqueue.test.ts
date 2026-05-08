@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withIsolatedClaudeEnv } from "../lib/test-fixtures.ts";
 import type { Recipe } from "../types/index.ts";
 
 // --- Mock setup (must be before importing runEnqueue) ---
@@ -94,12 +95,14 @@ describe("session-enqueue", () => {
 
     const jsonlLines: string[] = [];
 
-    // First line: user message with cwd
+    // First line: user message with cwd. Each entry includes `sessionId` so
+    // CSA stamps the right id on the emitted record (otherwise sessionId is "?").
     jsonlLines.push(
       JSON.stringify({
         type: "user",
         timestamp: sessionStart,
         uuid: `${sessionId.slice(0, 8)}-line-0001`,
+        sessionId,
         cwd: project,
         message: { role: "user", content: "Hello" },
       }),
@@ -112,6 +115,7 @@ describe("session-enqueue", () => {
           type: "assistant",
           timestamp: new Date(now - ageMs + i * 1000).toISOString(),
           uuid: `${sessionId.slice(0, 8)}-line-${String(i + 1).padStart(4, "0")}`,
+          sessionId,
           message: { role: "assistant", content: [{ type: "text", text: `Response ${i}` }] },
         }),
       );
@@ -123,6 +127,7 @@ describe("session-enqueue", () => {
         JSON.stringify({
           type: "summary",
           timestamp: new Date(now - ageMs + lines * 1000).toISOString(),
+          sessionId,
           summary: "Session ended",
         }),
       );
@@ -140,8 +145,12 @@ describe("session-enqueue", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "session-enqueue-test-"));
-    claudeDir = join(tempDir, "claude");
+    // CSA discovers Claude config dirs via $HOME/.claude*/settings.json glob.
+    // Using a dotted name lets multiple parallel claudeDirs (e.g. `.claude`,
+    // `.claude2`) be picked up from the same HOME override.
+    claudeDir = join(tempDir, ".claude");
     await mkdir(join(claudeDir, "projects"), { recursive: true });
+    await Bun.write(join(claudeDir, "settings.json"), "{}");
 
     // Reset mock state
     mockClaudeDirs = [claudeDir];
@@ -156,6 +165,16 @@ describe("session-enqueue", () => {
     doneMap.clear();
   });
 
+  /**
+   * Run the enqueue command with CSA pointed at the temp claudeDir so the real
+   * `claude-session-analysis` bin discovers the fixture JSONL files instead of
+   * the user's actual ~/.claude.
+   */
+  async function runEnqueueIsolated(): Promise<void> {
+    const { runEnqueue } = await import("./session-enqueue.ts");
+    await withIsolatedClaudeEnv(tempDir, () => runEnqueue());
+  }
+
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -163,8 +182,7 @@ describe("session-enqueue", () => {
   test("claudeDirs の projects ディレクトリが存在しない場合、何もエンキューしない", async () => {
     mockClaudeDirs = [join(tempDir, "nonexistent")];
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -183,8 +201,7 @@ describe("session-enqueue", () => {
     const validUuid = "12345678-1234-1234-1234-123456789abc";
     await createSessionFile(projectsDir, validUuid, { subDir: "test-project" });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     // Only the valid UUID session should be enqueued
     expect(enqueueCalls).toHaveLength(1);
@@ -199,8 +216,7 @@ describe("session-enqueue", () => {
     // Pre-mark as queued
     queuedSet.add(`${sessionId}.diary`);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     // enqueue should not be called (already queued)
     expect(enqueueCalls).toHaveLength(0);
@@ -214,8 +230,7 @@ describe("session-enqueue", () => {
     // Mark as done with enough lines (5 lines in the session)
     doneMap.set(`${sessionId}.diary`, 5);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -228,8 +243,7 @@ describe("session-enqueue", () => {
     // Mark as done with fewer lines than current
     doneMap.set(`${sessionId}.diary`, 5);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(1);
     expect(enqueueCalls[0]!.sessionId).toBe(sessionId);
@@ -243,8 +257,7 @@ describe("session-enqueue", () => {
     // Mark as failed
     failedSet.add(`${sessionId}.diary`);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -254,8 +267,7 @@ describe("session-enqueue", () => {
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(1);
     expect(enqueueCalls[0]).toEqual({ sessionId, recipeName: "diary" });
@@ -276,8 +288,7 @@ describe("session-enqueue", () => {
       project: "/home/user/other-project",
     });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -292,8 +303,7 @@ describe("session-enqueue", () => {
       ageMs: 30 * 60 * 1000,
     });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -307,8 +317,7 @@ describe("session-enqueue", () => {
     await createSessionFile(projectsDir, session1, { subDir: "proj-a" });
     await createSessionFile(projectsDir, session2, { subDir: "proj-b" });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     // 2 sessions x 2 recipes = 4 enqueue calls
     expect(enqueueCalls).toHaveLength(4);
@@ -365,8 +374,10 @@ describe("session-enqueue", () => {
   });
 
   test("複数のclaudeDirsを走査する", async () => {
-    const claudeDir2 = join(tempDir, "claude2");
+    // Dotted name so CSA's `$HOME/.claude*/settings.json` glob finds it.
+    const claudeDir2 = join(tempDir, ".claude2");
     await mkdir(join(claudeDir2, "projects"), { recursive: true });
+    await Bun.write(join(claudeDir2, "settings.json"), "{}");
     mockClaudeDirs = [claudeDir, claudeDir2];
 
     const session1 = "11111111-1111-1111-1111-111111111111";
@@ -379,8 +390,7 @@ describe("session-enqueue", () => {
       subDir: "proj-b",
     });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     const sessionIds = enqueueCalls.map((c) => c.sessionId).sort();
     expect(sessionIds).toContain(session1);
@@ -395,8 +405,7 @@ describe("session-enqueue", () => {
     // Done with more lines than current session
     doneMap.set(`${sessionId}.diary`, 100);
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
@@ -414,8 +423,7 @@ describe("session-enqueue", () => {
     // Session has only a few user turns (< minTurns 10)
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await runEnqueue();
+    await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });

@@ -33,10 +33,10 @@
 
 DR-0008 本体に詳細を書いたのでここでは要約のみ:
 
-- **Phase 1**: CSA に分類関数を追加 / `effectiveUserTurns` 等を jsonl 列追加 / `--effective-only` フラグ追加 / idea-storage は CSA jsonl 経由に全面置換
+- **Phase 1**: CSA に分類関数を追加 / `effectiveUserTurns` 等を jsonl 列追加 / idea-storage は CSA jsonl 経由に全面置換
 - **Phase 2**: dispatcher を二段キューで実装、既存 `queue_entries.status='skipped'` と `history` テーブルを活用、recipe.hint frontmatter 任意キー、JSON 出力、structural failure は fallback、transient failure は retry
 - **Phase 3**: 品質ガードを process 末尾で一体化、出力本文のみを LLM 判定、`_rejected/` 退避、過去出力注入は frontmatter `inject_recent: N` キー
-- **段階的 ship**: Phase 1 を 3 サブ PR に分割 → Phase 2 → Phase 3
+- **段階的 ship**: Phase 1 を 2 サブ PR に分割 → Phase 2 → Phase 3
 - **追加要件**: 出力 frontmatter に `claude_model` / `claude_version` を記録（モデルバージョン追跡）
 
 ## 並行進行

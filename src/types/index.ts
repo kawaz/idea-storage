@@ -23,11 +23,11 @@ export interface SessionMeta {
   project: string;
   lineCount: number;
   ageSec: number;
-  /** summary イベントの有無 */
-  hasEnd: boolean;
   startTime: Date;
   endTime?: Date;
   userTurns: number;
+  /** ツール結果などを除いた実質的なユーザー発話ターン数（CSA 由来） */
+  effectiveUserTurns: number;
   /** フォークセッションの場合に設定される */
   forkInfo?: {
     parentSessionId: string;

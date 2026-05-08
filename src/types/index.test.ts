@@ -38,13 +38,13 @@ describe("types", () => {
       project: "/Users/kawaz/project",
       lineCount: 42,
       ageSec: 7200,
-      hasEnd: true,
       startTime: now,
       endTime: new Date(now.getTime() + 7200000),
       userTurns: 5,
+      effectiveUserTurns: 3,
     };
     expect(session.id).toBe("550e8400-e29b-41d4-a716-446655440000");
-    expect(session.hasEnd).toBe(true);
+    expect(session.effectiveUserTurns).toBe(3);
     expect(session.endTime).toBeDefined();
   });
 
@@ -55,9 +55,9 @@ describe("types", () => {
       project: "/Users/kawaz/project",
       lineCount: 10,
       ageSec: 300,
-      hasEnd: false,
       startTime: new Date(),
       userTurns: 2,
+      effectiveUserTurns: 1,
     };
     expect(session.endTime).toBeUndefined();
   });

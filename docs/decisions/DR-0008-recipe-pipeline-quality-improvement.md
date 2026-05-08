@@ -111,8 +111,6 @@ idea-storage の `getSessionMeta()` を CSA 経由に切り替えるため、以
 
 不要: `hasEnd`（summary イベントの有無）。idea-storage 側で実用利用は `session-list.ts` の "ended/active" 表示の 1 箇所のみで、`ageSec >= minAgeSec` で代替可能。
 
-CSA timeline コマンドにもフィルタフラグ追加を依頼する: `--effective-only` 相当（U イベントのうち EFFECTIVE 以外を除外）。idea-storage の process 時に「ノイズターンを除いた timeline をレシピに渡す」用途で使う。
-
 ### 5. 静的フィルタ: enqueue 時の `no_effective_turn` skip
 
 enqueue 時に CSA jsonl から `effectiveUserTurns` を取得し、0 ならそのセッション × 全 recipe について `queue_entries.status='skipped'`、`reason='no_effective_turn'`、`line_count=<現在のセッション行数>` で記録する。
@@ -372,7 +370,6 @@ CSA 側の実装が出るまで、idea-storage は `session-jsonl.ts` 旧実装�
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
 | ①   | `getSessionMeta()` を CSA jsonl 由来に移行（旧 JSONL 直読を削除）                                                                                                        | 互換性維持で動作確認                            |
 | ②   | enqueue ロジックを §5.1 の遷移ルールに従う UPSERT に変更（skipped 行も含む差分判定）。同時に `effectiveUserTurns < 1` で `skipped(no_effective_turn, line_count=N)` 記録 | フィルタ効果の単独計測 + skipped 復帰の動作確認 |
-| ③   | process 時に CSA timeline `--effective-only` を利用してノイズターンをレシピ入力から除外                                                                                  | プロンプト純化の単独計測                        |
 
 各 PR で動作観察ができる粒度で分割。
 
@@ -412,12 +409,12 @@ Effective filter pass rate (last 30 days): X.X%
 
 ## 段階的 ship 計画
 
-| Phase                  | ship タイミング                | 観察項目                                                                       |
-| ---------------------- | ------------------------------ | ------------------------------------------------------------------------------ |
-| Phase 1 (3 サブ PR)    | 各 PR ごとに ship & 観察       | skipped(no_effective_turn) 件数、出力数の変化、timeline 純化後のレシピ出力品質 |
-| Phase 2                | Phase 1 安定後                 | dispatcher fallback 率、各 recipe の採否分布、出力数の変化                     |
-| Phase 3                | Phase 2 安定後                 | quality_rejected 率、`_rejected/` 内容のスポットチェック                       |
-| Phase 4 (DR-0009 予定) | Phase 3 運用結果を見てから設計 | quality_guidelines.md の自動更新ループ                                         |
+| Phase                  | ship タイミング                | 観察項目                                                   |
+| ---------------------- | ------------------------------ | ---------------------------------------------------------- |
+| Phase 1 (2 サブ PR)    | 各 PR ごとに ship & 観察       | skipped(no_effective_turn) 件数、出力数の変化              |
+| Phase 2                | Phase 1 安定後                 | dispatcher fallback 率、各 recipe の採否分布、出力数の変化 |
+| Phase 3                | Phase 2 安定後                 | quality_rejected 率、`_rejected/` 内容のスポットチェック   |
+| Phase 4 (DR-0009 予定) | Phase 3 運用結果を見てから設計 | quality_guidelines.md の自動更新ループ                     |
 
 ## 関連 DR
 

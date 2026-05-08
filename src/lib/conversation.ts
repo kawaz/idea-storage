@@ -141,95 +141,165 @@ export async function formatConversationToText(filePath: string): Promise<string
 }
 
 /**
- * Extract session metadata from a JSONL file.
- * フォークセッションの場合、メタデータは非フォーク行のみで計算する。
+ * Session record as emitted by `claude-session-analysis sessions --format jsonl`.
+ * Timestamps are ISO8601 strings; `endTime` / `forkedFrom` / `forkFirstNewUuid`
+ * may be null. Only the fields consumed by SessionMeta are typed here.
  */
-export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
+interface CsaSessionRecord {
+  sessionId: string;
+  cwd: string;
+  startTime: string;
+  endTime: string | null;
+  lines: number;
+  turns: number;
+  effectiveUserTurns: number;
+  forkedFrom: string | null;
+  forkFirstNewUuid: string | null;
+}
+
+/**
+ * Run `claude-session-analysis sessions --format jsonl <ids...>` and return the
+ * parsed JSONL records. Batches ids to stay within argv length limits.
+ *
+ * Design rationale: CSA は必須依存。spawn 失敗時はフォールバックせず例外を投げる
+ * （旧 JSONL 直読は廃止）。バッチ呼び出しで N spawn を回避する。
+ *
+ * テスト時は mock せず、HOME / CLAUDE_CONFIG_DIR を tempDir に向けて fixture jsonl
+ * を実 CSA に読ませる方式（src/lib/test-fixtures.ts 参照）。
+ */
+async function runCsaSessions(sessionIds: string[]): Promise<unknown[]> {
+  if (sessionIds.length === 0) return [];
+  const BATCH = 200;
+  const records: unknown[] = [];
+  for (let i = 0; i < sessionIds.length; i += BATCH) {
+    const batch = sessionIds.slice(i, i + BATCH);
+    const proc = Bun.spawn(
+      ["claude-session-analysis", "sessions", "--format", "jsonl", ...batch],
+      // env を明示的に渡すことで、テスト時の process.env 変更 (HOME / CLAUDE_CONFIG_DIR
+      // 隔離) が CSA の探索先に確実に反映される。
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env } },
+    );
+    const [out, err, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(
+        `claude-session-analysis failed (exit ${exitCode}): ${err.trim() || "no stderr"}`,
+      );
+    }
+    for (const line of out.trim().split("\n")) {
+      if (!line) continue;
+      records.push(JSON.parse(line) as unknown);
+    }
+  }
+  return records;
+}
+
+/** Extract a session UUID from a JSONL file path, falling back to the basename. */
+function sessionIdFromPath(filePath: string): string {
   const filename = basename(filePath, ".jsonl");
-  // Extract UUID from filename
   const uuidMatch = filename.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  const id = uuidMatch ? uuidMatch[0] : filename;
+  return uuidMatch ? uuidMatch[0] : filename;
+}
 
-  let project = "";
-  let startTime: Date | undefined;
-  let endTime: Date | undefined;
-  let hasEnd = false;
-  let userTurns = 0;
-  let lineCount = 0;
+/** Build a SessionMeta from a CSA record + per-file age. */
+function toSessionMeta(filePath: string, rec: CsaSessionRecord, ageSec: number): SessionMeta {
+  const start = new Date(rec.startTime);
+  const meta: SessionMeta = {
+    id: rec.sessionId,
+    filePath,
+    project: rec.cwd,
+    lineCount: rec.lines,
+    ageSec,
+    startTime: Number.isNaN(start.getTime()) ? new Date(0) : start,
+    userTurns: rec.turns,
+    effectiveUserTurns: rec.effectiveUserTurns,
+  };
+  if (rec.endTime) {
+    const end = new Date(rec.endTime);
+    if (!Number.isNaN(end.getTime())) meta.endTime = end;
+  }
+  if (rec.forkedFrom) {
+    meta.forkInfo = {
+      parentSessionId: rec.forkedFrom,
+      firstNewUuid: rec.forkFirstNewUuid ?? "",
+    };
+  }
+  return meta;
+}
 
-  // Fork detection
-  let isForkSession = false;
-  let parentSessionId = "";
-  let firstNewUuid = "";
-  let forkPhase = true; // true while we're still in forked lines
+/**
+ * Extract session metadata for multiple JSONL files via CSA in a single batch
+ * (avoids N spawns). Returns a Map keyed by sessionId.
+ *
+ * `ageSec` is computed per file from `stat().mtimeMs` (CSA doesn't provide it).
+ * Throws if CSA fails or if any requested session is missing from CSA output.
+ */
+export async function getSessionMetaBatch(filePaths: string[]): Promise<Map<string, SessionMeta>> {
+  const result = new Map<string, SessionMeta>();
+  if (filePaths.length === 0) return result;
+
+  // Map sessionId -> filePath (and dedupe ids for the CSA call).
+  const idToPath = new Map<string, string>();
+  for (const filePath of filePaths) {
+    idToPath.set(sessionIdFromPath(filePath), filePath);
+  }
+  const ids = [...idToPath.keys()];
+
+  const rawRecords = await runCsaSessions(ids);
+  const byId = new Map<string, CsaSessionRecord>();
+  for (const raw of rawRecords) {
+    const rec = raw as CsaSessionRecord;
+    byId.set(rec.sessionId, rec);
+  }
 
   // File age. Clamp to 0: in tests (or on NFS with clock drift) the file mtime
   // can be microseconds in the "future" from Date.now()'s perspective,
   // yielding a negative age. Age < 0 makes no sense to callers.
-  const fileStat = await stat(filePath);
-  const ageSec = Math.max(0, Math.floor((Date.now() - fileStat.mtimeMs) / 1000));
-
-  for await (const raw of streamSessionLines(filePath)) {
-    const line = raw as SessionLine;
-
-    if (line.forkedFrom) {
-      isForkSession = true;
-      parentSessionId = line.forkedFrom.sessionId;
-      // フォーク行はスキップ（メタデータに含めない）
-      continue;
-    }
-
-    // フォークフェーズ終了: 最初の非フォーク行
-    if (forkPhase && isForkSession) {
-      forkPhase = false;
-      firstNewUuid = line.uuid ?? "";
-    }
-
-    lineCount++;
-
-    // Extract project from first non-fork line with cwd
-    if (!project && line.cwd) {
-      project = line.cwd;
-    }
-
-    // Track timestamps (non-fork lines only)
-    if (line.timestamp) {
-      const d = new Date(line.timestamp);
-      if (!Number.isNaN(d.getTime())) {
-        if (!startTime) startTime = d;
-        endTime = d;
+  for (const [id, filePath] of idToPath) {
+    const rec = byId.get(id);
+    const fileStat = await stat(filePath);
+    const ageSec = Math.max(0, Math.floor((Date.now() - fileStat.mtimeMs) / 1000));
+    if (!rec) {
+      // Design rationale: CSA は空 file (0 byte) に対して何も emit しない (header もない
+      // ため "session" として認識されない)。一方 idea-storage の pipeline は
+      // 「empty session = lineCount 0 として markSkipped」と扱う前提で processSession の
+      // 早期 return を組んでいる (session-process.ts の `meta.lineCount === 0` 分岐参照)。
+      // CSA 移行前は jsonl 直読で lineCount=0 を返していたが、CSA 委譲後はその経路が
+      // 失われた。空 file は throw せず合成 meta を返すことで旧挙動を保つ。
+      // 非空なのに CSA が record を返さないケースは真の不整合なので従来通り throw する。
+      if (fileStat.size === 0) {
+        result.set(id, {
+          id,
+          filePath,
+          project: "",
+          lineCount: 0,
+          ageSec,
+          startTime: new Date(0),
+          userTurns: 0,
+          effectiveUserTurns: 0,
+        });
+        continue;
       }
+      throw new Error(`claude-session-analysis returned no record for session ${id}`);
     }
-
-    // Count user turns (non-fork lines only)
-    if (line.type === "user") {
-      userTurns++;
-    }
-
-    // Check for summary (session end)
-    if (line.type === "summary") {
-      hasEnd = true;
-    }
+    result.set(id, toSessionMeta(filePath, rec, ageSec));
   }
+  return result;
+}
 
-  const meta: SessionMeta = {
-    id,
-    filePath,
-    project,
-    lineCount,
-    ageSec,
-    hasEnd,
-    startTime: startTime ?? new Date(0),
-    endTime,
-    userTurns,
-  };
-
-  if (isForkSession) {
-    meta.forkInfo = {
-      parentSessionId,
-      firstNewUuid,
-    };
+/**
+ * Extract session metadata for a single JSONL file. Thin wrapper over
+ * {@link getSessionMetaBatch}.
+ */
+export async function getSessionMeta(filePath: string): Promise<SessionMeta> {
+  const map = await getSessionMetaBatch([filePath]);
+  const id = sessionIdFromPath(filePath);
+  const meta = map.get(id);
+  if (!meta) {
+    throw new Error(`claude-session-analysis returned no record for session ${id}`);
   }
-
   return meta;
 }

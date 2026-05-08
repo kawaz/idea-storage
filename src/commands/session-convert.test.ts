@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withIsolatedClaudeEnv } from "../lib/test-fixtures.ts";
 
 // --- Mock setup ---
 
@@ -159,11 +160,14 @@ async function writeSessionFile(
   const sessionStart = new Date(now - ageMs).toISOString();
   const jsonlLines: string[] = [];
 
+  // Include `sessionId` so CSA stamps the correct id on its emitted record
+  // (without this field CSA reports sessionId="?").
   jsonlLines.push(
     JSON.stringify({
       type: "user",
       timestamp: sessionStart,
       uuid: `${sessionId.slice(0, 8)}-line-0001`,
+      sessionId,
       cwd: "/tmp/test-project",
       message: { role: "user", content: "Hello" },
     }),
@@ -175,6 +179,7 @@ async function writeSessionFile(
         type: "assistant",
         timestamp: new Date(now - ageMs + i * 1000).toISOString(),
         uuid: `${sessionId.slice(0, 8)}-line-${String(i + 1).padStart(4, "0")}`,
+        sessionId,
         message: { role: "assistant", content: [{ type: "text", text: `Resp ${i}` }] },
       }),
     );
@@ -187,9 +192,11 @@ async function writeSessionFile(
 describe("session-convert", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "session-convert-test-"));
-    claudeDir = join(tempDir, "claude");
+    // Dotted name so CSA's `$HOME/.claude*/settings.json` glob picks it up.
+    claudeDir = join(tempDir, ".claude");
     dataDir = join(tempDir, "data");
     await mkdir(join(claudeDir, "projects"), { recursive: true });
+    await Bun.write(join(claudeDir, "settings.json"), "{}");
     await mkdir(dataDir, { recursive: true });
 
     loadConfigResult = {
@@ -217,11 +224,27 @@ describe("session-convert", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  /**
+   * Import and call `runConvert` with CSA pointed at our temp claudeDir so the
+   * real `claude-session-analysis` bin discovers the fixture JSONL files
+   * instead of the user's actual ~/.claude.
+   */
+  async function loadRunConvert(): Promise<
+    (args: {
+      sessionId: string;
+      recipeName: string;
+      force?: boolean;
+    }) => Promise<Awaited<ReturnType<typeof import("./session-convert.ts").runConvert>>>
+  > {
+    const { runConvert } = await import("./session-convert.ts");
+    return (args) => withIsolatedClaudeEnv(tempDir, () => runConvert(args));
+  }
+
   test("正常系: 引数で指定した session_id と recipe で処理が走り、出力ファイルが生成される", async () => {
     const projectsDir = join(claudeDir, "projects");
     await writeSessionFile(projectsDir, VALID_SID);
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("processed");
@@ -246,7 +269,7 @@ describe("session-convert", () => {
   test("session_file が見つからない場合のエラー", async () => {
     // No session file created
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
       /session file not found/,
     );
@@ -260,7 +283,7 @@ describe("session-convert", () => {
     await writeSessionFile(projectsDir, VALID_SID);
     mockRecipes = [makeRecipe({ name: "other" })];
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
       /recipe not found/,
     );
@@ -274,7 +297,7 @@ describe("session-convert", () => {
     await writeSessionFile(projectsDir, VALID_SID);
     mockRecipesThrow = true;
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const { CliError } = await import("../lib/errors.ts");
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
       CliError,
@@ -286,7 +309,7 @@ describe("session-convert", () => {
     await writeSessionFile(projectsDir, VALID_SID);
     // recipe.onExisting is 'skip' by default in makeRecipe; convert should still run.
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("processed");
@@ -300,7 +323,7 @@ describe("session-convert", () => {
     claimResult = { claimed: false, prevStatus: "processing" };
     waitForCompletionResult = { status: "done", lineCount: 42 };
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("waited");
@@ -327,7 +350,7 @@ describe("session-convert", () => {
     claimResult = { claimed: false, prevStatus: "processing" };
     waitForCompletionResult = { status: "failed", reason: "boom" };
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(/boom/);
 
     expect(claimCalls).toHaveLength(1);
@@ -342,7 +365,7 @@ describe("session-convert", () => {
     claimResult = { claimed: false, prevStatus: "processing" };
     waitForCompletionResult = { status: "timeout" };
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
       /timeout/i,
     );
@@ -358,7 +381,7 @@ describe("session-convert", () => {
     await mkdir(dir, { recursive: true });
     await Bun.write(join(dir, `${VALID_SID}.jsonl`), "");
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("skipped");
@@ -417,7 +440,7 @@ describe("session-convert", () => {
 
     mockObservations = [makeOverPaceObservation(Math.floor(Date.now() / 1000))];
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const { CliError } = await import("../lib/errors.ts");
     await expect(runConvert({ sessionId: VALID_SID, recipeName: "diary" })).rejects.toThrow(
       CliError,
@@ -451,7 +474,7 @@ describe("session-convert", () => {
       },
     ];
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("processed");
@@ -465,7 +488,7 @@ describe("session-convert", () => {
 
     mockObservations = [makeOverPaceObservation(Math.floor(Date.now() / 1000))];
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary", force: true });
 
     expect(result.kind).toBe("processed");
@@ -480,7 +503,7 @@ describe("session-convert", () => {
 
     mockObservations = []; // explicit: no rate-limit observations
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("processed");
@@ -495,7 +518,7 @@ describe("session-convert", () => {
     claimResult = { claimed: false, prevStatus: "processing" };
     waitForCompletionResult = { status: "skipped", reason: "empty_session" };
 
-    const { runConvert } = await import("./session-convert.ts");
+    const runConvert = await loadRunConvert();
     const result = await runConvert({ sessionId: VALID_SID, recipeName: "diary" });
 
     expect(result.kind).toBe("skipped");

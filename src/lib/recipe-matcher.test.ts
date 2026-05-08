@@ -20,9 +20,9 @@ function makeSession(overrides: Partial<SessionMeta> = {}): SessionMeta {
     project: "/Users/kawaz/projects/myapp",
     lineCount: 200,
     ageSec: 3600,
-    hasEnd: true,
     startTime: new Date("2025-01-01T00:00:00"),
     userTurns: 5,
+    effectiveUserTurns: 3,
     ...overrides,
   };
 }

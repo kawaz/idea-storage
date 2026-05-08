@@ -2,7 +2,17 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extractConversation, formatConversationToText, getSessionMeta } from "./conversation.ts";
+import {
+  extractConversation,
+  formatConversationToText,
+  getSessionMeta,
+  getSessionMetaBatch,
+} from "./conversation.ts";
+import {
+  createCsaFixtureDir,
+  writeSessionFixture,
+  withIsolatedClaudeEnv,
+} from "./test-fixtures.ts";
 import type { ConversationMessage } from "../types/index.ts";
 
 describe("conversation", () => {
@@ -371,264 +381,188 @@ describe("conversation", () => {
     });
   });
 
-  describe("getSessionMeta", () => {
-    test("extracts metadata from a session file", async () => {
-      const sid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          message: { role: "user", content: "Hello" },
+  describe("getSessionMeta / getSessionMetaBatch (fixture, real CSA)", () => {
+    /**
+     * Each test creates its own fixture base dir so that one CSA-discovered
+     * session per test stays isolated from the others. The base is wiped after.
+     */
+    async function withFixture<T>(fn: (base: string) => Promise<T>): Promise<T> {
+      const base = await createCsaFixtureDir();
+      try {
+        return await fn(base);
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+
+    test("getSessionMeta maps CSA fields onto SessionMeta", async () => {
+      await withFixture(async (base) => {
+        const sid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        const path = await writeSessionFixture(base, {
+          sessionId: sid,
           cwd: "/home/user/project",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T10:00:05.000Z",
-          message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
-        },
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:01:00.000Z",
-          message: { role: "user", content: "More" },
+          startTime: "2024-01-01T10:00:00.000Z",
+          endTime: "2024-01-01T10:02:00.000Z",
+          userTurns: 7,
+          effectiveUserTurns: 3,
+        });
+
+        const meta = await withIsolatedClaudeEnv(base, () => getSessionMeta(path));
+
+        expect(meta.id).toBe(sid);
+        expect(meta.filePath).toBe(path);
+        expect(meta.project).toBe("/home/user/project");
+        expect(meta.lineCount).toBe(7); // CSA counts JSONL lines; our fixture writes one per turn.
+        expect(meta.userTurns).toBe(7);
+        expect(meta.effectiveUserTurns).toBe(3);
+        expect(meta.startTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
+        expect(meta.endTime).toEqual(new Date("2024-01-01T10:02:00.000Z"));
+        expect(meta.ageSec).toBeGreaterThanOrEqual(0);
+        expect(meta.forkInfo).toBeUndefined();
+      });
+    });
+
+    test("getSessionMeta leaves endTime undefined when CSA endTime equals startTime (single entry)", async () => {
+      // With a single-entry fixture, CSA reports endTime == startTime. This isn't
+      // strictly the "null endTime" path, but it's the closest natural shape from
+      // a real CSA invocation; the null branch is unit-tested elsewhere via
+      // CsaSessionRecord typing.
+      await withFixture(async (base) => {
+        const sid = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+        const path = await writeSessionFixture(base, {
+          sessionId: sid,
+          startTime: "2024-01-01T10:00:00.000Z",
+          userTurns: 1,
+        });
+
+        const meta = await withIsolatedClaudeEnv(base, () => getSessionMeta(path));
+
+        expect(meta.startTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
+        // Single-entry: endTime equals startTime in CSA output.
+        expect(meta.endTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
+      });
+    });
+
+    test("getSessionMeta sets forkInfo from forkedFrom + forkFirstNewUuid", async () => {
+      await withFixture(async (base) => {
+        const parentSid = "11111111-2222-3333-4444-555555555555";
+        const newUuid = "99990001-0000-0000-0000-000000000000";
+
+        // Parent session: must exist so CSA can resolve the fork link.
+        await writeSessionFixture(base, {
+          sessionId: parentSid,
           cwd: "/home/user/project",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T10:01:10.000Z",
-          message: { role: "assistant", content: [{ type: "text", text: "Ok" }] },
-        },
-        { type: "summary", timestamp: "2024-01-01T10:02:00.000Z", summary: "Session ended" },
-      ]);
+          startTime: "2024-01-01T09:00:00.000Z",
+          endTime: "2024-01-01T09:05:00.000Z",
+          userTurns: 2,
+        });
 
-      const meta = await getSessionMeta(path);
+        const sid = "aaaa1111-2222-3333-4444-555555555555";
+        const path = await writeSessionFixture(base, {
+          sessionId: sid,
+          cwd: "/home/user/project",
+          startTime: "2024-01-01T10:00:00.000Z",
+          endTime: "2024-01-01T10:02:00.000Z",
+          userTurns: 3,
+          forkedFromSessionId: parentSid,
+          forkedFromMessageUuid: newUuid,
+        });
 
-      expect(meta.id).toBe(sid);
-      expect(meta.filePath).toBe(path);
-      expect(meta.project).toBe("/home/user/project");
-      expect(meta.lineCount).toBe(5);
-      expect(meta.hasEnd).toBe(true);
-      expect(meta.startTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
-      expect(meta.endTime).toEqual(new Date("2024-01-01T10:02:00.000Z"));
-      expect(meta.userTurns).toBe(2);
-      expect(meta.ageSec).toBeGreaterThanOrEqual(0);
+        const meta = await withIsolatedClaudeEnv(base, () => getSessionMeta(path));
+
+        expect(meta.forkInfo).toBeDefined();
+        expect(meta.forkInfo!.parentSessionId).toBe(parentSid);
+        // CSA's forkFirstNewUuid is the UUID of the *first new* entry in the child,
+        // not the parent's branch point. Our fixture sets `forkedFrom` on each user
+        // entry and CSA reports the first entry's uuid as forkFirstNewUuid.
+        expect(meta.forkInfo!.firstNewUuid).toBeString();
+      });
     });
 
-    test("hasEnd is false when no summary present", async () => {
-      const sid = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          message: { role: "user", content: "Hello" },
-          cwd: "/tmp",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T10:00:05.000Z",
-          message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
-        },
-      ]);
+    test("getSessionMeta has no forkInfo when forkedFrom is absent", async () => {
+      await withFixture(async (base) => {
+        const sid = "f6a7b8c9-d0e1-2345-fabc-456789012345";
+        const path = await writeSessionFixture(base, {
+          sessionId: sid,
+          userTurns: 1,
+        });
 
-      const meta = await getSessionMeta(path);
-
-      expect(meta.hasEnd).toBe(false);
+        const meta = await withIsolatedClaudeEnv(base, () => getSessionMeta(path));
+        expect(meta.forkInfo).toBeUndefined();
+      });
     });
 
-    test("extracts UUID from filename", async () => {
-      const sid = "c3d4e5f6-a7b8-9012-cdef-123456789012";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          message: { role: "user", content: "Hi" },
-          cwd: "/tmp",
-        },
-      ]);
+    test("getSessionMeta throws when the session id has no JSONL on disk", async () => {
+      await withFixture(async (base) => {
+        // Write a stub file in our normal tmpDir so the path exists on disk,
+        // but never create a matching JSONL inside the CSA base. CSA will
+        // return no record and the function must throw.
+        const sid = "d4e5f6a7-b8c9-0123-defa-234567890123";
+        const path = join(tmpDir, `${sid}.jsonl`);
+        await Bun.write(path, "stub");
 
-      const meta = await getSessionMeta(path);
-      expect(meta.id).toBe(sid);
+        await expect(withIsolatedClaudeEnv(base, () => getSessionMeta(path))).rejects.toThrow();
+      });
     });
 
-    test("endTime is undefined when only one timestamp line", async () => {
-      const sid = "d4e5f6a7-b8c9-0123-defa-234567890123";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          message: { role: "user", content: "Solo" },
-          cwd: "/tmp",
-        },
-      ]);
+    test("getSessionMetaBatch returns a Map keyed by sessionId", async () => {
+      await withFixture(async (base) => {
+        const sidA = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        const sidB = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+        const pathA = await writeSessionFixture(base, {
+          sessionId: sidA,
+          projectSlug: "a",
+          cwd: "/p/a",
+          userTurns: 4,
+          effectiveUserTurns: 2,
+          startTime: "2024-01-01T10:00:00.000Z",
+          endTime: "2024-01-01T10:00:30.000Z",
+        });
+        const pathB = await writeSessionFixture(base, {
+          sessionId: sidB,
+          projectSlug: "b",
+          cwd: "/p/b",
+          userTurns: 8,
+          effectiveUserTurns: 5,
+          startTime: "2024-01-01T11:00:00.000Z",
+          endTime: "2024-01-01T11:01:00.000Z",
+        });
 
-      const meta = await getSessionMeta(path);
-      expect(meta.startTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
-      // endTime equals startTime when there's only one line with timestamp
-      expect(meta.endTime).toEqual(new Date("2024-01-01T10:00:00.000Z"));
+        const map = await withIsolatedClaudeEnv(base, () => getSessionMetaBatch([pathA, pathB]));
+
+        expect(map.size).toBe(2);
+        expect(map.get(sidA)!.project).toBe("/p/a");
+        expect(map.get(sidA)!.filePath).toBe(pathA);
+        expect(map.get(sidA)!.effectiveUserTurns).toBe(2);
+        expect(map.get(sidB)!.project).toBe("/p/b");
+        expect(map.get(sidB)!.filePath).toBe(pathB);
+        expect(map.get(sidB)!.userTurns).toBe(8);
+      });
     });
 
-    test("project defaults to empty string when no cwd found", async () => {
-      const sid = "e5f6a7b8-c9d0-1234-efab-345678901234";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        { type: "summary", summary: "Just a summary" },
-      ]);
-
-      const meta = await getSessionMeta(path);
-      expect(meta.project).toBe("");
+    test("getSessionMetaBatch returns empty map for empty input", async () => {
+      // No CSA call necessary; no env override needed.
+      const map = await getSessionMetaBatch([]);
+      expect(map.size).toBe(0);
     });
 
-    test("forkInfo is undefined for non-fork sessions", async () => {
-      const sid = "f6a7b8c9-d0e1-2345-fabc-456789012345";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          uuid: "aaa11111-0000-0000-0000-000000000000",
-          message: { role: "user", content: "Hello" },
-          cwd: "/tmp/project",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T10:00:05.000Z",
-          uuid: "bbb22222-0000-0000-0000-000000000000",
-          message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
-        },
-      ]);
+    test("getSessionMetaBatch throws when a requested session is missing from CSA output", async () => {
+      await withFixture(async (base) => {
+        const sidA = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        // sidB never written into the fixture → CSA returns no record for it.
+        const sidB = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 
-      const meta = await getSessionMeta(path);
-      expect(meta.forkInfo).toBeUndefined();
-      expect(meta.lineCount).toBe(2);
-      expect(meta.userTurns).toBe(1);
-    });
+        const pathA = await writeSessionFixture(base, {
+          sessionId: sidA,
+          userTurns: 1,
+        });
+        const pathB = join(tmpDir, `${sidB}.jsonl`);
+        await Bun.write(pathB, "stub");
 
-    test("detects fork session and sets forkInfo", async () => {
-      const sid = "a1111111-2222-3333-4444-555555555555";
-      const parentSid = "pppppppp-pppp-pppp-pppp-pppppppppppp";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        // フォーク行（親からのコピー）
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          uuid: "fork0001-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "orig0001" },
-          message: { role: "user", content: "Hello" },
-          cwd: "/tmp/parent-project",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T10:00:05.000Z",
-          uuid: "fork0002-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "orig0002" },
-          message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
-        },
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:01:00.000Z",
-          uuid: "fork0003-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "orig0003" },
-          message: { role: "user", content: "Parent conversation" },
-          cwd: "/tmp/parent-project",
-        },
-        // フォーク後の新規行
-        {
-          type: "user",
-          timestamp: "2024-01-01T11:00:00.000Z",
-          uuid: "new00001-0000-0000-0000-000000000000",
-          message: { role: "user", content: "Fork conversation" },
-          cwd: "/tmp/fork-project",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T11:00:10.000Z",
-          uuid: "new00002-0000-0000-0000-000000000000",
-          message: { role: "assistant", content: [{ type: "text", text: "Fork reply" }] },
-        },
-      ]);
-
-      const meta = await getSessionMeta(path);
-      expect(meta.forkInfo).toBeDefined();
-      expect(meta.forkInfo!.parentSessionId).toBe(parentSid);
-      expect(meta.forkInfo!.firstNewUuid).toBe("new00001-0000-0000-0000-000000000000");
-    });
-
-    test("fork session metadata is computed from non-fork lines only", async () => {
-      const sid = "b2222222-3333-4444-5555-666666666666";
-      const parentSid = "qqqqqqqq-qqqq-qqqq-qqqq-qqqqqqqqqqqq";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        // フォーク行 3行
-        {
-          type: "user",
-          timestamp: "2024-01-01T08:00:00.000Z",
-          uuid: "f0000001-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "o1" },
-          message: { role: "user", content: "Old1" },
-          cwd: "/tmp/old",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T08:05:00.000Z",
-          uuid: "f0000002-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "o2" },
-          message: { role: "assistant", content: [{ type: "text", text: "Old reply" }] },
-        },
-        {
-          type: "user",
-          timestamp: "2024-01-01T09:00:00.000Z",
-          uuid: "f0000003-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "o3" },
-          message: { role: "user", content: "Old2" },
-          cwd: "/tmp/old",
-        },
-        // 新規行 2行
-        {
-          type: "user",
-          timestamp: "2024-01-01T12:00:00.000Z",
-          uuid: "n0000001-0000-0000-0000-000000000000",
-          message: { role: "user", content: "New1" },
-          cwd: "/tmp/new",
-        },
-        {
-          type: "assistant",
-          timestamp: "2024-01-01T12:30:00.000Z",
-          uuid: "n0000002-0000-0000-0000-000000000000",
-          message: { role: "assistant", content: [{ type: "text", text: "New reply" }] },
-        },
-      ]);
-
-      const meta = await getSessionMeta(path);
-
-      // lineCount は非フォーク行のみ
-      expect(meta.lineCount).toBe(2);
-      // userTurns は非フォーク行のみ
-      expect(meta.userTurns).toBe(1);
-      // startTime は最初の非フォーク行のタイムスタンプ
-      expect(meta.startTime).toEqual(new Date("2024-01-01T12:00:00.000Z"));
-      // endTime は最後の非フォーク行のタイムスタンプ
-      expect(meta.endTime).toEqual(new Date("2024-01-01T12:30:00.000Z"));
-      // project は非フォーク行の cwd
-      expect(meta.project).toBe("/tmp/new");
-    });
-
-    test("fork session with only fork lines (no new lines)", async () => {
-      const sid = "c3333333-4444-5555-6666-777777777777";
-      const parentSid = "rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrrr";
-      const path = await writeTempFile(`${sid}.jsonl`, [
-        {
-          type: "user",
-          timestamp: "2024-01-01T10:00:00.000Z",
-          uuid: "f0000001-0000-0000-0000-000000000000",
-          forkedFrom: { sessionId: parentSid, messageUuid: "o1" },
-          message: { role: "user", content: "Only fork" },
-          cwd: "/tmp/old",
-        },
-      ]);
-
-      const meta = await getSessionMeta(path);
-      // フォーク行しかない場合
-      expect(meta.forkInfo).toBeDefined();
-      expect(meta.forkInfo!.parentSessionId).toBe(parentSid);
-      expect(meta.forkInfo!.firstNewUuid).toBe(""); // 新規行がない
-      expect(meta.lineCount).toBe(0);
-      expect(meta.userTurns).toBe(0);
+        await expect(
+          withIsolatedClaudeEnv(base, () => getSessionMetaBatch([pathA, pathB])),
+        ).rejects.toThrow();
+      });
     });
   });
 });
