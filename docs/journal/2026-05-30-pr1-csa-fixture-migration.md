@@ -88,7 +88,26 @@ Bun.spawn(
 
 `process.env.HOME` を一時 mutate するアプローチは並列 test ファイル間で干渉する可能性が懸念だったが、bun test は **ファイル単位で別 worker process** を立てるため `process.env` は独立。同一ファイル内は順次実行なので save/restore で安全。実測でも 38 file 並列でも 0 fail。
 
-### 3. CSA fixture では再現困難なテスト
+### 3. CI 環境に CSA bin が無くて test 失敗
+
+ローカルで全 pass を確認して main に push → GitHub Actions CI が 28 件失敗。原因: `Executable not found in $PATH: "claude-session-analysis"`。fixture+実 CSA 方式に切り替えた副作用で、CI 環境にも CSA bin が必要になっていた。
+
+**解決**: `.github/workflows/ci.yml` に CSA install step を追加。CSA リポは public で bin が単一の bun/node polyglot シェルスクリプトなので、`git clone --depth 1` → `chmod +x` → `$GITHUB_PATH` への追加だけで成立 (commit `1044f058`)。
+
+```yaml
+- name: Install claude-session-analysis
+  run: |
+    git clone --depth 1 https://github.com/kawaz/claude-session-analysis.git "$HOME/csa"
+    chmod +x "$HOME/csa/skills/claude-session-analysis/bin/claude-session-analysis"
+    echo "$HOME/csa/skills/claude-session-analysis/bin" >> "$GITHUB_PATH"
+
+- name: Verify CSA bin
+  run: claude-session-analysis --help | head -5
+```
+
+**教訓**: ローカル開発環境に install 済みの外部 bin に依存する test 方式は、CI 環境への install を同じ PR で必ず込みでやる。CI が通ったかは push 後に必ず watch。
+
+### 4. CSA fixture では再現困難なテスト
 
 agent が困った点 (制限として残置):
 
