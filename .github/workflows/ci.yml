@@ -36,6 +36,19 @@ jobs:
       - name: Setup just
         uses: extractions/setup-just@v3
 
+      # Tests use fixture jsonl + real CSA bin (no mocks) to verify the contract
+      # against the actual claude-session-analysis output. The bin is a single
+      # bun/node polyglot script; we install it by cloning the repo and adding
+      # its bin/ directory to PATH.
+      - name: Install claude-session-analysis
+        run: |
+          git clone --depth 1 https://github.com/kawaz/claude-session-analysis.git "$HOME/csa"
+          chmod +x "$HOME/csa/skills/claude-session-analysis/bin/claude-session-analysis"
+          echo "$HOME/csa/skills/claude-session-analysis/bin" >> "$GITHUB_PATH"
+
+      - name: Verify CSA bin
+        run: claude-session-analysis --help | head -5
+
       - name: Run check (test + typecheck + lint + fmt-check)
         run: just check
 
