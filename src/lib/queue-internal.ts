@@ -43,14 +43,23 @@ export type QueueStatus = "queued" | "processing" | "done" | "failed" | "skipped
  * History action vocabulary.
  *
  * Mapping to queue_entries.status:
- * - enqueued  → queued
- * - claimed   → processing
- * - completed → done
- * - failed    → failed
- * - skipped   → skipped
- * - reset     → queued
+ * - enqueued        → queued
+ * - claimed         → processing
+ * - completed       → done
+ * - failed          → failed
+ * - skipped         → skipped
+ * - reset           → queued
+ * - dispatch_decided → (no status change; emitted from the dispatcher run to
+ *                       record the chosen / rejected recipes JSON, see DR-0008 §6)
  */
-export type HistoryAction = "enqueued" | "claimed" | "completed" | "failed" | "skipped" | "reset";
+export type HistoryAction =
+  | "enqueued"
+  | "claimed"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "reset"
+  | "dispatch_decided";
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;

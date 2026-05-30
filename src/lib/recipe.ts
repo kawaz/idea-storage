@@ -25,12 +25,18 @@ export async function parseRecipe(filePath: string): Promise<Recipe> {
     onExisting = onExistingRaw;
   }
 
+  // DR-0008 §7: 自由テキスト 1 行ヒント。dispatcher が「向き・不向き」判断に使う。
+  // 任意。未指定の recipe は dispatcher にとって判断不能 → recall 重視で候補に含める。
+  const hintRaw = frontmatter.hint;
+  const hint = typeof hintRaw === "string" && hintRaw.trim() ? hintRaw.trim() : undefined;
+
   return {
     name,
     filePath,
     match,
     onExisting,
     prompt: body,
+    ...(hint !== undefined ? { hint } : {}),
   };
 }
 

@@ -258,11 +258,21 @@ describe("queue", () => {
       expect(row?.line_count).toBe(10);
     });
 
-    test("skipped(dispatcher_rejected): 触らない (PR② スコープでは復帰しない)", async () => {
-      // Phase 2 で dispatcher を導入したらこの reason の復帰ロジックも追加される。
-      // 現状は他の skipped reason と同様に保守的に "触らない" を取る。
+    test("skipped(dispatcher_rejected), new > old: queued に再遷移 (Phase 2 で復帰対象)", async () => {
+      // PR③ (Phase 2): dispatcher 導入に伴い dispatcher_rejected は
+      // REENQUEUABLE_SKIPPED_REASONS に追加。追記でセッションの性質が変わった
+      // 可能性があるので再 dispatch のために queued に戻す。
       await markSkipped(SID1, "diary", "dispatcher_rejected", 10, dirs);
       enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 100 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("queued");
+      expect(row?.line_count).toBe(100);
+      expect(row?.reason).toBeNull();
+    });
+
+    test("skipped(dispatcher_rejected), new == old: 触らない", async () => {
+      await markSkipped(SID1, "diary", "dispatcher_rejected", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 10 }], dirs);
       const row = readEntry(SID1, "diary");
       expect(row?.status).toBe("skipped");
       expect(row?.reason).toBe("dispatcher_rejected");

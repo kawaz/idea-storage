@@ -32,6 +32,15 @@ export function getRecipesDir(): string {
 }
 
 /**
+ * configDir/dispatcher_prompt.md.
+ * DR-0008 §6: ユーザがカスタマイズ可能な dispatcher 用 prompt テンプレ。
+ * 存在しなければ default を internal で fallback (src/lib/dispatcher.ts)。
+ */
+export function getDispatcherPromptPath(): string {
+  return `${getConfigDir()}dispatcher_prompt.md`;
+}
+
+/**
  * stateDir/queue/
  * @deprecated SQLite 移行により queue.ts では不使用。migrate-queue.ts のマイグレーション完了後に削除予定。
  */

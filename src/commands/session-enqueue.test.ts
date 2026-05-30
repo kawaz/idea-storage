@@ -39,6 +39,7 @@ const failedSet = new Set<string>();
 const doneMap = new Map<string, number>(); // key -> lineCount
 
 mock.module("../lib/queue.ts", () => ({
+  DISPATCHER_RECIPE_NAME: "dispatcher",
   enqueueBatch: mock(
     (entries: Array<{ sessionId: string; recipeName: string; lineCount: number }>) => {
       for (const entry of entries) {
@@ -235,61 +236,62 @@ describe("session-enqueue", () => {
     expect(enqueueCalls[0]!.sessionId).toBe(validUuid);
   });
 
-  test("既に queued のセッションはスキップされる", async () => {
+  test("既に queued のセッション(dispatcher) はスキップされる", async () => {
+    // Phase 2: enqueue は (session, 'dispatcher') 1 件を queued する。
+    // 既に dispatcher が queued なら無視。
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId);
 
-    // Pre-mark as queued
-    queuedSet.add(`${sessionId}.diary`);
+    queuedSet.add(`${sessionId}.dispatcher`);
 
     await runEnqueueIsolated();
 
-    // enqueue should not be called (already queued)
     expect(enqueueCalls).toHaveLength(0);
   });
 
-  test("既に done のセッション（同一行数以上）はスキップされる", async () => {
+  test("既に done のセッション(dispatcher, 同一行数以上)はスキップされる", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    // Mark as done with enough lines (5 lines in the session)
-    doneMap.set(`${sessionId}.diary`, 5);
+    doneMap.set(`${sessionId}.dispatcher`, 5);
 
     await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
 
-  test("done だが行数が増えたセッションは再エンキューされる", async () => {
+  test("done だが行数が増えたセッションは dispatcher を再エンキューする", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 10 });
 
-    // Mark as done with fewer lines than current
-    doneMap.set(`${sessionId}.diary`, 5);
+    // dispatcher は古い lineCount で done。session が伸びたので再 dispatch。
+    doneMap.set(`${sessionId}.dispatcher`, 5);
 
     await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(1);
     expect(enqueueCalls[0]!.sessionId).toBe(sessionId);
+    expect(enqueueCalls[0]!.recipeName).toBe("dispatcher");
   });
 
-  test("既に failed のセッションはスキップされる", async () => {
+  test("既に failed のセッション(dispatcher)はスキップされる", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId);
 
-    // Mark as failed
-    failedSet.add(`${sessionId}.diary`);
+    failedSet.add(`${sessionId}.dispatcher`);
 
     await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(0);
   });
 
-  test("正常にエンキューされる", async () => {
+  test("正常な enqueue は (session, 'dispatcher') を 1 件 queued する", async () => {
+    // Phase 2: 個別 recipe ではなく dispatcher 1 件を queued。
+    // dispatcher が dequeue 後に user recipes を判断して二段目を enqueue する。
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId);
@@ -297,7 +299,11 @@ describe("session-enqueue", () => {
     await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(1);
-    expect(enqueueCalls[0]).toEqual({ sessionId, recipeName: "diary", lineCount: 5 });
+    expect(enqueueCalls[0]).toEqual({
+      sessionId,
+      recipeName: "dispatcher",
+      lineCount: 5,
+    });
   });
 
   test("effectiveUserTurns=0 のセッションは全 recipe について markSkipped(no_effective_turn) で記録される", async () => {
@@ -371,7 +377,9 @@ describe("session-enqueue", () => {
     expect(enqueueCalls).toHaveLength(0);
   });
 
-  test("複数セッション・複数レシピの組み合わせ", async () => {
+  test("複数セッション x 複数レシピは dispatcher 1 件/session に集約される", async () => {
+    // Phase 2: 1 セッションにつき (session, 'dispatcher') を 1 件 enqueue するだけ。
+    // 個別 recipe の振り分けは dispatcher が dequeue 後に行う。
     mockRecipes = [makeRecipe({ name: "diary" }), makeRecipe({ name: "review" })];
 
     const projectsDir = join(claudeDir, "projects");
@@ -382,14 +390,10 @@ describe("session-enqueue", () => {
 
     await runEnqueueIsolated();
 
-    // 2 sessions x 2 recipes = 4 enqueue calls
-    expect(enqueueCalls).toHaveLength(4);
-
+    // 2 sessions x 1 dispatcher = 2 enqueue calls
+    expect(enqueueCalls).toHaveLength(2);
     const keys = enqueueCalls.map((c) => `${c.sessionId}.${c.recipeName}`).sort();
-    expect(keys).toContain(`${session1}.diary`);
-    expect(keys).toContain(`${session1}.review`);
-    expect(keys).toContain(`${session2}.diary`);
-    expect(keys).toContain(`${session2}.review`);
+    expect(keys).toEqual([`${session1}.dispatcher`, `${session2}.dispatcher`]);
   });
 
   test("レシピが空の場合は CliError を throw する（process.exit しない）", async () => {
@@ -460,13 +464,13 @@ describe("session-enqueue", () => {
     expect(sessionIds).toContain(session2);
   });
 
-  test("done の行数が多い場合はスキップされる（doneLines > sessionLines）", async () => {
+  test("done(dispatcher) の行数が多い場合はスキップされる（doneLines >= sessionLines）", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    // Done with more lines than current session
-    doneMap.set(`${sessionId}.diary`, 100);
+    // Dispatcher already finished at a higher lineCount; no need to rerun.
+    doneMap.set(`${sessionId}.dispatcher`, 100);
 
     await runEnqueueIsolated();
 

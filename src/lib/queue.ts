@@ -67,11 +67,29 @@ export type {
 
 /**
  * Skipped 行のうち、新しい line_count が来たら queued に自動復帰させる reason のリスト。
- * `quality_rejected` のような「再実行しても判断が変わらない」ものは含めない。
+ * `quality_rejected` のような「再実行しても判断が変わらない」ものは含めない (DR-0008 §5.1)。
  *
- * 拡張点: Phase 2 で dispatcher を導入したら `dispatcher_rejected` も追加する。
+ * - `no_effective_turn`: PR② 導入。後続追記で effective ターンが現れたら再評価。
+ * - `dispatcher_rejected`: PR③ (Phase 2) 導入。後続追記でセッションの性質が変わった
+ *   可能性があるので dispatcher を再発火させる。注: 復帰先は元の (session, recipe)
+ *   ではなく (session, 'dispatcher') 側で、これは queue.ts ではなく caller 側の責務
+ *   (dispatcher のジャッジが reason 単位の再 enqueue を駆動するため、本テーブルでは
+ *   復帰可能 reason を宣言するだけにとどめる)。
  */
-const REENQUEUABLE_SKIPPED_REASONS: ReadonlySet<string> = new Set(["no_effective_turn"]);
+const REENQUEUABLE_SKIPPED_REASONS: ReadonlySet<string> = new Set([
+  "no_effective_turn",
+  "dispatcher_rejected",
+]);
+
+/**
+ * dispatcher を表す internal recipe name。
+ * recipe-*.md ファイルとしては存在せず、queue/history の (session, recipe_pk)
+ * キーとして使う sentinel。
+ *
+ * DR-0008 §6: enqueue は effectiveUserTurns >= 1 のとき (session, "dispatcher")
+ * を 1 行 queued する。dequeue した worker が recipe_name を見て分岐する。
+ */
+export const DISPATCHER_RECIPE_NAME = "dispatcher";
 
 /** §5.1 遷移ルール: 既存 status / reason / line_count に対して、新規 lineCount で再 queued すべきか. */
 function shouldReenqueue(
@@ -357,6 +375,34 @@ export async function claim(
     });
     tx();
     return result;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Record a `dispatch_decided` event in history for (sessionId, "dispatcher").
+ * Used by the Phase 2 dispatcher worker to log its JSON output (acceptance
+ * list + rejection list + fallback flag) per DR-0008 §6.
+ *
+ * The queue_entries row itself is updated separately via markDone (after a
+ * successful dispatch) so the history event is a strict append-only audit.
+ */
+export async function recordDispatchDecision(
+  sessionId: string,
+  message: string,
+  dirs?: QueueDirs,
+): Promise<void> {
+  validateSessionId(sessionId);
+  const now = Date.now();
+  const db = getDb(dirs);
+  try {
+    const tx = db.transaction(() => {
+      const sessionPk = getOrCreateSessionPk(db, sessionId);
+      const recipePk = getOrCreateRecipePk(db, DISPATCHER_RECIPE_NAME);
+      recordHistory(db, sessionPk, recipePk, "dispatch_decided", message, now);
+    });
+    tx();
   } finally {
     db.close();
   }

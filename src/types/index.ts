@@ -13,6 +13,11 @@ export interface Recipe {
   onExisting: "append" | "separate" | "skip";
   /** frontmatter 以外の本文 */
   prompt: string;
+  /**
+   * DR-0008 §7: dispatcher が「向き・不向き」を判断する手がかりに使う
+   * 自由テキスト 1 行ヒント。任意。
+   */
+  hint?: string;
 }
 
 export interface SessionMeta {

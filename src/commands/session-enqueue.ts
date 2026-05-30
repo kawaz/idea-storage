@@ -5,7 +5,13 @@ import { loadRecipes } from "../lib/recipe.ts";
 import { getRecipesDir } from "../lib/paths.ts";
 import { getSessionMeta } from "../lib/conversation.ts";
 import { matchesRecipe } from "../lib/recipe-matcher.ts";
-import { enqueueBatch, loadQueueState, isFailedByState, markSkipped } from "../lib/queue.ts";
+import {
+  DISPATCHER_RECIPE_NAME,
+  enqueueBatch,
+  loadQueueState,
+  isFailedByState,
+  markSkipped,
+} from "../lib/queue.ts";
 import { CliError } from "../lib/errors.ts";
 import { dirExists } from "../lib/dir-exists.ts";
 import { log } from "../lib/logging.ts";
@@ -57,32 +63,46 @@ export async function runEnqueue(): Promise<void> {
 
       const noEffective = meta.effectiveUserTurns < 1;
 
-      // Check each recipe (matchesRecipe filter applies in both branches).
-      for (const recipe of recipes) {
-        if (!matchesRecipe(recipe, meta)) continue;
+      // matchesRecipe で静的に通過する user recipes を絞り込む。
+      // - noEffective: それらすべてを no_effective_turn skip 対象に
+      // - effective:  少なくとも 1 件通過すれば (session, 'dispatcher') を 1 件 enqueue
+      //   (Phase 2 二段化: dispatcher が LLM ベースで最終判断)
+      const matchedRecipes = recipes.filter((r) => matchesRecipe(r, meta));
+      if (matchedRecipes.length === 0) continue;
 
-        const key = `${meta.id}.${recipe.name}`;
+      if (noEffective) {
+        for (const recipe of matchedRecipes) {
+          const key = `${meta.id}.${recipe.name}`;
+          if (state.queued.has(key)) continue;
+          if (isFailedByState(state, key)) continue;
+          const doneEntry = state.done.get(key);
+          if (doneEntry && doneEntry.lineCount >= meta.lineCount) continue;
 
-        // Pre-filter using queue state to avoid pointless DB round-trips.
-        // queue.ts §5.1 also defends these invariants at write time.
-        if (state.queued.has(key)) continue;
-        if (isFailedByState(state, key)) continue;
-        const doneEntry = state.done.get(key);
-        if (doneEntry && doneEntry.lineCount >= meta.lineCount) continue;
-
-        if (noEffective) {
           noEffectiveSkips.push({
             sessionId: meta.id,
             recipeName: recipe.name,
             lineCount: meta.lineCount,
           });
           log({ msg: "no_effective_turn_skipped", key });
-          continue;
         }
-
-        pending.push({ sessionId: meta.id, recipeName: recipe.name, lineCount: meta.lineCount });
-        log({ msg: "queued", key });
+        continue;
       }
+
+      // Phase 2: (session, 'dispatcher') を 1 件 queued する。
+      // dispatcher 自身に対する state チェックは queue.ts §5.1 ルールが defense in depth で
+      // 担うが、無駄な DB round-trip を避けるためここでも事前確認する。
+      const dispatcherKey = `${meta.id}.${DISPATCHER_RECIPE_NAME}`;
+      if (state.queued.has(dispatcherKey)) continue;
+      if (isFailedByState(state, dispatcherKey)) continue;
+      const dispatcherDone = state.done.get(dispatcherKey);
+      if (dispatcherDone && dispatcherDone.lineCount >= meta.lineCount) continue;
+
+      pending.push({
+        sessionId: meta.id,
+        recipeName: DISPATCHER_RECIPE_NAME,
+        lineCount: meta.lineCount,
+      });
+      log({ msg: "queued", key: dispatcherKey, candidates: matchedRecipes.length });
     }
   }
 
