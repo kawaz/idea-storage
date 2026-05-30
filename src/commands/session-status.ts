@@ -1,5 +1,5 @@
 import { define } from "gunshi";
-import { getStatus } from "../lib/queue.ts";
+import { getStatus, getSkippedBreakdown } from "../lib/queue.ts";
 import { getLatestObservations } from "../lib/rate-limit-store.ts";
 import { shouldSkip } from "../lib/rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
@@ -31,6 +31,17 @@ const sessionStatus = define({
     console.log(
       `Queued: ${status.queued} / Processing: ${status.processing} / Done: ${status.done} / Failed: ${status.failed} / Skipped: ${status.skipped}`,
     );
+
+    // DR-0008 §11: skipped breakdown by reason (no_effective_turn / dispatcher_rejected / quality_rejected / other)
+    if (status.skipped > 0) {
+      const breakdown = await getSkippedBreakdown();
+      console.log(
+        `  Skipped breakdown: no_effective_turn=${breakdown.no_effective_turn} ` +
+          `dispatcher_rejected=${breakdown.dispatcher_rejected} ` +
+          `quality_rejected=${breakdown.quality_rejected} ` +
+          `other=${breakdown.other}`,
+      );
+    }
 
     const nowSec = Math.floor(Date.now() / 1000);
     const rows = getLatestObservations(1);

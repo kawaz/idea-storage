@@ -248,6 +248,62 @@ export async function getStatus(dirs?: QueueDirs): Promise<{
   }
 }
 
+/**
+ * DR-0008 §11: skipped breakdown by reason.
+ *
+ * Categories follow DR-0008 conventions (PR②/PR③/PR④):
+ * - no_effective_turn   — Phase 1 filter (PR②)
+ * - dispatcher_rejected — Phase 2 dispatcher rejection (PR③)
+ * - quality_rejected    — Phase 3 quality gate rejection (PR④)
+ * - other               — earlier skipped reasons (empty_session, already_processed, ...)
+ *
+ * Returns absolute counts across all-time skipped entries. A bounded
+ * 30-day window can be layered later by adding a `sinceTs` filter.
+ */
+export async function getSkippedBreakdown(dirs?: QueueDirs): Promise<{
+  no_effective_turn: number;
+  dispatcher_rejected: number;
+  quality_rejected: number;
+  other: number;
+}> {
+  const db = getDb(dirs);
+  try {
+    const rows = db
+      .query(
+        `SELECT reason, COUNT(*) as count
+           FROM queue_entries
+           WHERE status = 'skipped'
+           GROUP BY reason`,
+      )
+      .all() as { reason: string | null; count: number }[];
+
+    const result = {
+      no_effective_turn: 0,
+      dispatcher_rejected: 0,
+      quality_rejected: 0,
+      other: 0,
+    };
+    for (const row of rows) {
+      switch (row.reason) {
+        case "no_effective_turn":
+          result.no_effective_turn = row.count;
+          break;
+        case "dispatcher_rejected":
+          result.dispatcher_rejected = row.count;
+          break;
+        case "quality_rejected":
+          result.quality_rejected = row.count;
+          break;
+        default:
+          result.other += row.count;
+      }
+    }
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
 export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
   const db = getDb(dirs);
   try {

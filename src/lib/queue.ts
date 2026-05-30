@@ -48,6 +48,7 @@ export {
   DEFAULT_WAIT_POLL_INTERVAL_MS,
   DEFAULT_WAIT_TIMEOUT_MS,
   getDoneLineCount,
+  getSkippedBreakdown,
   getStatus,
   isDone,
   isFailed,
