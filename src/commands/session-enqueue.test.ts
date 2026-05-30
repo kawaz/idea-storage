@@ -27,18 +27,26 @@ mock.module("../lib/recipe.ts", () => ({
 }));
 
 // Track enqueue calls and control queue state
-const enqueueCalls: Array<{ sessionId: string; recipeName: string }> = [];
+const enqueueCalls: Array<{ sessionId: string; recipeName: string; lineCount: number }> = [];
+const markSkippedCalls: Array<{
+  sessionId: string;
+  recipeName: string;
+  reason: string;
+  lineCount: number;
+}> = [];
 const queuedSet = new Set<string>();
 const failedSet = new Set<string>();
 const doneMap = new Map<string, number>(); // key -> lineCount
 
 mock.module("../lib/queue.ts", () => ({
-  enqueueBatch: mock((entries: Array<{ sessionId: string; recipeName: string }>) => {
-    for (const entry of entries) {
-      enqueueCalls.push(entry);
-      queuedSet.add(`${entry.sessionId}.${entry.recipeName}`);
-    }
-  }),
+  enqueueBatch: mock(
+    (entries: Array<{ sessionId: string; recipeName: string; lineCount: number }>) => {
+      for (const entry of entries) {
+        enqueueCalls.push(entry);
+        queuedSet.add(`${entry.sessionId}.${entry.recipeName}`);
+      }
+    },
+  ),
   loadQueueState: mock(async () => ({
     queued: new Set(queuedSet),
     done: new Map(Array.from(doneMap.entries()).map(([k, v]) => [k, { lineCount: v }])),
@@ -49,6 +57,16 @@ mock.module("../lib/queue.ts", () => ({
   isFailedByState: mock((state: { failed: Map<string, unknown> }, key: string) => {
     return state.failed.has(key);
   }),
+  markSkipped: mock(
+    async (
+      sessionId: string,
+      recipeName: string,
+      reason: string | undefined,
+      lineCount: number,
+    ) => {
+      markSkippedCalls.push({ sessionId, recipeName, reason: reason ?? "", lineCount });
+    },
+  ),
 }));
 
 describe("session-enqueue", () => {
@@ -76,6 +94,8 @@ describe("session-enqueue", () => {
       ageMs?: number;
       hasSummary?: boolean;
       subDir?: string;
+      /** Set to true to make the user turn HIDDEN_TAG/SHORT_ASCII so effectiveUserTurns=0. */
+      noEffectiveTurn?: boolean;
     } = {},
   ): Promise<string> {
     const {
@@ -84,6 +104,7 @@ describe("session-enqueue", () => {
       ageMs = 3 * 60 * 60 * 1000, // 3 hours (> default 2h minAge)
       hasSummary = false,
       subDir = "default-project",
+      noEffectiveTurn = false,
     } = opts;
 
     const dir = join(projectsDir, subDir);
@@ -97,6 +118,11 @@ describe("session-enqueue", () => {
 
     // First line: user message with cwd. Each entry includes `sessionId` so
     // CSA stamps the right id on the emitted record (otherwise sessionId is "?").
+    // Default content is Japanese so CSA classifies the turn as EFFECTIVE
+    // (DR-0008: effectiveUserTurns >= 1 is required for normal enqueue).
+    // Pass noEffectiveTurn=true to emit SHORT_ASCII content for testing the
+    // no_effective_turn skip path.
+    const userContent = noEffectiveTurn ? "ok" : "ユーザの実質的な発言 hello world";
     jsonlLines.push(
       JSON.stringify({
         type: "user",
@@ -104,7 +130,7 @@ describe("session-enqueue", () => {
         uuid: `${sessionId.slice(0, 8)}-line-0001`,
         sessionId,
         cwd: project,
-        message: { role: "user", content: "Hello" },
+        message: { role: "user", content: userContent },
       }),
     );
 
@@ -160,6 +186,7 @@ describe("session-enqueue", () => {
 
     // Reset queue mock state
     enqueueCalls.length = 0;
+    markSkippedCalls.length = 0;
     queuedSet.clear();
     failedSet.clear();
     doneMap.clear();
@@ -270,7 +297,43 @@ describe("session-enqueue", () => {
     await runEnqueueIsolated();
 
     expect(enqueueCalls).toHaveLength(1);
-    expect(enqueueCalls[0]).toEqual({ sessionId, recipeName: "diary" });
+    expect(enqueueCalls[0]).toEqual({ sessionId, recipeName: "diary", lineCount: 5 });
+  });
+
+  test("effectiveUserTurns=0 のセッションは全 recipe について markSkipped(no_effective_turn) で記録される", async () => {
+    // DR-0008 Phase 1 PR②: 中身のないセッションは enqueueBatch ではなく
+    // markSkipped(no_effective_turn, lineCount=N) で記録する。後で追記されたら
+    // §5.1 ルールが自動で queued に復帰させる前提。
+    mockRecipes = [makeRecipe({ name: "diary" }), makeRecipe({ name: "review" })];
+
+    const projectsDir = join(claudeDir, "projects");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await createSessionFile(projectsDir, sessionId, { noEffectiveTurn: true, lines: 3 });
+
+    await runEnqueueIsolated();
+
+    expect(enqueueCalls).toHaveLength(0);
+    expect(markSkippedCalls).toHaveLength(2);
+    expect(markSkippedCalls.map((c) => c.recipeName).sort()).toEqual(["diary", "review"]);
+    for (const call of markSkippedCalls) {
+      expect(call.sessionId).toBe(sessionId);
+      expect(call.reason).toBe("no_effective_turn");
+      expect(call.lineCount).toBe(3);
+    }
+  });
+
+  test("effectiveUserTurns=0 でも既存 queue 状態にあれば markSkipped されない (事前フィルタが効く)", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await createSessionFile(projectsDir, sessionId, { noEffectiveTurn: true, lines: 5 });
+
+    // 既に同じ lineCount で done になっていれば、no-effective ブランチでも触らない
+    doneMap.set(`${sessionId}.diary`, 5);
+
+    await runEnqueueIsolated();
+
+    expect(enqueueCalls).toHaveLength(0);
+    expect(markSkippedCalls).toHaveLength(0);
   });
 
   test("レシピがマッチしないセッションはスキップされる", async () => {

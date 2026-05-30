@@ -667,7 +667,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
     switch (recipe.onExisting) {
       case "skip":
         log({ key, msg: "skip", reason: "already_processed" });
-        await markSkipped(sessionId, recipeName, "already_processed");
+        await markSkipped(sessionId, recipeName, "already_processed", meta.lineCount);
         return "processed";
       case "append":
         appendPreviousRunNote = true;
@@ -692,7 +692,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
       logKey: key,
     });
     if (result.kind === "skipped") {
-      await markSkipped(sessionId, recipeName, result.reason);
+      await markSkipped(sessionId, recipeName, result.reason, result.lineCount);
       return "processed";
     }
     await markDone(sessionId, recipeName, result.lineCount, result.outputFile);

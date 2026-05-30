@@ -181,7 +181,7 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
     });
 
     if (result.kind === "skipped") {
-      await markSkipped(sessionId, recipeName, result.reason);
+      await markSkipped(sessionId, recipeName, result.reason, result.lineCount);
       return { kind: "skipped", reason: result.reason, lineCount: result.lineCount };
     }
     await markDone(sessionId, recipeName, result.lineCount, result.outputFile);

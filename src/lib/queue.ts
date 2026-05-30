@@ -66,18 +66,56 @@ export type {
 // --- Queue write API (all functions take sessionId/recipeName, no string keys) ---
 
 /**
- * 複数のエントリを1トランザクションで一括 enqueue する。
- * 既に存在する (session_pk, recipe_pk) は無視（INSERT OR IGNORE）。
+ * Skipped 行のうち、新しい line_count が来たら queued に自動復帰させる reason のリスト。
+ * `quality_rejected` のような「再実行しても判断が変わらない」ものは含めない。
+ *
+ * 拡張点: Phase 2 で dispatcher を導入したら `dispatcher_rejected` も追加する。
+ */
+const REENQUEUABLE_SKIPPED_REASONS: ReadonlySet<string> = new Set(["no_effective_turn"]);
+
+/** §5.1 遷移ルール: 既存 status / reason / line_count に対して、新規 lineCount で再 queued すべきか. */
+function shouldReenqueue(
+  existing: { status: string; reason: string | null; line_count: number | null },
+  newLineCount: number,
+): boolean {
+  const oldLineCount = existing.line_count ?? 0;
+  switch (existing.status) {
+    case "queued":
+    case "processing":
+    case "failed":
+      // queued / processing: 触らない。failed: DR-0004/0007 既存 retry 機構が別途処理する。
+      return false;
+    case "done":
+      // 追記があれば差分処理のため再 enqueue。
+      return newLineCount > oldLineCount;
+    case "skipped": {
+      // 復帰対象 reason のみ、追記があれば queued に戻す。
+      if (!existing.reason || !REENQUEUABLE_SKIPPED_REASONS.has(existing.reason)) return false;
+      return newLineCount > oldLineCount;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * 複数のエントリを 1 トランザクションで一括 enqueue する。
+ *
+ * §5.1 遷移ルール:
+ * - 行なし → 新規 queued
+ * - 既存 queued / processing → 触らない
+ * - 既存 done / skipped(reason ∈ REENQUEUABLE_SKIPPED_REASONS) で `lineCount > old` → queued に再遷移
+ * - failed → 既存 retry 機構に委譲 (このパス上では触らない)
+ * - skipped(`quality_rejected` 等の永続) → 触らない
+ *
  * バリデーションはトランザクション開始前に全件チェックするため、
- * 1件でも不正があればどのエントリも挿入されない。
+ * 1 件でも不正があればどのエントリも挿入/更新されない。
  */
 export function enqueueBatch(
-  entries: Array<{ sessionId: string; recipeName: string }>,
+  entries: Array<{ sessionId: string; recipeName: string; lineCount: number }>,
   dirs?: QueueDirs,
 ): void {
   if (entries.length === 0) return;
-  // Validate all entries upfront (before opening DB) so invalid input
-  // causes no partial inserts even without relying on transaction rollback.
   for (const { sessionId, recipeName } of entries) {
     validateSessionId(sessionId);
     validateRecipeName(recipeName);
@@ -86,18 +124,8 @@ export function enqueueBatch(
   const db = getDb(dirs);
   try {
     const tx = db.transaction(() => {
-      for (const { sessionId, recipeName } of entries) {
-        const sessionPk = getOrCreateSessionPk(db, sessionId);
-        const recipePk = getOrCreateRecipePk(db, recipeName);
-        const result = db.run(
-          `INSERT OR IGNORE INTO queue_entries
-             (session_pk, recipe_pk, status, created_at, updated_at)
-           VALUES (?, ?, 'queued', ?, ?)`,
-          [sessionPk, recipePk, now, now],
-        );
-        if (result.changes > 0) {
-          recordHistory(db, sessionPk, recipePk, "enqueued", null, now);
-        }
+      for (const { sessionId, recipeName, lineCount } of entries) {
+        upsertQueuedTransition(db, sessionId, recipeName, lineCount, now);
       }
     });
     tx();
@@ -106,9 +134,13 @@ export function enqueueBatch(
   }
 }
 
+/**
+ * 単一エントリの enqueue。`enqueueBatch` と同じ §5.1 遷移ルールを適用する。
+ */
 export async function enqueue(
   sessionId: string,
   recipeName: string,
+  lineCount: number,
   dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
@@ -117,22 +149,61 @@ export async function enqueue(
   const db = getDb(dirs);
   try {
     const tx = db.transaction(() => {
-      const sessionPk = getOrCreateSessionPk(db, sessionId);
-      const recipePk = getOrCreateRecipePk(db, recipeName);
-      const result = db.run(
-        `INSERT OR IGNORE INTO queue_entries
-           (session_pk, recipe_pk, status, created_at, updated_at)
-         VALUES (?, ?, 'queued', ?, ?)`,
-        [sessionPk, recipePk, now, now],
-      );
-      if (result.changes > 0) {
-        recordHistory(db, sessionPk, recipePk, "enqueued", null, now);
-      }
+      upsertQueuedTransition(db, sessionId, recipeName, lineCount, now);
     });
     tx();
   } finally {
     db.close();
   }
+}
+
+/**
+ * §5.1 遷移ルールに従って単一 (sessionId, recipeName) を queued へ昇格させる。
+ * 既存 status / reason / line_count を見て分岐するため、`enqueue` / `enqueueBatch` 両方で共有する。
+ */
+function upsertQueuedTransition(
+  db: ReturnType<typeof getDb>,
+  sessionId: string,
+  recipeName: string,
+  lineCount: number,
+  now: number,
+): void {
+  const sessionPk = getOrCreateSessionPk(db, sessionId);
+  const recipePk = getOrCreateRecipePk(db, recipeName);
+
+  const existing = db
+    .query(
+      `SELECT status, reason, line_count
+         FROM queue_entries WHERE session_pk = ? AND recipe_pk = ?`,
+    )
+    .get(sessionPk, recipePk) as {
+    status: string;
+    reason: string | null;
+    line_count: number | null;
+  } | null;
+
+  if (!existing) {
+    db.run(
+      `INSERT INTO queue_entries
+         (session_pk, recipe_pk, status, line_count, created_at, updated_at)
+       VALUES (?, ?, 'queued', ?, ?, ?)`,
+      [sessionPk, recipePk, lineCount, now, now],
+    );
+    recordHistory(db, sessionPk, recipePk, "enqueued", null, now);
+    return;
+  }
+
+  if (!shouldReenqueue(existing, lineCount)) return;
+
+  db.run(
+    `UPDATE queue_entries SET status = 'queued', line_count = ?, reason = NULL, updated_at = ?
+       WHERE session_pk = ? AND recipe_pk = ?`,
+    [lineCount, now, sessionPk, recipePk],
+  );
+  const fromLabel = existing.reason
+    ? `from ${existing.status}:${existing.reason}`
+    : `from ${existing.status}`;
+  recordHistory(db, sessionPk, recipePk, "reset", fromLabel, now);
 }
 
 /**
@@ -381,14 +452,21 @@ export async function markFailed(
  * already processed). retry_count is NOT incremented because skipped is not
  * a failure that needs retry-after backoff.
  *
- * Reason prefix conventions used by callers:
+ * `lineCount` is required (DR-0008 §5.1): the enqueue path uses it to
+ * decide whether a later session append should auto-recover the entry to
+ * queued (only when the new lineCount exceeds the previously recorded one,
+ * and only for reasons in REENQUEUABLE_SKIPPED_REASONS).
+ *
+ * Reason conventions used by callers (extended in DR-0008):
  *   empty_session, no_user_turns, no_conversation,
- *   fork_no_new_conversation, already_processed
+ *   fork_no_new_conversation, already_processed,
+ *   no_effective_turn, dispatcher_rejected, quality_rejected
  */
 export async function markSkipped(
   sessionId: string,
   recipeName: string,
   reason: string | undefined,
+  lineCount: number,
   dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
@@ -401,13 +479,14 @@ export async function markSkipped(
       const recipePk = getOrCreateRecipePk(db, recipeName);
       db.run(
         `INSERT INTO queue_entries
-           (session_pk, recipe_pk, status, reason, created_at, updated_at)
-         VALUES (?, ?, 'skipped', ?, ?, ?)
+           (session_pk, recipe_pk, status, reason, line_count, created_at, updated_at)
+         VALUES (?, ?, 'skipped', ?, ?, ?, ?)
          ON CONFLICT(session_pk, recipe_pk) DO UPDATE SET
            status = 'skipped',
            reason = excluded.reason,
+           line_count = excluded.line_count,
            updated_at = excluded.updated_at`,
-        [sessionPk, recipePk, reason ?? null, now, now],
+        [sessionPk, recipePk, reason ?? null, lineCount, now, now],
       );
       recordHistory(db, sessionPk, recipePk, "skipped", reason ?? null, now);
     });

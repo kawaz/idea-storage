@@ -53,20 +53,20 @@ describe("queue", () => {
 
   describe("enqueue", () => {
     test("creates a queued entry", async () => {
-      await enqueue(SID_ABC, "diary", dirs);
+      await enqueue(SID_ABC, "diary", 10, dirs);
       expect(await isQueued(SID_ABC, "diary", dirs)).toBe(true);
     });
 
-    test("does not overwrite an existing entry (INSERT OR IGNORE)", async () => {
-      await enqueue(SID_ABC, "diary", dirs);
-      await enqueue(SID_ABC, "diary", dirs); // duplicate
+    test("does not duplicate an existing queued entry", async () => {
+      await enqueue(SID_ABC, "diary", 10, dirs);
+      await enqueue(SID_ABC, "diary", 10, dirs); // same lineCount → no-op
       const status = await getStatus(dirs);
       expect(status.queued).toBe(1);
     });
 
     test("records history with action='enqueued' on first insert only", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID1, "diary", dirs); // duplicate
+      await enqueue(SID1, "diary", 10, dirs);
+      await enqueue(SID1, "diary", 10, dirs); // duplicate
 
       const db = getDb(dirs);
       const rows = db
@@ -85,8 +85,8 @@ describe("queue", () => {
     test("複数エントリを一括で enqueue する", async () => {
       enqueueBatch(
         [
-          { sessionId: SID1, recipeName: "diary" },
-          { sessionId: SID2, recipeName: "report" },
+          { sessionId: SID1, recipeName: "diary", lineCount: 5 },
+          { sessionId: SID2, recipeName: "report", lineCount: 7 },
         ],
         dirs,
       );
@@ -101,12 +101,12 @@ describe("queue", () => {
       expect(status.queued).toBe(0);
     });
 
-    test("既存エントリは無視する（INSERT OR IGNORE）", async () => {
-      await enqueue(SID1, "diary", dirs);
+    test("既に queued の同一キーは触らない", async () => {
+      await enqueue(SID1, "diary", 10, dirs);
       enqueueBatch(
         [
-          { sessionId: SID1, recipeName: "diary" }, // duplicate
-          { sessionId: SID2, recipeName: "report" },
+          { sessionId: SID1, recipeName: "diary", lineCount: 10 }, // duplicate
+          { sessionId: SID2, recipeName: "report", lineCount: 7 },
         ],
         dirs,
       );
@@ -116,23 +116,23 @@ describe("queue", () => {
     });
 
     test("無効な sessionId でバリデーションエラー", () => {
-      expect(() => enqueueBatch([{ sessionId: "invalid", recipeName: "diary" }], dirs)).toThrow(
-        /Invalid sessionId/,
-      );
+      expect(() =>
+        enqueueBatch([{ sessionId: "invalid", recipeName: "diary", lineCount: 1 }], dirs),
+      ).toThrow(/Invalid sessionId/);
     });
 
     test("無効な recipeName でバリデーションエラー", () => {
-      expect(() => enqueueBatch([{ sessionId: SID1, recipeName: "../bad" }], dirs)).toThrow(
-        /Invalid recipeName/,
-      );
+      expect(() =>
+        enqueueBatch([{ sessionId: SID1, recipeName: "../bad", lineCount: 1 }], dirs),
+      ).toThrow(/Invalid recipeName/);
     });
 
     test("バリデーションエラー時はどのエントリも挿入されない", async () => {
       try {
         enqueueBatch(
           [
-            { sessionId: SID1, recipeName: "diary" },
-            { sessionId: "invalid", recipeName: "diary" },
+            { sessionId: SID1, recipeName: "diary", lineCount: 1 },
+            { sessionId: "invalid", recipeName: "diary", lineCount: 1 },
           ],
           dirs,
         );
@@ -141,6 +141,157 @@ describe("queue", () => {
       }
       const status = await getStatus(dirs);
       expect(status.queued).toBe(0);
+    });
+  });
+
+  // Helper to assert queue_entries row state (status / reason / line_count).
+  function readEntry(
+    sid: string,
+    name: string,
+  ): { status: string; reason: string | null; line_count: number | null } | null {
+    const db = getDb(dirs);
+    try {
+      const row = db
+        .query(
+          `SELECT qe.status, qe.reason, qe.line_count
+             FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+             WHERE s.uuid = ? AND r.name = ?`,
+        )
+        .get(sid, name) as {
+        status: string;
+        reason: string | null;
+        line_count: number | null;
+      } | null;
+      return row;
+    } finally {
+      db.close();
+    }
+  }
+
+  describe("enqueueBatch transitions (DR-0008 §5.1)", () => {
+    // §5.1: 既存 status と line_count を見て、再 enqueue の可否を分岐させる。
+    // 表の各セルを 1 テストで網羅する。
+
+    test("行なし: 新規 queued を line_count 付きで作る", async () => {
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 12 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("queued");
+      expect(row?.line_count).toBe(12);
+      expect(row?.reason).toBeNull();
+    });
+
+    test("queued: 触らない (no-op)", async () => {
+      await enqueue(SID1, "diary", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 20 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("queued");
+      // 既に queued の場合は line_count を更新しない (既存 queued を保持)
+      expect(row?.line_count).toBe(10);
+    });
+
+    test("processing: 触らない", async () => {
+      await enqueue(SID1, "diary", 10, dirs);
+      await claim(SID1, "diary", dirs); // queued → processing
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 20 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("processing");
+    });
+
+    test("done, new > old: queued に再遷移して line_count 更新", async () => {
+      await markDone(SID1, "diary", 10, null, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 20 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("queued");
+      expect(row?.line_count).toBe(20);
+      expect(row?.reason).toBeNull();
+    });
+
+    test("done, new == old: 触らない", async () => {
+      await markDone(SID1, "diary", 10, null, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 10 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("done");
+      expect(row?.line_count).toBe(10);
+    });
+
+    test("done, new < old: 触らない (退行防止)", async () => {
+      await markDone(SID1, "diary", 100, null, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 10 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("done");
+      expect(row?.line_count).toBe(100);
+    });
+
+    test("failed: 触らない (既存 retry 機構が別途処理)", async () => {
+      await markFailed(SID1, "diary", "boom", dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 20 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("failed");
+    });
+
+    test("skipped(no_effective_turn), new > old: queued に再遷移", async () => {
+      await markSkipped(SID1, "diary", "no_effective_turn", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 25 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("queued");
+      expect(row?.line_count).toBe(25);
+      expect(row?.reason).toBeNull();
+    });
+
+    test("skipped(no_effective_turn), new == old: 触らない", async () => {
+      await markSkipped(SID1, "diary", "no_effective_turn", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 10 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("skipped");
+      expect(row?.reason).toBe("no_effective_turn");
+      expect(row?.line_count).toBe(10);
+    });
+
+    test("skipped(quality_rejected): 触らない (PR③ 専用、自動復帰しない)", async () => {
+      await markSkipped(SID1, "diary", "quality_rejected", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 100 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("skipped");
+      expect(row?.reason).toBe("quality_rejected");
+      expect(row?.line_count).toBe(10);
+    });
+
+    test("skipped(dispatcher_rejected): 触らない (PR② スコープでは復帰しない)", async () => {
+      // Phase 2 で dispatcher を導入したらこの reason の復帰ロジックも追加される。
+      // 現状は他の skipped reason と同様に保守的に "触らない" を取る。
+      await markSkipped(SID1, "diary", "dispatcher_rejected", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 100 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("skipped");
+      expect(row?.reason).toBe("dispatcher_rejected");
+    });
+
+    test("skipped(unknown reason): 触らない (デフォルト保守)", async () => {
+      await markSkipped(SID1, "diary", "something_else", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 100 }], dirs);
+      const row = readEntry(SID1, "diary");
+      expect(row?.status).toBe("skipped");
+    });
+
+    test("skipped → queued 復帰時は history に reset が記録される", async () => {
+      await markSkipped(SID1, "diary", "no_effective_turn", 10, dirs);
+      enqueueBatch([{ sessionId: SID1, recipeName: "diary", lineCount: 25 }], dirs);
+
+      const db = getDb(dirs);
+      const actions = (
+        db
+          .query(
+            `SELECT h.action FROM history h
+               INNER JOIN sessions s ON s.pk = h.session_pk
+             WHERE s.uuid = ? ORDER BY h.timestamp`,
+          )
+          .all(SID1) as { action: string }[]
+      ).map((r) => r.action);
+      db.close();
+      // markSkipped → reset (skipped から queued への復帰)
+      expect(actions).toEqual(["skipped", "reset"]);
     });
   });
 
@@ -165,9 +316,9 @@ describe("queue", () => {
     });
 
     test("returns the newest entry first and transitions it to processing", async () => {
-      await enqueue(SID1, "recipe-a", dirs);
+      await enqueue(SID1, "recipe-a", 10, dirs);
       setUpdatedAt(SID1, "recipe-a", Date.now() - 10000);
-      await enqueue(SID2, "recipe-b", dirs);
+      await enqueue(SID2, "recipe-b", 10, dirs);
 
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
@@ -183,9 +334,9 @@ describe("queue", () => {
     });
 
     test("dequeues in newest-first order", async () => {
-      await enqueue(SID1, "recipe-a", dirs);
-      await enqueue(SID2, "recipe-b", dirs);
-      await enqueue(SID3, "recipe-c", dirs);
+      await enqueue(SID1, "recipe-a", 10, dirs);
+      await enqueue(SID2, "recipe-b", 10, dirs);
+      await enqueue(SID3, "recipe-c", 10, dirs);
       setUpdatedAt(SID1, "recipe-a", 1000);
       setUpdatedAt(SID2, "recipe-b", 2000);
       setUpdatedAt(SID3, "recipe-c", 3000);
@@ -204,7 +355,7 @@ describe("queue", () => {
     });
 
     test("records history with action='claimed' on dequeue", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await dequeue(dirs);
 
       const db = getDb(dirs);
@@ -223,7 +374,7 @@ describe("queue", () => {
 
   describe("recipe names with dots", () => {
     test("correctly handles recipe name containing dots", async () => {
-      await enqueue(SID_ABC, "my.diary", dirs);
+      await enqueue(SID_ABC, "my.diary", 10, dirs);
 
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
@@ -239,7 +390,7 @@ describe("queue", () => {
 
   describe("markDone", () => {
     test("marks entry as done with lineCount and removes from queued", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await markDone(SID1, "diary", 42, "/tmp/diary.md", dirs);
 
       expect(await isDone(SID1, "diary", 42, dirs)).toBe(true);
@@ -286,7 +437,7 @@ describe("queue", () => {
 
   describe("markFailed", () => {
     test("marks entry as failed and removes from queued", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await markFailed(SID1, "diary", undefined, dirs);
 
       expect(await isFailed(SID1, "diary", dirs)).toBe(true);
@@ -294,7 +445,7 @@ describe("queue", () => {
     });
 
     test("works after dequeue (entry transitions processing → failed)", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       const entry = await dequeue(dirs);
       expect(entry).not.toBeNull();
 
@@ -303,7 +454,7 @@ describe("queue", () => {
     });
 
     test("increments retryCount on subsequent calls", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await markFailed(SID1, "diary", undefined, dirs);
       await markFailed(SID1, "diary", undefined, dirs);
 
@@ -353,8 +504,8 @@ describe("queue", () => {
 
   describe("markSkipped", () => {
     test("marks entry as skipped", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markSkipped(SID1, "diary", "empty_session", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await markSkipped(SID1, "diary", "empty_session", 10, dirs);
 
       const status = await getStatus(dirs);
       expect(status.skipped).toBe(1);
@@ -362,9 +513,9 @@ describe("queue", () => {
     });
 
     test("does NOT increment retry_count (skipped is not failure)", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await markSkipped(SID1, "diary", "no_user_turns", dirs);
-      await markSkipped(SID1, "diary", "no_user_turns", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await markSkipped(SID1, "diary", "no_user_turns", 10, dirs);
+      await markSkipped(SID1, "diary", "no_user_turns", 10, dirs);
 
       const db = getDb(dirs);
       const row = db
@@ -379,7 +530,7 @@ describe("queue", () => {
     });
 
     test("records reason", async () => {
-      await markSkipped(SID1, "diary", "fork_no_new_conversation", dirs);
+      await markSkipped(SID1, "diary", "fork_no_new_conversation", 10, dirs);
 
       const db = getDb(dirs);
       const row = db
@@ -394,7 +545,7 @@ describe("queue", () => {
     });
 
     test("records history with action='skipped'", async () => {
-      await markSkipped(SID1, "diary", "already_processed", dirs);
+      await markSkipped(SID1, "diary", "already_processed", 10, dirs);
 
       const db = getDb(dirs);
       const row = db
@@ -410,9 +561,9 @@ describe("queue", () => {
     });
 
     test("works after dequeue (processing → skipped)", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await dequeue(dirs);
-      await markSkipped(SID1, "diary", "empty_session", dirs);
+      await markSkipped(SID1, "diary", "empty_session", 10, dirs);
 
       const status = await getStatus(dirs);
       expect(status.skipped).toBe(1);
@@ -494,7 +645,7 @@ describe("queue", () => {
     });
 
     test("moves entry from skipped to queued", async () => {
-      await markSkipped(SID1, "diary", "empty_session", dirs);
+      await markSkipped(SID1, "diary", "empty_session", 10, dirs);
       await retry(SID1, "diary", dirs);
 
       expect(await isQueued(SID1, "diary", dirs)).toBe(true);
@@ -538,11 +689,11 @@ describe("queue", () => {
 
   describe("getStatus", () => {
     test("returns counts for each status including skipped", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID2, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await enqueue(SID2, "diary", 10, dirs);
       await markDone(SID3, "diary", 10, null, dirs);
       await markFailed(SID4, "diary", undefined, dirs);
-      await markSkipped(SID5, "diary", "empty", dirs);
+      await markSkipped(SID5, "diary", "empty", 10, dirs);
 
       const status = await getStatus(dirs);
       expect(status.queued).toBe(2);
@@ -574,7 +725,7 @@ describe("queue", () => {
     });
 
     test("does not remove skipped entries even when session is gone", async () => {
-      await markSkipped(SID1, "diary", "empty", dirs);
+      await markSkipped(SID1, "diary", "empty", 10, dirs);
 
       const isSessionExists = async () => false;
       const removed = await cleanup(isSessionExists, dirs);
@@ -587,8 +738,8 @@ describe("queue", () => {
 
   describe("normalization (sessions/recipes tables)", () => {
     test("reuses session_pk for the same uuid", async () => {
-      await enqueue(SID1, "recipe-a", dirs);
-      await enqueue(SID1, "recipe-b", dirs);
+      await enqueue(SID1, "recipe-a", 10, dirs);
+      await enqueue(SID1, "recipe-b", 10, dirs);
 
       const db = getDb(dirs);
       const count = db.query(`SELECT COUNT(*) as c FROM sessions WHERE uuid = ?`).get(SID1) as {
@@ -599,8 +750,8 @@ describe("queue", () => {
     });
 
     test("reuses recipe_pk for the same name", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID2, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await enqueue(SID2, "diary", 10, dirs);
 
       const db = getDb(dirs);
       const count = db.query(`SELECT COUNT(*) as c FROM recipes WHERE name = ?`).get("diary") as {
@@ -611,9 +762,9 @@ describe("queue", () => {
     });
 
     test("UNIQUE(session_pk, recipe_pk) prevents duplicates", async () => {
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID1, "diary", dirs);
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await enqueue(SID1, "diary", 10, dirs);
+      await enqueue(SID1, "diary", 10, dirs);
 
       const db = getDb(dirs);
       const count = db
@@ -665,10 +816,10 @@ describe("queue", () => {
     });
 
     test("loads mixed state including skipped", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await markDone(SID2, "recipe-a", 75, null, dirs);
       await markFailed(SID3, "diary", "timeout", dirs);
-      await markSkipped(SID4, "diary", "empty", dirs);
+      await markSkipped(SID4, "diary", "empty", 10, dirs);
 
       const state = await loadQueueState(dirs);
       expect(state.queued.has(formatLogKey(SID1, "diary"))).toBe(true);
@@ -707,7 +858,7 @@ describe("queue", () => {
     });
 
     test("transitions queued entry to processing", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       const result = await claim(SID1, "diary", dirs);
       expect(result.claimed).toBe(true);
       expect(result.prevStatus).toBe("queued");
@@ -731,7 +882,7 @@ describe("queue", () => {
     });
 
     test("transitions skipped entry back to processing", async () => {
-      await markSkipped(SID1, "diary", "empty", dirs);
+      await markSkipped(SID1, "diary", "empty", 10, dirs);
       const result = await claim(SID1, "diary", dirs);
       expect(result.claimed).toBe(true);
       expect(result.prevStatus).toBe("skipped");
@@ -747,7 +898,7 @@ describe("queue", () => {
     });
 
     test("records history with action='claimed' and prevStatus in message", async () => {
-      await enqueue(SID1, "diary", dirs);
+      await enqueue(SID1, "diary", 10, dirs);
       await claim(SID1, "diary", dirs);
 
       const db = getDb(dirs);
@@ -803,7 +954,7 @@ describe("queue", () => {
     });
 
     test("returns skipped with reason when entry transitions to skipped", async () => {
-      await markSkipped(SID1, "diary", "empty_session", dirs);
+      await markSkipped(SID1, "diary", "empty_session", 10, dirs);
 
       const result = await waitForCompletion(
         SID1,
