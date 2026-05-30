@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
 import { loadRecipes } from "../lib/recipe.ts";
-import { getRecipesDir, getDataDir } from "../lib/paths.ts";
+import { getRecipesDir, getDataDir, getRejectedDir } from "../lib/paths.ts";
 import { getSessionMeta } from "../lib/conversation.ts";
 import { generateFrontmatter } from "../lib/frontmatter.ts";
 import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from "../lib/claude-runner.ts";
@@ -21,6 +21,7 @@ import {
   recordDispatchDecision,
 } from "../lib/queue.ts";
 import { runDispatcher } from "../lib/dispatcher.ts";
+import { runQualityGate } from "../lib/quality-gate.ts";
 import { matchesRecipe } from "../lib/recipe-matcher.ts";
 import { CliError } from "../lib/errors.ts";
 import {
@@ -584,8 +585,37 @@ ${timelineText}`;
 
   const fileTs = formatFileTimestamp(meta.startTime);
   const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`);
+  const fullOutput = fm + output;
 
-  await Bun.write(outputFile, fm + output);
+  // DR-0008 §8: quality gate before persisting. Gate is conservative — any
+  // LLM unreachability or parse failure falls back to accepted (don't block
+  // the main path on the gate's own reliability).
+  const verdict = await runQualityGate({
+    output,
+    recipeName,
+    timeoutMs: taskTimeoutMs,
+    signal,
+  });
+  log({
+    key,
+    msg: "quality_gate",
+    kind: verdict.kind,
+    reason: verdict.reason,
+    fallback: verdict.fallback?.reason ?? null,
+  });
+
+  if (verdict.kind === "rejected") {
+    // Divert to _rejected/<recipe>/YYYY/MM/DD/ for later inspection (manual
+    // re-evaluation when quality_guidelines.md is improved).
+    const rejectedDir = join(getRejectedDir(), recipeName, datePath);
+    await mkdir(rejectedDir, { recursive: true });
+    const rejectedFile = join(rejectedDir, `${fileTs}.${sessionId}.md`);
+    await Bun.write(rejectedFile, fullOutput);
+    log({ key, msg: "quality_rejected", output: rejectedFile, reason: verdict.reason });
+    return { kind: "skipped", reason: "quality_rejected", lineCount: meta.lineCount };
+  }
+
+  await Bun.write(outputFile, fullOutput);
   log({ key, msg: "success", output: outputFile });
 
   return { kind: "processed", outputFile, lineCount: meta.lineCount };

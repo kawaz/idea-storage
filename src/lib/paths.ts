@@ -41,6 +41,25 @@ export function getDispatcherPromptPath(): string {
 }
 
 /**
+ * stateDir/quality_guidelines.md.
+ * DR-0008 §8: 品質ガード判定の具体ガイド (定型句連発・過剰総括 等)。Phase 4 で
+ * 自動更新されるよう state 配下に置く。存在しなければ default を internal で
+ * fallback (src/lib/quality-gate.ts)。
+ */
+export function getQualityGuidelinesPath(): string {
+  return `${getStateDir()}quality_guidelines.md`;
+}
+
+/**
+ * dataDir/_rejected/{recipe}/YYYY/MM/DD/.
+ * DR-0008 §8: quality ガードが拒否した出力の退避先。reject 後に
+ * `quality_guidelines.md` を改修した際に手動で再評価する素材として残す。
+ */
+export function getRejectedDir(): string {
+  return `${getDataDir()}_rejected/`;
+}
+
+/**
  * stateDir/queue/
  * @deprecated SQLite 移行により queue.ts では不使用。migrate-queue.ts のマイグレーション完了後に削除予定。
  */

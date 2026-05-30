@@ -900,11 +900,11 @@ my aws key is ${akia} please be careful`;
       console.log = origLog;
     }
 
-    // runClaude が呼ばれた
-    expect(runClaudeCalls.length).toBe(1);
+    // runClaude が呼ばれた (Phase 3: main + quality gate の最低 2 回)
+    expect(runClaudeCalls.length).toBeGreaterThanOrEqual(1);
     const passedPrompt = runClaudeCalls[0]!.prompt;
 
-    // プロンプトに redact 後のプレースホルダが含まれ、AKIA キーは含まれない
+    // 最初の呼び出しは main process。redact 後のプレースホルダが含まれ、AKIA キーは含まれない
     expect(passedPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
     expect(passedPrompt).not.toContain(akia);
 
