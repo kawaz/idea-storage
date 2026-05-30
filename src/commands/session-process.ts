@@ -23,6 +23,8 @@ import {
 import { runDispatcher } from "../lib/dispatcher.ts";
 import { runQualityGate } from "../lib/quality-gate.ts";
 import { matchesRecipe } from "../lib/recipe-matcher.ts";
+import { getClaudeMeta } from "../lib/claude-meta.ts";
+import { listRecentOutputs, formatInjectedRecent } from "../lib/recent-outputs.ts";
 import { CliError } from "../lib/errors.ts";
 import {
   splitTimeline,
@@ -437,6 +439,18 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
     prompt += "\n\n---\nNote: Session continued. Please append to existing entry.";
   }
 
+  // DR-0008 §9: prepend N most-recent past outputs for this recipe so the LLM
+  // can deliberately avoid repeating phrasings / observations. Best-effort:
+  // missing dataDir or zero outputs is a no-op.
+  if (recipe.injectRecent && recipe.injectRecent > 0) {
+    const recent = await listRecentOutputs(dataDir, recipeName, recipe.injectRecent);
+    if (recent.length > 0) {
+      const injected = formatInjectedRecent(recent);
+      prompt = injected + prompt;
+      log({ key, msg: "inject_recent", count: recent.length });
+    }
+  }
+
   const sizeBytes = sessionStats.bytes ?? null;
   const turns = sessionStats.turns ?? meta.userTurns;
   const project = meta.project || "unknown";
@@ -562,6 +576,7 @@ ${timelineText}`;
   // Generate frontmatter
   const sessionEnd = meta.endTime ? meta.endTime.toISOString() : "unknown";
   const generatedAt = new Date().toISOString();
+  const claudeMeta = await getClaudeMeta();
   const fmData: Record<string, unknown> = {
     session_id: sessionId,
     project: meta.project || "unknown",
@@ -572,6 +587,10 @@ ${timelineText}`;
     user_turns: sessionStats.turns ?? meta.userTurns,
     session_bytes: sessionStats.bytes,
     duration_ms: sessionStats.duration_ms,
+    // DR-0008 §10: track which model/version produced this output so future
+    // analyses (Phase 4 quality_guidelines auto-update) can segment by model.
+    claude_model: claudeMeta.model,
+    claude_version: claudeMeta.version,
   };
   if (meta.forkInfo) {
     fmData.forked_from = meta.forkInfo.parentSessionId;

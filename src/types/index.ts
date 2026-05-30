@@ -18,6 +18,11 @@ export interface Recipe {
    * 自由テキスト 1 行ヒント。任意。
    */
   hint?: string;
+  /**
+   * DR-0008 §9: recipe 実行時、directly preceding N 本の過去出力 (同一 recipe)
+   * を prompt 先頭に自動付加する。任意。未指定 / 0 で注入なし。
+   */
+  injectRecent?: number;
 }
 
 export interface SessionMeta {

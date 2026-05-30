@@ -30,6 +30,14 @@ export async function parseRecipe(filePath: string): Promise<Recipe> {
   const hintRaw = frontmatter.hint;
   const hint = typeof hintRaw === "string" && hintRaw.trim() ? hintRaw.trim() : undefined;
 
+  // DR-0008 §9: inject_recent: N → recipe prompt 先頭に直近 N 本の過去出力を付加。
+  // 任意、0 / 未指定 / 負数で注入なし。
+  const injectRaw = frontmatter.inject_recent;
+  let injectRecent: number | undefined;
+  if (typeof injectRaw === "number" && Number.isFinite(injectRaw) && injectRaw > 0) {
+    injectRecent = Math.floor(injectRaw);
+  }
+
   return {
     name,
     filePath,
@@ -37,6 +45,7 @@ export async function parseRecipe(filePath: string): Promise<Recipe> {
     onExisting,
     prompt: body,
     ...(hint !== undefined ? { hint } : {}),
+    ...(injectRecent !== undefined ? { injectRecent } : {}),
   };
 }
 
