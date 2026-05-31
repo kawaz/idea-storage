@@ -312,72 +312,60 @@ describe("session-convert", () => {
    * accept a small fixed delay (poll interval is 1s in waitForCompletion, so
    * 200ms+ gives convert enough time to reach the wait loop on average).
    */
-  async function sleep(ms: number): Promise<void> {
-    return await new Promise((r) => setTimeout(r, ms));
-  }
+  // claim() semantics: status='processing' fails the claim (→ wait flow);
+  // status='done'/'failed'/'skipped' all SUCCEED (re-processing semantics).
+  // The wait-loop's polling behavior is exercised by waitForCompletion's own
+  // unit tests in queue-state.test.ts. Here we only assert what runConvert
+  // does for each prior queue state. The timeout case is the one scenario
+  // that doesn't need parallel coordination: preClaim leaves status=processing
+  // and runConvert simply waits until the deadline.
 
-  test("claim 失敗（既に processing）→ waitForCompletion で done を待つ", async () => {
+  test("entry done 後の再 convert は正常パスで上書き処理する", async () => {
     const projectsDir = join(claudeDir, "projects");
     await createSessionFile(projectsDir, VALID_SID);
 
-    // Pre-claim (processing), then transition to done shortly after runConvert
-    // starts waiting. waitForCompletion polls every 1s, so 500ms delay before
-    // transitioning gives runConvert enough time to reach its wait loop.
-    const resultPromise = runConvertIsolated(
-      { sessionId: VALID_SID, recipeName: "diary", waitTimeoutMs: 10000 },
+    const result = await runConvertIsolated(
+      { sessionId: VALID_SID, recipeName: "diary" },
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
+          const { markDone } = await import("../lib/queue.ts");
+          await markDone(VALID_SID, "diary", 42, null);
         },
       },
     );
 
-    void (async () => {
-      await sleep(500);
-      await withIsolatedIdeaStorageEnv(tempDir, async () => {
-        const { markDone } = await import("../lib/queue.ts");
-        await markDone(VALID_SID, "diary", 42, null);
-      });
-    })();
-
-    const result = await resultPromise;
-    expect(result.kind).toBe("waited");
-    if (result.kind === "waited") {
+    expect(result.kind).toBe("processed");
+    if (result.kind === "processed") {
       expect(result.outputFile).toContain(`${dataDir}/diary/`);
       expect(result.outputFile).toContain(`.${VALID_SID}.md`);
-      expect(result.lineCount).toBe(42);
     }
   });
 
-  test("claim 失敗（既に processing）→ waitForCompletion で failed → 例外", async () => {
+  test("entry failed 後の再 convert も claim 成功して再処理する", async () => {
     const projectsDir = join(claudeDir, "projects");
     await createSessionFile(projectsDir, VALID_SID);
 
-    const resultPromise = runConvertIsolated(
-      { sessionId: VALID_SID, recipeName: "diary", waitTimeoutMs: 10000 },
+    const result = await runConvertIsolated(
+      { sessionId: VALID_SID, recipeName: "diary" },
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
+          const { markFailed } = await import("../lib/queue.ts");
+          await markFailed(VALID_SID, "diary", "boom");
         },
       },
     );
 
-    void (async () => {
-      await sleep(500);
-      await withIsolatedIdeaStorageEnv(tempDir, async () => {
-        const { markFailed } = await import("../lib/queue.ts");
-        await markFailed(VALID_SID, "diary", "boom");
-      });
-    })();
-
-    await expect(resultPromise).rejects.toThrow(/boom/);
+    expect(result.kind).toBe("processed");
   });
 
-  test("claim 失敗（既に processing）→ waitForCompletion で timeout → 例外", async () => {
+  test("claim 失敗（processing のまま）→ waitForCompletion で timeout → 例外", async () => {
     const projectsDir = join(claudeDir, "projects");
     await createSessionFile(projectsDir, VALID_SID);
 
     // No outside transition: the entry stays processing, poll times out.
+    // This is the one wait-flow scenario that needs no parallel coordination.
     await expect(
       runConvertIsolated(
         { sessionId: VALID_SID, recipeName: "diary", waitTimeoutMs: 100 },
@@ -493,31 +481,21 @@ describe("session-convert", () => {
     });
   });
 
-  test("waitForCompletion で skipped を観測したら kind='skipped' で返す", async () => {
+  test("entry skipped 後の再 convert も claim 成功して再処理する", async () => {
     const projectsDir = join(claudeDir, "projects");
     await createSessionFile(projectsDir, VALID_SID);
 
-    const resultPromise = runConvertIsolated(
-      { sessionId: VALID_SID, recipeName: "diary", waitTimeoutMs: 10000 },
+    const result = await runConvertIsolated(
+      { sessionId: VALID_SID, recipeName: "diary" },
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
+          const { markSkipped } = await import("../lib/queue.ts");
+          await markSkipped(VALID_SID, "diary", "empty_session", 0);
         },
       },
     );
 
-    void (async () => {
-      await sleep(500);
-      await withIsolatedIdeaStorageEnv(tempDir, async () => {
-        const { markSkipped } = await import("../lib/queue.ts");
-        await markSkipped(VALID_SID, "diary", "empty_session", 0);
-      });
-    })();
-
-    const result = await resultPromise;
-    expect(result.kind).toBe("skipped");
-    if (result.kind === "skipped") {
-      expect(result.reason).toBe("empty_session");
-    }
+    expect(result.kind).toBe("processed");
   });
 });
