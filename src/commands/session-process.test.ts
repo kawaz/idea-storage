@@ -1,147 +1,206 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { withIsolatedClaudeEnv } from "../lib/test-fixtures.ts";
+import {
+  withIsolatedIdeaStorageEnv,
+  writeConfigFixture,
+  writeRecipeFixtures,
+} from "../lib/test-fixtures.ts";
+
+// Policy: no internal mock.module() at file scope. config / recipe / paths /
+// queue / rate-limit / spawn-timeout (= CSA spawn) are all real modules
+// exercised against a temp on-disk state. Only claude-runner is mocked, and
+// we mock it inline per-test (NOT at file scope) so that the file-level
+// static import of ClaudeAbortError used by processChunked tests below
+// keeps pointing at the real class (instanceof checks would break otherwise).
 
 // Use valid UUID-format session IDs for the new validation logic.
 const MISSING_SID = "11111111-1111-4111-a111-111111111111";
 const EMPTY_SID = "22222222-2222-4222-a222-222222222222";
 const NORECIPE_SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const NORMAL_SID = "33333333-3333-4333-a333-333333333333";
 
-// Track markFailed / markDone / markSkipped calls.
-// Calls are keyed by the legacy `sessionId.recipeName` log key for easy assertion.
-const markFailedCalls: Array<{ key: string; reason?: string }> = [];
-const markDoneCalls: Array<{ key: string; lineCount: number; outputFile: string | null }> = [];
-const markSkippedCalls: Array<{ key: string; reason?: string }> = [];
-
-let claudeDir: string;
-let tempDir: string;
-
-// Dynamic dequeue result (can be overridden per test)
-let dequeueResult: { sessionId: string; recipeName: string; key: string } | null = {
-  sessionId: MISSING_SID,
-  recipeName: "diary",
-  key: `${MISSING_SID}.diary`,
-};
-
-// Mock modules before importing runProcess. Note that the new queue API takes
-// (sessionId, recipeName) rather than a single key string.
-mock.module("../lib/queue.ts", () => ({
-  dequeue: mock(async () => dequeueResult),
-  markDone: mock(
-    async (sessionId: string, recipeName: string, lineCount: number, outputFile: string | null) => {
-      markDoneCalls.push({ key: `${sessionId}.${recipeName}`, lineCount, outputFile });
-    },
-  ),
-  markFailed: mock(async (sessionId: string, recipeName: string, reason?: string) => {
-    markFailedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
-  }),
-  markSkipped: mock(async (sessionId: string, recipeName: string, reason?: string) => {
-    markSkippedCalls.push({ key: `${sessionId}.${recipeName}`, reason });
-  }),
-  // getDoneLineCount is consulted by runProcess; return null (no prior run) to
-  // keep tests focused on dequeue/markFailed/markDone paths.
-  getDoneLineCount: mock(async () => null),
-}));
-
-// loadConfig will be set up in beforeEach with real temp dir
-let loadConfigResult: { claudeDirs: string[]; minAgeMinutes: number };
-
-mock.module("../lib/config.ts", () => ({
-  loadConfig: mock(async () => loadConfigResult),
-}));
-
-// Control recipe loading behavior
-let mockRecipesThrow = false;
-let mockRecipes: Array<{
-  name: string;
-  filePath: string;
-  match: Record<string, unknown>;
-  onExisting: string;
-  prompt: string;
-}> = [];
-
-mock.module("../lib/recipe.ts", () => ({
-  loadRecipes: mock(async () => {
-    if (mockRecipesThrow) throw new Error("no recipes dir");
-    return mockRecipes;
-  }),
-}));
+interface ReadEntry {
+  sessionId: string;
+  recipeName: string;
+  status: string;
+  reason: string | null;
+  lineCount: number | null;
+}
 
 describe("session-process", () => {
+  let tempDir: string;
+  let claudeDir: string;
+
   beforeEach(async () => {
-    markFailedCalls.length = 0;
-    markDoneCalls.length = 0;
-    markSkippedCalls.length = 0;
-    mockRecipesThrow = false;
-    mockRecipes = [
-      {
-        name: "diary",
-        filePath: "/tmp/recipe-diary.md",
-        match: {},
-        onExisting: "append",
-        prompt: "Write a diary",
-      },
-    ];
-    dequeueResult = {
-      sessionId: MISSING_SID,
-      recipeName: "diary",
-      key: `${MISSING_SID}.diary`,
-    };
     tempDir = await mkdtemp(join(tmpdir(), "session-process-test-"));
-    // Dotted name so CSA's `$HOME/.claude*/settings.json` glob discovers it.
     claudeDir = join(tempDir, ".claude");
-    // Create projects dir so Bun.Glob.scan doesn't throw
     await mkdir(join(claudeDir, "projects"), { recursive: true });
     await Bun.write(join(claudeDir, "settings.json"), "{}");
-    loadConfigResult = {
-      claudeDirs: [claudeDir],
-      minAgeMinutes: 120,
-    };
   });
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  test("calls markFailed when session file is not found", async () => {
-    const { runProcess } = await import("./session-process.ts");
-    const result = await runProcess();
+  /** Create a minimal JSONL session file with the given UUID. */
+  async function createSessionFile(
+    sessionId: string,
+    opts: {
+      project?: string;
+      lines?: number;
+      ageMs?: number;
+      subDir?: string;
+    } = {},
+  ): Promise<string> {
+    const projectsDir = join(claudeDir, "projects");
+    const {
+      project = "/tmp/test-project",
+      lines = 3,
+      ageMs = 3 * 60 * 60 * 1000,
+      subDir = "test-project",
+    } = opts;
+    const dir = join(projectsDir, subDir);
+    await mkdir(dir, { recursive: true });
+    const filePath = join(dir, `${sessionId}.jsonl`);
+    const now = Date.now();
+    const sessionStart = new Date(now - ageMs).toISOString();
+    const jsonlLines: string[] = [];
+    jsonlLines.push(
+      JSON.stringify({
+        type: "user",
+        timestamp: sessionStart,
+        uuid: `${sessionId.slice(0, 8)}-line-0001`,
+        sessionId,
+        cwd: project,
+        message: { role: "user", content: "ユーザの実質的な発言 hello world" },
+      }),
+    );
+    for (let i = 1; i < lines; i++) {
+      jsonlLines.push(
+        JSON.stringify({
+          type: "assistant",
+          timestamp: new Date(now - ageMs + i * 1000).toISOString(),
+          uuid: `${sessionId.slice(0, 8)}-line-${String(i + 1).padStart(4, "0")}`,
+          sessionId,
+          message: { role: "assistant", content: [{ type: "text", text: `Resp ${i}` }] },
+        }),
+      );
+    }
+    await Bun.write(filePath, jsonlLines.join("\n") + "\n");
+    const mtime = new Date(now - ageMs);
+    utimesSync(filePath, mtime, mtime);
+    return filePath;
+  }
 
+  /** Read queue_entries for a given session. */
+  async function readEntries(sessionId: string): Promise<ReadEntry[]> {
+    const { getDb } = await import("../lib/queue.ts");
+    const db = getDb();
+    try {
+      const rows = db
+        .query(
+          `SELECT s.uuid AS session_id, r.name AS recipe_name,
+                  qe.status, qe.reason, qe.line_count
+             FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+             WHERE s.uuid = ?
+             ORDER BY r.name`,
+        )
+        .all(sessionId) as Array<{
+        session_id: string;
+        recipe_name: string;
+        status: string;
+        reason: string | null;
+        line_count: number | null;
+      }>;
+      return rows.map((r) => ({
+        sessionId: r.session_id,
+        recipeName: r.recipe_name,
+        status: r.status,
+        reason: r.reason,
+        lineCount: r.line_count,
+      }));
+    } finally {
+      db.close();
+    }
+  }
+
+  async function enqueueDirect(
+    sessionId: string,
+    recipeName: string,
+    lineCount = 1,
+  ): Promise<void> {
+    const { enqueue } = await import("../lib/queue.ts");
+    await enqueue(sessionId, recipeName, lineCount);
+  }
+
+  async function runProcessIsolated(
+    opts: {
+      setup?: () => Promise<void>;
+      recipes?: Array<{ name: string; prompt?: string }>;
+      /**
+       * When true, neither config.ts nor recipe-*.md files are written under
+       * <tempDir>/.config/idea-storage/. The config dir thus doesn't exist at
+       * all, so the real loadRecipesOrFail() throws CliError (matching the
+       * production "missing config dir" scenario).
+       */
+      noRecipeDir?: boolean;
+    } = {},
+  ): Promise<Awaited<ReturnType<typeof import("./session-process.ts").runProcess>>> {
+    const recipes = opts.recipes ?? [{ name: "diary", prompt: "Write a diary" }];
+    return await withIsolatedIdeaStorageEnv(tempDir, async () => {
+      if (!opts.noRecipeDir) {
+        await writeConfigFixture(tempDir, {
+          claudeDirs: [claudeDir],
+          minAgeMinutes: 0,
+        });
+        await writeRecipeFixtures(tempDir, recipes);
+      }
+      // When noRecipeDir is true, leave <tempDir>/.config absent so
+      // loadConfig falls back to defaults (claudeDirs=[$HOME/.claude] which
+      // = our tempDir/.claude) and loadRecipes throws ENOENT → CliError.
+      if (opts.setup) await opts.setup();
+      const { runProcess } = await import("./session-process.ts");
+      return await runProcess();
+    });
+  }
+
+  async function inspect<T>(fn: () => Promise<T>): Promise<T> {
+    return await withIsolatedIdeaStorageEnv(tempDir, fn);
+  }
+
+  test("calls markFailed when session file is not found", async () => {
+    // Enqueue a (session, recipe) row for a session whose JSONL file doesn't
+    // exist. runProcess should pull it, fail to locate the file, and markFailed.
+    const result = await runProcessIsolated({
+      setup: async () => {
+        await enqueueDirect(MISSING_SID, "diary", 1);
+      },
+    });
     expect(result).toBe("failed");
-    expect(markFailedCalls.map((c) => c.key)).toContain(`${MISSING_SID}.diary`);
+
+    await inspect(async () => {
+      const entries = await readEntries(MISSING_SID);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("failed");
+    });
   });
 
   test("レシピが見つからない場合のエラーメッセージに次のアクション案内が含まれる", async () => {
-    mockRecipesThrow = true;
+    // Make a real session file, enqueue it, but provide no recipes dir.
+    await createSessionFile(NORECIPE_SID);
 
-    dequeueResult = {
-      sessionId: NORECIPE_SID,
-      recipeName: "diary",
-      key: `${NORECIPE_SID}.diary`,
-    };
-
-    // Create a session file so it gets past the session-not-found check
-    const projectDir = join(claudeDir, "projects", "test-project");
-    await mkdir(projectDir, { recursive: true });
-    const now = Date.now();
-    const ageMs = 3 * 60 * 60 * 1000;
-    const sessionStart = new Date(now - ageMs).toISOString();
-    const jsonlLine = JSON.stringify({
-      type: "user",
-      timestamp: sessionStart,
-      uuid: `${NORECIPE_SID.slice(0, 8)}-line-0001`,
-      // Include sessionId so CSA stamps the correct id on its record.
-      sessionId: NORECIPE_SID,
-      cwd: "/tmp/test-project",
-      message: { role: "user", content: "Hello" },
-    });
-    await Bun.write(join(projectDir, `${NORECIPE_SID}.jsonl`), jsonlLine + "\n");
-
-    const { runProcess } = await import("./session-process.ts");
     try {
-      await runProcess();
+      await runProcessIsolated({
+        noRecipeDir: true,
+        setup: async () => {
+          await enqueueDirect(NORECIPE_SID, "diary", 1);
+        },
+      });
       expect(true).toBe(false); // should not reach here
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
@@ -151,41 +210,52 @@ describe("session-process", () => {
   });
 
   test("calls markSkipped with empty_session when session file is empty (0 lines)", async () => {
-    const key = `${EMPTY_SID}.diary`;
-    dequeueResult = { sessionId: EMPTY_SID, recipeName: "diary", key };
-
-    // Create an empty session JSONL file (0 bytes)
+    // Create empty session JSONL file (0 bytes).
     const projectDir = join(claudeDir, "projects", "test-project");
     await mkdir(projectDir, { recursive: true });
     await Bun.write(join(projectDir, `${EMPTY_SID}.jsonl`), "");
 
-    const { runProcess } = await import("./session-process.ts");
-    // Isolate CSA discovery to our temp claudeDir so the empty fixture file
-    // is the one CSA finds (and then returns no record for, exercising the
-    // zero-meta synth in getSessionMetaBatch for 0-byte files).
-    const result = await withIsolatedClaudeEnv(tempDir, () => runProcess());
+    // Inline claude-runner mock to avoid hitting the real claude CLI in the
+    // (unlikely) event the code path reached it. Empty session should short-
+    // circuit before runClaude though.
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async () => "should-not-be-called"),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs = 0) {
+          super(`timeout ${timeoutMs}`);
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {},
+    }));
 
-    // Empty session is now treated as a successful skip, not a failure
+    const result = await runProcessIsolated({
+      setup: async () => {
+        await enqueueDirect(EMPTY_SID, "diary", 1);
+      },
+    });
+
     expect(result).toBe("processed");
-    const skipped = markSkippedCalls.find((c) => c.key === key);
-    expect(skipped).toBeDefined();
-    expect(skipped!.reason).toBe("empty_session");
-    // Should NOT have called markFailed or markDone
-    expect(markFailedCalls.find((c) => c.key === key)).toBeUndefined();
-    expect(markDoneCalls.find((c) => c.key === key)).toBeUndefined();
+    await inspect(async () => {
+      const entries = await readEntries(EMPTY_SID);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("skipped");
+      expect(entries[0]!.reason).toBe("empty_session");
+    });
   });
 
   test("returns empty when queue is empty", async () => {
-    dequeueResult = null;
-
-    const { runProcess } = await import("./session-process.ts");
-    const result = await runProcess();
-
+    // No enqueue: queue is empty.
+    const result = await runProcessIsolated();
     expect(result).toBe("empty");
   });
 });
 
 // --- チャンク分割パスのユニットテスト ---
+// These are pure tests that exercise the chunking pipeline via
+// _runClaudeOverride. They do NOT touch the real claude-runner or CSA, so
+// they don't need any module mocks.
 import { buildSectionPrompt, buildSynthesisPrompt } from "./session-process.ts";
 import type { TimelineChunk } from "../lib/chunker.ts";
 
@@ -218,7 +288,6 @@ describe("buildSectionPrompt", () => {
   test("チャンク情報（index, label, turnCount）がプロンプトに含まれる", () => {
     const chunk = makeChunk({ index: 2, label: "1/1-1/2", turnCount: 10 });
     const result = buildSectionPrompt(recipePrompt, chunk, "テキスト", sessionInfo);
-    // index は 0-based なので表示は +1
     expect(result).toContain("3");
     expect(result).toContain("1/1-1/2");
     expect(result).toContain("10");
@@ -289,9 +358,6 @@ describe("buildSynthesisPrompt", () => {
 import { processChunked } from "./session-process.ts";
 import { ClaudeAbortError } from "../lib/claude-runner.ts";
 
-// テスト用ヘルパー: processChunked をモックされた runClaude で検証する
-// processChunked は内部で runClaude を呼ぶため、_runClaudeOverride 経由でテストする
-
 describe("processChunked", () => {
   const dummyMeta: import("../types/index.ts").SessionMeta = {
     id: "test-session-id",
@@ -340,12 +406,11 @@ describe("processChunked", () => {
         if (callCount <= 2) {
           return `## Section ${callCount}\nContent ${callCount}`;
         }
-        // synthesis call
         return "# Title\n## Section 1\nContent 1\n## Section 2\nContent 2\n## まとめ\nOverall summary";
       },
     );
 
-    expect(callCount).toBe(3); // 2 chunks + 1 synthesis
+    expect(callCount).toBe(3);
     expect(result).toContain("Title");
     expect(result).toContain("まとめ");
   });
@@ -355,7 +420,6 @@ describe("processChunked", () => {
     const convText = "dummy timeline text";
     const recipePrompt = "test prompt";
 
-    // 各チャンクの呼び出し回数を追跡（promptの内容でチャンクを特定）
     const callLog: string[] = [];
     let chunk1FailCount = 0;
 
@@ -368,12 +432,10 @@ describe("processChunked", () => {
       undefined,
       async (options) => {
         const prompt = options.prompt;
-        // チャンク処理かsynthesisかを判定
         if (prompt.includes("セクション一覧")) {
           callLog.push("synthesis");
           return "# Title\n## まとめ\nSummary";
         }
-        // chunk-1 の処理を特定（チャンク情報にindex+1が含まれる）
         if (prompt.includes("チャンク: 2/")) {
           chunk1FailCount++;
           if (chunk1FailCount === 1) {
@@ -388,7 +450,6 @@ describe("processChunked", () => {
       },
     );
 
-    // chunk0成功, chunk1失敗→リトライ成功, chunk2成功, synthesis
     expect(callLog).toContain("chunk1-fail");
     expect(callLog).toContain("chunk1-retry-success");
     expect(callLog).toContain("synthesis");
@@ -396,7 +457,6 @@ describe("processChunked", () => {
   });
 
   test("1チャンク失敗 → リトライも失敗 → 分割なしフォールバック成功", async () => {
-    // convText が maxChunkBytes(35000) 以内なので分割なしフォールバックが可能
     const convText = "short timeline text";
     const chunks = makeChunks(2, 500);
     const recipePrompt = "test prompt";
@@ -417,13 +477,11 @@ describe("processChunked", () => {
           callLog.push("synthesis");
           return "# Synthesis result";
         }
-        // chunk-0（チャンク: 1/）を常に失敗させる
         if (prompt.includes("チャンク: 1/")) {
           chunk0FailCount++;
           callLog.push(`chunk0-fail-${chunk0FailCount}`);
           throw new Error("persistent API error");
         }
-        // 分割なしフォールバック（チャンク情報を含まない）
         if (!prompt.includes("チャンク:")) {
           callLog.push("fallback-unsplit");
           return "# Fallback result\nFull content";
@@ -433,10 +491,8 @@ describe("processChunked", () => {
       },
     );
 
-    // chunk0: 初回失敗 + リトライ失敗 = 2回、その後 fallback-unsplit
     expect(chunk0FailCount).toBe(2);
     expect(callLog).toContain("fallback-unsplit");
-    // synthesis はスキップされる（1チャンクなので不要）
     expect(callLog).not.toContain("synthesis");
     expect(result).toContain("Fallback result");
   });
@@ -466,20 +522,19 @@ describe("processChunked", () => {
           throw new Error("API error");
         },
       );
-      expect(true).toBe(false); // should not reach here
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toBe("fallback also failed");
     }
 
-    // 初回2チャンク + リトライ2チャンク + フォールバック1回
     const chunkFails = callLog.filter((l) => l === "chunk-fail").length;
-    expect(chunkFails).toBe(4); // 2 initial + 2 retries
+    expect(chunkFails).toBe(4);
     expect(callLog).toContain("fallback-unsplit-fail");
   });
 
   test("全チャンク失敗 → テキストが大きい場合はフォールバックをスキップして例外", async () => {
-    const convText = "x".repeat(40000); // maxChunkBytes(35000)を超える
+    const convText = "x".repeat(40000);
     const chunks = makeChunks(2, 20000);
     const recipePrompt = "test prompt";
 
@@ -498,13 +553,12 @@ describe("processChunked", () => {
           throw new Error("API error");
         },
       );
-      expect(true).toBe(false); // should not reach here
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toBe("API error");
     }
 
-    // 初回2チャンク + リトライ2チャンク = 4回、フォールバックなし
     expect(callLog.length).toBe(4);
     expect(callLog.every((l) => l === "chunk-fail")).toBe(true);
   });
@@ -535,14 +589,12 @@ describe("processChunked", () => {
           }
           return "## Section 3\nRetried chunk 3";
         }
-        // chunk 0, 1 は常に成功
         const match = prompt.match(/チャンク: (\d+)\//);
         const idx = match ? match[1] : "?";
         return `## Section ${idx}\nOriginal content ${idx}`;
       },
     );
 
-    // chunk2 はリトライで成功、他は初回成功
     expect(chunk2CallCount).toBe(2);
     expect(result).toContain("Synthesized");
   });
@@ -585,7 +637,6 @@ describe("processChunked external signal propagation", () => {
     const externalController = new AbortController();
     const receivedSignals: AbortSignal[] = [];
 
-    // 50ms後に外部signalをabort
     setTimeout(() => externalController.abort(), 50);
 
     try {
@@ -600,7 +651,6 @@ describe("processChunked external signal propagation", () => {
           if (options.signal) {
             receivedSignals.push(options.signal);
           }
-          // signalがabortされるまで待つ
           return new Promise<string>((resolve, reject) => {
             if (options.signal?.aborted) {
               reject(new ClaudeAbortError());
@@ -613,21 +663,18 @@ describe("processChunked external signal propagation", () => {
         },
         externalController.signal,
       );
-      expect(true).toBe(false); // should not reach here
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(ClaudeAbortError);
     }
 
-    // 2つのチャンクの runClaude 呼び出しに signal が渡されていること
     expect(receivedSignals.length).toBe(2);
-    // 全ての signal が abort 済みであること
     for (const sig of receivedSignals) {
       expect(sig.aborted).toBe(true);
     }
   });
 
   test("外部signalがabortされると合成フェーズもキャンセルされる", async () => {
-    // チャンク1つでは synthesis がスキップされるため、2チャンクでテスト
     const chunks = makeChunks(2);
     const convText = "dummy timeline text";
     const recipePrompt = "test prompt";
@@ -646,12 +693,9 @@ describe("processChunked external signal propagation", () => {
         async (options) => {
           if (!options.prompt.includes("セクション一覧")) {
             sectionCount++;
-            // チャンク処理は成功
             return `## Section ${sectionCount}\nContent`;
           }
-          // 合成フェーズ前に外部signalをabort
           externalController.abort();
-          // signal が abort されていれば ClaudeAbortError が期待される
           if (options.signal?.aborted) {
             throw new ClaudeAbortError();
           }
@@ -659,12 +703,12 @@ describe("processChunked external signal propagation", () => {
         },
         externalController.signal,
       );
-      expect(true).toBe(false); // should not reach here
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(ClaudeAbortError);
     }
 
-    expect(sectionCount).toBe(2); // 2チャンク処理 + 合成1回(abort)
+    expect(sectionCount).toBe(2);
   });
 
   test("外部signalがabort済みの場合、リトライやフォールバックをスキップして即座にClaudeAbortError", async () => {
@@ -673,7 +717,7 @@ describe("processChunked external signal propagation", () => {
     const recipePrompt = "test prompt";
 
     const externalController = new AbortController();
-    externalController.abort(); // 事前にabort
+    externalController.abort();
 
     try {
       await processChunked(
@@ -703,7 +747,6 @@ import type { ProcessResult } from "./session-process.ts";
 
 describe("ProcessResult", () => {
   test("ProcessResult type includes expected values", () => {
-    // 型レベルの確認（コンパイルが通ればOK）
     const values: ProcessResult[] = ["processed", "failed", "empty"];
     expect(values).toHaveLength(3);
   });
@@ -763,9 +806,7 @@ describe("processChunked single chunk", () => {
       },
     );
 
-    // synthesis は呼ばれない（section のみ1回）
     expect(callLog).toEqual(["section"]);
-    // セクション結果がそのまま返される
     expect(result).toBe("## Section 1\nDirect content");
   });
 
@@ -794,30 +835,24 @@ describe("processChunked single chunk", () => {
       },
     );
 
-    // 2つのセクション + 1つの synthesis = 3回
     expect(callLog).toEqual(["section", "section", "synthesis"]);
   });
 });
 
-// --- redact integration テスト ---
+// --- redact integration test ---
+// Exercises processSession via real CSA (timeline). Only claude-runner is
+// mocked, inline, to capture the prompt passed in. We assert redact ran by
+// inspecting that captured prompt.
 
 describe("processSession redact integration", () => {
-  const dummyMeta: import("../types/index.ts").SessionMeta = {
-    id: "redact-session-id",
-    filePath: "/tmp/redact-session.jsonl",
-    ageSec: 3600,
-    startTime: new Date("2025-01-01T00:00:00Z"),
-    endTime: new Date("2025-01-01T01:00:00Z"),
-    project: "redact-test-project",
-    lineCount: 10,
-    userTurns: 1,
-    effectiveUserTurns: 1,
-  };
-
   let workDir: string;
+  let redactClaudeDir: string;
 
   beforeEach(async () => {
     workDir = await mkdtemp(join(tmpdir(), "redact-integration-"));
+    redactClaudeDir = join(workDir, ".claude");
+    await mkdir(join(redactClaudeDir, "projects"), { recursive: true });
+    await Bun.write(join(redactClaudeDir, "settings.json"), "{}");
   });
 
   afterEach(async () => {
@@ -825,32 +860,24 @@ describe("processSession redact integration", () => {
   });
 
   test("タイムラインに含まれる secret は Claude に渡される前に redact される", async () => {
-    // CSA timeline 取得を spawnWithTimeout モックでシミュレート
     const akia = "AKIAIOSFODNN7EXAMPLE";
-    const fakeTimeline = `---
-session: redact-session-id
----
-2025-01-01T00:00:00+00:00 Uaaa11111
-my aws key is ${akia} please be careful`;
+    const REDACT_SID = "44444444-4444-4444-4444-444444444444";
+    // Build a real session file containing the AWS key in a user turn.
+    const projectDir = join(redactClaudeDir, "projects", "redact-test-project");
+    await mkdir(projectDir, { recursive: true });
+    const filePath = join(projectDir, `${REDACT_SID}.jsonl`);
+    const startTime = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const line = JSON.stringify({
+      type: "user",
+      timestamp: startTime,
+      uuid: "44444444-line-0001",
+      sessionId: REDACT_SID,
+      cwd: "/tmp/redact-test-project",
+      message: { role: "user", content: `my aws key is ${akia} please be careful` },
+    });
+    await Bun.write(filePath, line + "\n");
 
-    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
-      stdout: fakeTimeline,
-      stderr: "",
-      exitCode: 0,
-    }));
-    mock.module("../lib/spawn-timeout.ts", () => ({
-      spawnWithTimeout: spawnMock,
-      SpawnTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`subprocess timed out after ${timeoutMs}ms`);
-          this.name = "SpawnTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-    }));
-
-    // runClaude を spy: prompt を捕捉する
+    // Capture prompts via inline claude-runner mock.
     const runClaudeCalls: Array<{ prompt: string }> = [];
     mock.module("../lib/claude-runner.ts", () => ({
       runClaude: mock(async (options: { prompt: string }) => {
@@ -873,42 +900,46 @@ my aws key is ${akia} please be careful`;
       },
     }));
 
-    // log を console.log 経由で捕捉
+    // Capture log output for the redacted counter assertion.
     const logLines: string[] = [];
     const origLog = console.log;
-    console.log = (line: string) => {
-      logLines.push(line);
+    console.log = (line2: string) => {
+      logLines.push(line2);
     };
 
     try {
-      const { processSession } = await import("./session-process.ts");
-      const result = await processSession({
-        sessionId: "redact-session-id",
-        recipe: {
-          name: "diary",
-          filePath: "/tmp/recipe-diary.md",
-          match: {},
-          onExisting: "append",
-          prompt: "Write a diary",
-        } as import("../types/index.ts").Recipe,
-        meta: dummyMeta,
-        sessionStats: { turns: 1, bytes: 100 },
-        dataDir: workDir,
+      await withIsolatedIdeaStorageEnv(workDir, async () => {
+        // Override HOME / CLAUDE_CONFIG_DIR are already set by helper. But
+        // since redact's claudeDir lives under workDir, the helper already
+        // points HOME at workDir, so CSA discovers redactClaudeDir.
+        const { processSession } = await import("./session-process.ts");
+        const { getSessionMeta } = await import("../lib/conversation.ts");
+        const meta = await getSessionMeta(filePath);
+        const result = await processSession({
+          sessionId: REDACT_SID,
+          recipe: {
+            name: "diary",
+            filePath: "/tmp/recipe-diary.md",
+            match: {},
+            onExisting: "append",
+            prompt: "Write a diary",
+          } as import("../types/index.ts").Recipe,
+          meta,
+          sessionStats: { turns: 1, bytes: 100 },
+          dataDir: join(workDir, "data"),
+        });
+        expect(result.kind).toBe("processed");
       });
-      expect(result.kind).toBe("processed");
     } finally {
       console.log = origLog;
     }
 
-    // runClaude が呼ばれた (Phase 3: main + quality gate の最低 2 回)
     expect(runClaudeCalls.length).toBeGreaterThanOrEqual(1);
     const passedPrompt = runClaudeCalls[0]!.prompt;
 
-    // 最初の呼び出しは main process。redact 後のプレースホルダが含まれ、AKIA キーは含まれない
     expect(passedPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
     expect(passedPrompt).not.toContain(akia);
 
-    // redacted ログが count >= 1 で出ている
     const redactLog = logLines
       .map((l) => {
         try {
@@ -927,7 +958,6 @@ my aws key is ${akia} please be careful`;
 import { trimTimelineForFork } from "./session-process.ts";
 
 describe("trimTimelineForFork", () => {
-  // CSA timeline --md 形式のサンプル
   const sampleTimeline = `---
 session: test-session
 ---
@@ -955,13 +985,11 @@ Fork content here
 Fork reply content`;
 
   test("firstNewUuid の先頭8文字でブロックを特定し、そのブロック以降を返す", () => {
-    // eee55555 = uuid "eee55555-..." の先頭8文字
     const result = trimTimelineForFork(sampleTimeline, "eee55555-0000-0000-0000-000000000000");
     expect(result).toContain("Ueee55555");
     expect(result).toContain("Fork user message");
     expect(result).toContain("Tfff66666");
     expect(result).toContain("Fork reply content");
-    // 親の行は含まれない
     expect(result).not.toContain("Uaaa11111");
     expect(result).not.toContain("Uccc33333");
     expect(result).not.toContain("Tddd44444");
@@ -995,34 +1023,25 @@ The commit hash is eee55555abc and some content
 Fork content here`;
 
     const result = trimTimelineForFork(timelineWithContent, "eee55555-0000-0000-0000-000000000000");
-    // ブロックIDの Ueee55555 にマッチし、本文中の eee55555 には誤マッチしない
     expect(result).toContain("Ueee55555");
     expect(result).not.toContain("Uaaa11111");
   });
 });
 
-// --- #16/#17 processSession ガード条件テスト ---
-//
-// これらのテストは redact integration テストで仕込まれた
-// spawn-timeout / claude-runner の mock.module をテストごとに上書きして使う。
+// --- #16 processSession fork guard test ---
+// Pure functional test: pass `meta.forkInfo.firstNewUuid=""` and verify the
+// early-skip path. Uses a real session JSONL + real CSA for timeline. Inline
+// claude-runner mock guards against accidentally hitting the real CLI.
 
 describe("processSession fork guard (#16)", () => {
-  const baseMeta: import("../types/index.ts").SessionMeta = {
-    id: "fork-empty-session-id",
-    filePath: "/tmp/fork-empty-session.jsonl",
-    ageSec: 3600,
-    startTime: new Date("2025-01-01T00:00:00Z"),
-    endTime: new Date("2025-01-01T01:00:00Z"),
-    project: "fork-test-project",
-    lineCount: 10,
-    userTurns: 1,
-    effectiveUserTurns: 1,
-  };
-
   let workDir: string;
+  let forkClaudeDir: string;
 
   beforeEach(async () => {
     workDir = await mkdtemp(join(tmpdir(), "fork-guard-"));
+    forkClaudeDir = join(workDir, ".claude");
+    await mkdir(join(forkClaudeDir, "projects"), { recursive: true });
+    await Bun.write(join(forkClaudeDir, "settings.json"), "{}");
   });
 
   afterEach(async () => {
@@ -1030,27 +1049,20 @@ describe("processSession fork guard (#16)", () => {
   });
 
   test("forkInfo.firstNewUuid が空文字列なら markSkipped 相当の result を返し runClaude は呼ばれない", async () => {
-    // CSA は呼び出される前に skip されるはずだが、念のため有効な timeline を返すモックを置く
-    const fakeTimeline = `---
-session: fork-empty-session-id
----
-2025-01-01T00:00:00+00:00 Uaaa11111 something`;
-    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
-      stdout: fakeTimeline,
-      stderr: "",
-      exitCode: 0,
-    }));
-    mock.module("../lib/spawn-timeout.ts", () => ({
-      spawnWithTimeout: spawnMock,
-      SpawnTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`subprocess timed out after ${timeoutMs}ms`);
-          this.name = "SpawnTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-    }));
+    const FORK_SID = "55555555-5555-4555-a555-555555555555";
+    // Write a minimal valid session JSONL so CSA's timeline succeeds.
+    const projectDir = join(forkClaudeDir, "projects", "fork-test-project");
+    await mkdir(projectDir, { recursive: true });
+    const startTime = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const line = JSON.stringify({
+      type: "user",
+      timestamp: startTime,
+      uuid: "55555555-line-0001",
+      sessionId: FORK_SID,
+      cwd: "/tmp/fork-test-project",
+      message: { role: "user", content: "ユーザの実質的な発言 something" },
+    });
+    await Bun.write(join(projectDir, `${FORK_SID}.jsonl`), line + "\n");
 
     const runClaudeCalls: Array<{ prompt: string }> = [];
     mock.module("../lib/claude-runner.ts", () => ({
@@ -1074,185 +1086,82 @@ session: fork-empty-session-id
       },
     }));
 
-    const meta: import("../types/index.ts").SessionMeta = {
-      ...baseMeta,
+    const baseMeta: import("../types/index.ts").SessionMeta = {
+      id: FORK_SID,
+      filePath: join(projectDir, `${FORK_SID}.jsonl`),
+      ageSec: 3600,
+      startTime: new Date(startTime),
+      endTime: new Date(startTime),
+      project: "fork-test-project",
+      lineCount: 10,
+      userTurns: 1,
+      effectiveUserTurns: 1,
       forkInfo: {
         parentSessionId: "parent-session-id",
-        firstNewUuid: "", // ← 空文字列: フォーク後の新規行が存在しないケース
+        firstNewUuid: "", // empty: fork-no-new-conversation
       },
     };
 
-    const { processSession } = await import("./session-process.ts");
-    const result = await processSession({
-      sessionId: "fork-empty-session-id",
-      recipe: {
-        name: "diary",
-        filePath: "/tmp/recipe-diary.md",
-        match: {},
-        onExisting: "append",
-        prompt: "Write a diary",
-      } as import("../types/index.ts").Recipe,
-      meta,
-      sessionStats: { turns: 1, bytes: 100 },
-      dataDir: workDir,
-    });
+    await withIsolatedIdeaStorageEnv(workDir, async () => {
+      const { processSession } = await import("./session-process.ts");
+      const result = await processSession({
+        sessionId: FORK_SID,
+        recipe: {
+          name: "diary",
+          filePath: "/tmp/recipe-diary.md",
+          match: {},
+          onExisting: "append",
+          prompt: "Write a diary",
+        } as import("../types/index.ts").Recipe,
+        meta: baseMeta,
+        sessionStats: { turns: 1, bytes: 100 },
+        dataDir: join(workDir, "data"),
+      });
 
-    expect(result.kind).toBe("skipped");
-    if (result.kind === "skipped") {
-      expect(result.reason).toBe("fork_no_new_conversation");
-      expect(result.lineCount).toBe(meta.lineCount);
-    }
-    // runClaude は決して呼ばれてはならない
+      expect(result.kind).toBe("skipped");
+      if (result.kind === "skipped") {
+        expect(result.reason).toBe("fork_no_new_conversation");
+        expect(result.lineCount).toBe(baseMeta.lineCount);
+      }
+    });
     expect(runClaudeCalls.length).toBe(0);
   });
 });
 
+// --- #17 CSA timeline validation: unit-test the extracted helpers ---
+// CSA `timeline --md` is documented to always emit at least two `---` lines
+// (open + close of the YAML frontmatter). Producing exitCode=0 + malformed
+// output from real CSA is not achievable, so the malformed-output skip path
+// in processSession is asserted at the pure-function level instead.
+import { isValidCsaTimeline, countTimelineSeparators } from "./session-process.ts";
+
 describe("processSession CSA timeline validation (#17)", () => {
-  const baseMeta: import("../types/index.ts").SessionMeta = {
-    id: "invalid-csa-session-id",
-    filePath: "/tmp/invalid-csa-session.jsonl",
-    ageSec: 3600,
-    startTime: new Date("2025-01-01T00:00:00Z"),
-    endTime: new Date("2025-01-01T01:00:00Z"),
-    project: "invalid-csa-project",
-    lineCount: 10,
-    userTurns: 1,
-    effectiveUserTurns: 1,
-  };
-
-  let workDir: string;
-
-  beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), "csa-validate-"));
+  test("`---` セパレータを 1 つも含まない出力は invalid と判定される", () => {
+    const malformed = "error: something went wrong while building timeline\n";
+    expect(countTimelineSeparators(malformed)).toBe(0);
+    expect(isValidCsaTimeline(malformed)).toBe(false);
   });
 
-  afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
-  });
-
-  test("CSA が exitCode=0 で `---` セパレータを含まない出力を返した場合、skipped 扱いになる", async () => {
-    // exitCode=0 だが stdout が "error: ..." のみで、--- が無い不正フォーマット
-    const malformedStdout = "error: something went wrong while building timeline\n";
-    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
-      stdout: malformedStdout,
-      stderr: "",
-      exitCode: 0,
-    }));
-    mock.module("../lib/spawn-timeout.ts", () => ({
-      spawnWithTimeout: spawnMock,
-      SpawnTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`subprocess timed out after ${timeoutMs}ms`);
-          this.name = "SpawnTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-    }));
-
-    const runClaudeCalls: Array<{ prompt: string }> = [];
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async (options: { prompt: string }) => {
-        runClaudeCalls.push({ prompt: options.prompt });
-        return "should-not-be-called";
-      }),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
-
-    const { processSession } = await import("./session-process.ts");
-    const result = await processSession({
-      sessionId: "invalid-csa-session-id",
-      recipe: {
-        name: "diary",
-        filePath: "/tmp/recipe-diary.md",
-        match: {},
-        onExisting: "append",
-        prompt: "Write a diary",
-      } as import("../types/index.ts").Recipe,
-      meta: baseMeta,
-      sessionStats: { turns: 1, bytes: 100 },
-      dataDir: workDir,
-    });
-
-    expect(result.kind).toBe("skipped");
-    if (result.kind === "skipped") {
-      expect(result.reason).toBe("empty_or_invalid_timeline");
-      expect(result.lineCount).toBe(baseMeta.lineCount);
-    }
-    // 不正なタイムラインを Claude には絶対に渡さない
-    expect(runClaudeCalls.length).toBe(0);
-  });
-
-  test("`---` が1個しかない（閉じ ---  欠落）出力も skipped 扱いになる", async () => {
-    const malformedStdout = `---
+  test("`---` が1個しかない（閉じ --- 欠落）出力も invalid と判定される", () => {
+    const malformed = `---
 command: claude-session-analysis timeline foo
 2025-01-01T00:00:00+00:00 Uaaa11111 truncated output`;
-    const spawnMock = mock(async (_options: { cmd: string[]; timeoutMs: number }) => ({
-      stdout: malformedStdout,
-      stderr: "",
-      exitCode: 0,
-    }));
-    mock.module("../lib/spawn-timeout.ts", () => ({
-      spawnWithTimeout: spawnMock,
-      SpawnTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`subprocess timed out after ${timeoutMs}ms`);
-          this.name = "SpawnTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-    }));
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async () => "should-not-be-called"),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
+    expect(countTimelineSeparators(malformed)).toBe(1);
+    expect(isValidCsaTimeline(malformed)).toBe(false);
+  });
 
-    const { processSession } = await import("./session-process.ts");
-    const result = await processSession({
-      sessionId: "invalid-csa-session-id",
-      recipe: {
-        name: "diary",
-        filePath: "/tmp/recipe-diary.md",
-        match: {},
-        onExisting: "append",
-        prompt: "Write a diary",
-      } as import("../types/index.ts").Recipe,
-      meta: baseMeta,
-      sessionStats: { turns: 1, bytes: 100 },
-      dataDir: workDir,
-    });
+  test("`---` が2個（frontmatter open + close）以上あれば valid", () => {
+    const valid = `---
+session: real
+---
+2025-01-01T00:00:00+00:00 Uaaa11111 hello`;
+    expect(countTimelineSeparators(valid)).toBe(2);
+    expect(isValidCsaTimeline(valid)).toBe(true);
+  });
 
-    expect(result.kind).toBe("skipped");
-    if (result.kind === "skipped") {
-      expect(result.reason).toBe("empty_or_invalid_timeline");
-    }
+  test("空文字列は invalid (セパレータ 0 個)", () => {
+    expect(countTimelineSeparators("")).toBe(0);
+    expect(isValidCsaTimeline("")).toBe(false);
   });
 });
 
@@ -1286,9 +1195,6 @@ describe("processChunked external abort during retry (#18)", () => {
   }
 
   test("Step 1 中に externalSignal が abort されても、Step 2 リトライには入らず ClaudeAbortError を throw する", async () => {
-    // processChunked と ClaudeAbortError はファイル冒頭で import 済みのものを再利用する。
-    // 後段のテストで mock.module("../lib/claude-runner.ts") を当てた後だと
-    // 動的 import すると別クラスを掴んでしまい instanceof 検証に失敗するため。
     const chunks = makeChunks(2);
     const convText = "short timeline text";
     const recipePrompt = "test prompt";
@@ -1307,35 +1213,29 @@ describe("processChunked external abort during retry (#18)", () => {
         dummyMeta,
         undefined,
         async (options) => {
-          // chunk 0 (チャンク: 1/) は成功し、その瞬間に外部 abort をトリガー
           if (options.prompt.includes("チャンク: 1/")) {
             chunk0Calls++;
             callLog.push(`chunk0-call-${chunk0Calls}`);
             externalController.abort();
             return "## Section 1\nContent A";
           }
-          // chunk 1 (チャンク: 2/) は通常エラーで失敗 → Step 2 リトライ対象
           if (options.prompt.includes("チャンク: 2/")) {
             chunk1Calls++;
             callLog.push(`chunk1-call-${chunk1Calls}`);
             throw new Error("transient API error");
           }
-          // 合成や fallback-unsplit はチャンク情報を含まないため、この経路に落ちる
           callLog.push("non-chunk-call");
           return "## Section X\nUnexpected content";
         },
         externalController.signal,
       );
-      expect(true).toBe(false); // should not reach here
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(ClaudeAbortError);
     }
 
-    // Step 1 で chunk0 と chunk1 が 1 回ずつ呼ばれる。
-    // Step 2 リトライは bail out されるため chunk1 は再呼び出しされない。
     expect(chunk0Calls).toBe(1);
     expect(chunk1Calls).toBe(1);
-    // フォールバックの全文プロンプト（チャンク情報なし）も呼ばれない
     expect(callLog).not.toContain("non-chunk-call");
   });
 });

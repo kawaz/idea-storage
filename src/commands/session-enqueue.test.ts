@@ -1,88 +1,117 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { withIsolatedClaudeEnv } from "../lib/test-fixtures.ts";
-import type { Recipe } from "../types/index.ts";
+import {
+  withIsolatedIdeaStorageEnv,
+  writeConfigFixture,
+  writeRecipeFixtures,
+  type RecipeFixtureSpec,
+} from "../lib/test-fixtures.ts";
 
-// --- Mock setup (must be before importing runEnqueue) ---
+// No mock.module(...) anywhere. Every module the SUT touches is the real
+// one, exercised against a temp on-disk state.
+//
+// - config.ts:    real loadConfig() reads <tempDir>/.config/idea-storage/config.ts
+// - recipe.ts:    real loadRecipes() reads recipe-*.md from the same dir
+// - paths.ts:     real getStateDir() etc. resolve via XDG_*_HOME
+// - queue.ts:     real queue.db sits at <tempDir>/state/idea-storage/queue.db
+// - CSA spawn:    real claude-session-analysis bin reads fixture jsonl files
+//                 placed under <tempDir>/.claude/projects/<slug>/
+// (claude-runner mock is not needed here — runEnqueue does not call claude.)
 
-let mockClaudeDirs: string[] = [];
-let mockMinAgeMinutes = 0;
-let mockRecipes: Recipe[] = [];
-let mockRecipesThrow = false;
-
-mock.module("../lib/config.ts", () => ({
-  loadConfig: mock(async () => ({
-    claudeDirs: mockClaudeDirs,
-    minAgeMinutes: mockMinAgeMinutes,
-  })),
-}));
-
-mock.module("../lib/recipe.ts", () => ({
-  loadRecipes: mock(async () => {
-    if (mockRecipesThrow) throw new Error("no recipes dir");
-    return mockRecipes;
-  }),
-}));
-
-// Track enqueue calls and control queue state
-const enqueueCalls: Array<{ sessionId: string; recipeName: string; lineCount: number }> = [];
-const markSkippedCalls: Array<{
+interface ReadEntry {
   sessionId: string;
   recipeName: string;
-  reason: string;
-  lineCount: number;
-}> = [];
-const queuedSet = new Set<string>();
-const failedSet = new Set<string>();
-const doneMap = new Map<string, number>(); // key -> lineCount
-
-mock.module("../lib/queue.ts", () => ({
-  DISPATCHER_RECIPE_NAME: "dispatcher",
-  enqueueBatch: mock(
-    (entries: Array<{ sessionId: string; recipeName: string; lineCount: number }>) => {
-      for (const entry of entries) {
-        enqueueCalls.push(entry);
-        queuedSet.add(`${entry.sessionId}.${entry.recipeName}`);
-      }
-    },
-  ),
-  loadQueueState: mock(async () => ({
-    queued: new Set(queuedSet),
-    done: new Map(Array.from(doneMap.entries()).map(([k, v]) => [k, { lineCount: v }])),
-    failed: new Map(
-      Array.from(failedSet).map((k) => [k, { meta: { retryCount: 1 }, mtimeMs: Date.now() }]),
-    ),
-  })),
-  isFailedByState: mock((state: { failed: Map<string, unknown> }, key: string) => {
-    return state.failed.has(key);
-  }),
-  markSkipped: mock(
-    async (
-      sessionId: string,
-      recipeName: string,
-      reason: string | undefined,
-      lineCount: number,
-    ) => {
-      markSkippedCalls.push({ sessionId, recipeName, reason: reason ?? "", lineCount });
-    },
-  ),
-}));
+  status: string;
+  reason: string | null;
+  lineCount: number | null;
+}
 
 describe("session-enqueue", () => {
   let tempDir: string;
   let claudeDir: string;
+  let dotClaude: string;
 
-  function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
-    return {
-      name: "diary",
-      filePath: "/tmp/recipe-diary.md",
-      match: {},
-      onExisting: "append",
-      prompt: "Write a diary",
-      ...overrides,
-    };
+  /** Read the queue_entries rows for a given session, joined with sessions/recipes. */
+  async function readEntries(sessionId: string): Promise<ReadEntry[]> {
+    const { getDb } = await import("../lib/queue.ts");
+    const db = getDb();
+    try {
+      const rows = db
+        .query(
+          `SELECT s.uuid AS session_id, r.name AS recipe_name,
+                  qe.status, qe.reason, qe.line_count
+             FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+             WHERE s.uuid = ?
+             ORDER BY r.name`,
+        )
+        .all(sessionId) as Array<{
+        session_id: string;
+        recipe_name: string;
+        status: string;
+        reason: string | null;
+        line_count: number | null;
+      }>;
+      return rows.map((r) => ({
+        sessionId: r.session_id,
+        recipeName: r.recipe_name,
+        status: r.status,
+        reason: r.reason,
+        lineCount: r.line_count,
+      }));
+    } finally {
+      db.close();
+    }
+  }
+
+  async function readAllEntries(): Promise<ReadEntry[]> {
+    const { getDb } = await import("../lib/queue.ts");
+    const db = getDb();
+    try {
+      const rows = db
+        .query(
+          `SELECT s.uuid AS session_id, r.name AS recipe_name,
+                  qe.status, qe.reason, qe.line_count
+             FROM queue_entries qe
+             INNER JOIN sessions s ON s.pk = qe.session_pk
+             INNER JOIN recipes r ON r.pk = qe.recipe_pk
+             ORDER BY s.uuid, r.name`,
+        )
+        .all() as Array<{
+        session_id: string;
+        recipe_name: string;
+        status: string;
+        reason: string | null;
+        line_count: number | null;
+      }>;
+      return rows.map((r) => ({
+        sessionId: r.session_id,
+        recipeName: r.recipe_name,
+        status: r.status,
+        reason: r.reason,
+        lineCount: r.line_count,
+      }));
+    } finally {
+      db.close();
+    }
+  }
+
+  /** Pre-seed the queue with an existing (session, recipe) row at the given status. */
+  async function preSeed(
+    sessionId: string,
+    recipeName: string,
+    status: "queued" | "done" | "failed" | "skipped",
+    lineCount: number,
+    reason?: string,
+  ): Promise<void> {
+    const { enqueue, markDone, markFailed, markSkipped } = await import("../lib/queue.ts");
+    if (status === "queued") await enqueue(sessionId, recipeName, lineCount);
+    else if (status === "done") await markDone(sessionId, recipeName, lineCount, null);
+    else if (status === "failed") await markFailed(sessionId, recipeName, reason);
+    else await markSkipped(sessionId, recipeName, reason, lineCount);
   }
 
   /** Create a minimal JSONL session file with the given UUID. */
@@ -93,17 +122,15 @@ describe("session-enqueue", () => {
       project?: string;
       lines?: number;
       ageMs?: number;
-      hasSummary?: boolean;
       subDir?: string;
-      /** Set to true to make the user turn HIDDEN_TAG/SHORT_ASCII so effectiveUserTurns=0. */
+      /** Set true to make the user turn SHORT_ASCII (effectiveUserTurns=0). */
       noEffectiveTurn?: boolean;
     } = {},
   ): Promise<string> {
     const {
       project = "/tmp/test-project",
       lines = 5,
-      ageMs = 3 * 60 * 60 * 1000, // 3 hours (> default 2h minAge)
-      hasSummary = false,
+      ageMs = 3 * 60 * 60 * 1000,
       subDir = "default-project",
       noEffectiveTurn = false,
     } = opts;
@@ -114,15 +141,7 @@ describe("session-enqueue", () => {
 
     const now = Date.now();
     const sessionStart = new Date(now - ageMs).toISOString();
-
     const jsonlLines: string[] = [];
-
-    // First line: user message with cwd. Each entry includes `sessionId` so
-    // CSA stamps the right id on the emitted record (otherwise sessionId is "?").
-    // Default content is Japanese so CSA classifies the turn as EFFECTIVE
-    // (DR-0008: effectiveUserTurns >= 1 is required for normal enqueue).
-    // Pass noEffectiveTurn=true to emit SHORT_ASCII content for testing the
-    // no_effective_turn skip path.
     const userContent = noEffectiveTurn ? "ok" : "ユーザの実質的な発言 hello world";
     jsonlLines.push(
       JSON.stringify({
@@ -134,8 +153,6 @@ describe("session-enqueue", () => {
         message: { role: "user", content: userContent },
       }),
     );
-
-    // Additional lines (assistant responses)
     for (let i = 1; i < lines; i++) {
       jsonlLines.push(
         JSON.stringify({
@@ -147,22 +164,8 @@ describe("session-enqueue", () => {
         }),
       );
     }
-
-    // Summary line if requested
-    if (hasSummary) {
-      jsonlLines.push(
-        JSON.stringify({
-          type: "summary",
-          timestamp: new Date(now - ageMs + lines * 1000).toISOString(),
-          sessionId,
-          summary: "Session ended",
-        }),
-      );
-    }
-
     await Bun.write(filePath, jsonlLines.join("\n") + "\n");
 
-    // Set mtime to simulate age
     const { utimesSync } = await import("node:fs");
     const mtime = new Date(now - ageMs);
     utimesSync(filePath, mtime, mtime);
@@ -172,267 +175,261 @@ describe("session-enqueue", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "session-enqueue-test-"));
-    // CSA discovers Claude config dirs via $HOME/.claude*/settings.json glob.
-    // Using a dotted name lets multiple parallel claudeDirs (e.g. `.claude`,
-    // `.claude2`) be picked up from the same HOME override.
     claudeDir = join(tempDir, ".claude");
+    dotClaude = claudeDir;
     await mkdir(join(claudeDir, "projects"), { recursive: true });
     await Bun.write(join(claudeDir, "settings.json"), "{}");
-
-    // Reset mock state
-    mockClaudeDirs = [claudeDir];
-    mockMinAgeMinutes = 120; // 2 hours
-    mockRecipes = [makeRecipe()];
-    mockRecipesThrow = false;
-
-    // Reset queue mock state
-    enqueueCalls.length = 0;
-    markSkippedCalls.length = 0;
-    queuedSet.clear();
-    failedSet.clear();
-    doneMap.clear();
   });
-
-  /**
-   * Run the enqueue command with CSA pointed at the temp claudeDir so the real
-   * `claude-session-analysis` bin discovers the fixture JSONL files instead of
-   * the user's actual ~/.claude.
-   */
-  async function runEnqueueIsolated(): Promise<void> {
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    await withIsolatedClaudeEnv(tempDir, () => runEnqueue());
-  }
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  /**
+   * Run the real runEnqueue() against a fully-isolated environment.
+   * `setup` runs inside the same env scope so any preSeed / fixture writes
+   * see the same tempDir / queue.db as the SUT.
+   */
+  async function runEnqueueIsolated(
+    opts: {
+      claudeDirs?: string[];
+      minAgeMinutes?: number;
+      recipes?: RecipeFixtureSpec[];
+      setup?: () => Promise<void>;
+    } = {},
+  ): Promise<void> {
+    const recipes = opts.recipes ?? [{ name: "diary" }];
+    await withIsolatedIdeaStorageEnv(tempDir, async () => {
+      await writeConfigFixture(tempDir, {
+        claudeDirs: opts.claudeDirs ?? [dotClaude],
+        minAgeMinutes: opts.minAgeMinutes ?? 120,
+      });
+      await writeRecipeFixtures(tempDir, recipes);
+      if (opts.setup) await opts.setup();
+      const { runEnqueue } = await import("./session-enqueue.ts");
+      await runEnqueue();
+    });
+  }
+
+  /** Read entries inside the isolated env (so getStateDir resolves correctly). */
+  async function inspect<T>(fn: () => Promise<T>): Promise<T> {
+    return await withIsolatedIdeaStorageEnv(tempDir, fn);
+  }
+
   test("claudeDirs の projects ディレクトリが存在しない場合、何もエンキューしない", async () => {
-    mockClaudeDirs = [join(tempDir, "nonexistent")];
-
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
+    await runEnqueueIsolated({ claudeDirs: [join(tempDir, "nonexistent")] });
+    await inspect(async () => {
+      expect(await readAllEntries()).toHaveLength(0);
+    });
   });
 
   test("UUID形式以外のファイル名がフィルタリングされる", async () => {
     const projectsDir = join(claudeDir, "projects");
     const subDir = join(projectsDir, "test-project");
     await mkdir(subDir, { recursive: true });
-
-    // Non-UUID files
     await Bun.write(join(subDir, "not-a-uuid.jsonl"), '{"type":"user"}\n');
     await Bun.write(join(subDir, "readme.md"), "# README\n");
     await Bun.write(join(subDir, "abc.jsonl"), '{"type":"user"}\n');
-
-    // Valid UUID file
     const validUuid = "12345678-1234-1234-1234-123456789abc";
     await createSessionFile(projectsDir, validUuid, { subDir: "test-project" });
 
     await runEnqueueIsolated();
 
-    // Only the valid UUID session should be enqueued
-    expect(enqueueCalls).toHaveLength(1);
-    expect(enqueueCalls[0]!.sessionId).toBe(validUuid);
+    await inspect(async () => {
+      const entries = await readAllEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.sessionId).toBe(validUuid);
+      expect(entries[0]!.recipeName).toBe("dispatcher");
+      expect(entries[0]!.status).toBe("queued");
+    });
   });
 
-  test("既に queued のセッション(dispatcher) はスキップされる", async () => {
-    // Phase 2: enqueue は (session, 'dispatcher') 1 件を queued する。
-    // 既に dispatcher が queued なら無視。
+  test("既に queued の dispatcher エントリは触らない", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId);
 
-    queuedSet.add(`${sessionId}.dispatcher`);
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "dispatcher", "queued", 5);
+      },
+    });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("queued");
+      expect(entries[0]!.lineCount).toBe(5);
+    });
   });
 
-  test("既に done のセッション(dispatcher, 同一行数以上)はスキップされる", async () => {
+  test("done(dispatcher, 同一行数以上)は触らない", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    doneMap.set(`${sessionId}.dispatcher`, 5);
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "dispatcher", "done", 5);
+      },
+    });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("done");
+      expect(entries[0]!.lineCount).toBe(5);
+    });
   });
 
-  test("done だが行数が増えたセッションは dispatcher を再エンキューする", async () => {
+  test("done だが行数が増えたセッションは dispatcher を queued に復帰させる", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 10 });
 
-    // dispatcher は古い lineCount で done。session が伸びたので再 dispatch。
-    doneMap.set(`${sessionId}.dispatcher`, 5);
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "dispatcher", "done", 5);
+      },
+    });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(1);
-    expect(enqueueCalls[0]!.sessionId).toBe(sessionId);
-    expect(enqueueCalls[0]!.recipeName).toBe("dispatcher");
-  });
-
-  test("既に failed のセッション(dispatcher)はスキップされる", async () => {
-    const projectsDir = join(claudeDir, "projects");
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    await createSessionFile(projectsDir, sessionId);
-
-    failedSet.add(`${sessionId}.dispatcher`);
-
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
-  });
-
-  test("正常な enqueue は (session, 'dispatcher') を 1 件 queued する", async () => {
-    // Phase 2: 個別 recipe ではなく dispatcher 1 件を queued。
-    // dispatcher が dequeue 後に user recipes を判断して二段目を enqueue する。
-    const projectsDir = join(claudeDir, "projects");
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    await createSessionFile(projectsDir, sessionId);
-
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(1);
-    expect(enqueueCalls[0]).toEqual({
-      sessionId,
-      recipeName: "dispatcher",
-      lineCount: 5,
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("queued");
+      expect(entries[0]!.lineCount).toBe(10);
     });
   });
 
-  test("effectiveUserTurns=0 のセッションは全 recipe について markSkipped(no_effective_turn) で記録される", async () => {
-    // DR-0008 Phase 1 PR②: 中身のないセッションは enqueueBatch ではなく
-    // markSkipped(no_effective_turn, lineCount=N) で記録する。後で追記されたら
-    // §5.1 ルールが自動で queued に復帰させる前提。
-    mockRecipes = [makeRecipe({ name: "diary" }), makeRecipe({ name: "review" })];
+  test("failed(dispatcher)は触らない (retry 機構に委譲)", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await createSessionFile(projectsDir, sessionId);
 
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "dispatcher", "failed", 0, "boom");
+      },
+    });
+
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("failed");
+    });
+  });
+
+  test("正常な enqueue は (session, 'dispatcher') を 1 件 queued する", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await createSessionFile(projectsDir, sessionId);
+
+    await runEnqueueIsolated();
+
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.recipeName).toBe("dispatcher");
+      expect(entries[0]!.status).toBe("queued");
+      expect(entries[0]!.lineCount).toBe(5);
+    });
+  });
+
+  test("effectiveUserTurns=0 セッションは全 matchesRecipe について markSkipped(no_effective_turn) を記録する", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { noEffectiveTurn: true, lines: 3 });
 
-    await runEnqueueIsolated();
+    await runEnqueueIsolated({
+      recipes: [{ name: "diary" }, { name: "review" }],
+    });
 
-    expect(enqueueCalls).toHaveLength(0);
-    expect(markSkippedCalls).toHaveLength(2);
-    expect(markSkippedCalls.map((c) => c.recipeName).sort()).toEqual(["diary", "review"]);
-    for (const call of markSkippedCalls) {
-      expect(call.sessionId).toBe(sessionId);
-      expect(call.reason).toBe("no_effective_turn");
-      expect(call.lineCount).toBe(3);
-    }
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries.map((e) => e.recipeName).sort()).toEqual(["diary", "review"]);
+      for (const e of entries) {
+        expect(e.status).toBe("skipped");
+        expect(e.reason).toBe("no_effective_turn");
+        expect(e.lineCount).toBe(3);
+      }
+    });
   });
 
-  test("effectiveUserTurns=0 でも既存 queue 状態にあれば markSkipped されない (事前フィルタが効く)", async () => {
+  test("effectiveUserTurns=0 でも既に done(diary, lineCount>=session) なら触らない (事前フィルタ)", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { noEffectiveTurn: true, lines: 5 });
 
-    // 既に同じ lineCount で done になっていれば、no-effective ブランチでも触らない
-    doneMap.set(`${sessionId}.diary`, 5);
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "diary", "done", 5);
+      },
+    });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
-    expect(markSkippedCalls).toHaveLength(0);
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.recipeName).toBe("diary");
+      expect(entries[0]!.status).toBe("done");
+    });
   });
 
-  test("レシピがマッチしないセッションはスキップされる", async () => {
-    // Recipe requires project matching pattern
-    mockRecipes = [
-      makeRecipe({
-        name: "diary",
-        match: { project: "**/special-project/**" },
-      }),
-    ];
-
+  test("matchesRecipe を通過する recipe が 1 つもないセッションは何もエンキューしない", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, {
       project: "/home/user/other-project",
     });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
-  });
-
-  test("minAge未満のセッションはスキップされる", async () => {
-    mockMinAgeMinutes = 120; // 2 hours
-
-    const projectsDir = join(claudeDir, "projects");
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    // Session is only 30 minutes old (< 2 hour minimum)
-    await createSessionFile(projectsDir, sessionId, {
-      ageMs: 30 * 60 * 1000,
+    await runEnqueueIsolated({
+      recipes: [{ name: "diary", match: { project: "**/special-project/**" } }],
     });
 
-    await runEnqueueIsolated();
+    await inspect(async () => {
+      expect(await readAllEntries()).toHaveLength(0);
+    });
+  });
 
-    expect(enqueueCalls).toHaveLength(0);
+  test("minAge 未満のセッションは何もエンキューしない", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await createSessionFile(projectsDir, sessionId, { ageMs: 30 * 60 * 1000 });
+
+    await runEnqueueIsolated({ minAgeMinutes: 120 });
+
+    await inspect(async () => {
+      expect(await readAllEntries()).toHaveLength(0);
+    });
   });
 
   test("複数セッション x 複数レシピは dispatcher 1 件/session に集約される", async () => {
-    // Phase 2: 1 セッションにつき (session, 'dispatcher') を 1 件 enqueue するだけ。
-    // 個別 recipe の振り分けは dispatcher が dequeue 後に行う。
-    mockRecipes = [makeRecipe({ name: "diary" }), makeRecipe({ name: "review" })];
-
     const projectsDir = join(claudeDir, "projects");
     const session1 = "11111111-1111-1111-1111-111111111111";
     const session2 = "22222222-2222-2222-2222-222222222222";
     await createSessionFile(projectsDir, session1, { subDir: "proj-a" });
     await createSessionFile(projectsDir, session2, { subDir: "proj-b" });
 
-    await runEnqueueIsolated();
+    await runEnqueueIsolated({
+      recipes: [{ name: "diary" }, { name: "review" }],
+    });
 
-    // 2 sessions x 1 dispatcher = 2 enqueue calls
-    expect(enqueueCalls).toHaveLength(2);
-    const keys = enqueueCalls.map((c) => `${c.sessionId}.${c.recipeName}`).sort();
-    expect(keys).toEqual([`${session1}.dispatcher`, `${session2}.dispatcher`]);
+    await inspect(async () => {
+      const entries = await readAllEntries();
+      expect(entries).toHaveLength(2);
+      const keys = entries.map((e) => `${e.sessionId}.${e.recipeName}`).sort();
+      expect(keys).toEqual([`${session1}.dispatcher`, `${session2}.dispatcher`]);
+      for (const e of entries) expect(e.status).toBe("queued");
+    });
   });
 
-  test("レシピが空の場合は CliError を throw する（process.exit しない）", async () => {
-    mockRecipes = [];
-
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    const { CliError } = await import("../lib/errors.ts");
-    await expect(runEnqueue()).rejects.toThrow(CliError);
-  });
-
-  test("レシピディレクトリが存在しない場合は CliError を throw する（process.exit しない）", async () => {
-    mockRecipesThrow = true;
-
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    const { CliError } = await import("../lib/errors.ts");
-    await expect(runEnqueue()).rejects.toThrow(CliError);
+  test("レシピが空の場合は CliError を throw する", async () => {
+    await expect(runEnqueueIsolated({ recipes: [] })).rejects.toThrow(/recipe/);
   });
 
   test("レシピが空の場合のエラーメッセージに次のアクション案内が含まれる", async () => {
-    mockRecipes = [];
-
-    const { runEnqueue } = await import("./session-enqueue.ts");
     try {
-      await runEnqueue();
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toContain("recipe-*.md");
-      expect((err as Error).message).toContain("config-examples/");
-    }
-  });
-
-  test("レシピディレクトリが存在しない場合のエラーメッセージに次のアクション案内が含まれる", async () => {
-    mockRecipesThrow = true;
-
-    const { runEnqueue } = await import("./session-enqueue.ts");
-    try {
-      await runEnqueue();
-      expect(true).toBe(false); // should not reach here
+      await runEnqueueIsolated({ recipes: [] });
+      expect(true).toBe(false);
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain("recipe-*.md");
@@ -441,27 +438,22 @@ describe("session-enqueue", () => {
   });
 
   test("複数のclaudeDirsを走査する", async () => {
-    // Dotted name so CSA's `$HOME/.claude*/settings.json` glob finds it.
     const claudeDir2 = join(tempDir, ".claude2");
     await mkdir(join(claudeDir2, "projects"), { recursive: true });
     await Bun.write(join(claudeDir2, "settings.json"), "{}");
-    mockClaudeDirs = [claudeDir, claudeDir2];
 
     const session1 = "11111111-1111-1111-1111-111111111111";
     const session2 = "22222222-2222-2222-2222-222222222222";
+    await createSessionFile(join(claudeDir, "projects"), session1, { subDir: "proj-a" });
+    await createSessionFile(join(claudeDir2, "projects"), session2, { subDir: "proj-b" });
 
-    await createSessionFile(join(claudeDir, "projects"), session1, {
-      subDir: "proj-a",
+    await runEnqueueIsolated({ claudeDirs: [claudeDir, claudeDir2] });
+
+    await inspect(async () => {
+      const sessionIds = (await readAllEntries()).map((e) => e.sessionId).sort();
+      expect(sessionIds).toContain(session1);
+      expect(sessionIds).toContain(session2);
     });
-    await createSessionFile(join(claudeDir2, "projects"), session2, {
-      subDir: "proj-b",
-    });
-
-    await runEnqueueIsolated();
-
-    const sessionIds = enqueueCalls.map((c) => c.sessionId).sort();
-    expect(sessionIds).toContain(session1);
-    expect(sessionIds).toContain(session2);
   });
 
   test("done(dispatcher) の行数が多い場合はスキップされる（doneLines >= sessionLines）", async () => {
@@ -469,29 +461,31 @@ describe("session-enqueue", () => {
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    // Dispatcher already finished at a higher lineCount; no need to rerun.
-    doneMap.set(`${sessionId}.dispatcher`, 100);
+    await runEnqueueIsolated({
+      setup: async () => {
+        await preSeed(sessionId, "dispatcher", "done", 100);
+      },
+    });
 
-    await runEnqueueIsolated();
-
-    expect(enqueueCalls).toHaveLength(0);
+    await inspect(async () => {
+      const entries = await readEntries(sessionId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.status).toBe("done");
+      expect(entries[0]!.lineCount).toBe(100);
+    });
   });
 
   test("レシピのminTurns条件でフィルタリングされる", async () => {
-    mockRecipes = [
-      makeRecipe({
-        name: "diary",
-        match: { minTurns: 10 },
-      }),
-    ];
-
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    // Session has only a few user turns (< minTurns 10)
     await createSessionFile(projectsDir, sessionId, { lines: 5 });
 
-    await runEnqueueIsolated();
+    await runEnqueueIsolated({
+      recipes: [{ name: "diary", match: { min_turns: 10 } }],
+    });
 
-    expect(enqueueCalls).toHaveLength(0);
+    await inspect(async () => {
+      expect(await readAllEntries()).toHaveLength(0);
+    });
   });
 });

@@ -118,3 +118,136 @@ export async function withIsolatedClaudeEnv<T>(base: string, fn: () => Promise<T
     else process.env.CLAUDE_CONFIG_DIR = origCfg;
   }
 }
+
+/**
+ * Like {@link withIsolatedClaudeEnv} but also redirects all of idea-storage's
+ * XDG paths under `base`, so tests can exercise the real config / recipe /
+ * paths / queue / rate-limit-store modules against a temporary on-disk state
+ * instead of mocking those internal layers.
+ *
+ * Layout under `base`:
+ *   <base>/projects/...                 — CSA fixture JSONLs (HOME / CLAUDE_CONFIG_DIR)
+ *   <base>/.config/idea-storage/        — config.ts, recipe-*.md (XDG_CONFIG_HOME)
+ *   <base>/state/idea-storage/          — queue.db, rate_limit.db etc. (XDG_STATE_HOME)
+ *   <base>/data/idea-storage/           — output files, _rejected/ (XDG_DATA_HOME)
+ *
+ * Within a single test file, save/restore is safe because tests run
+ * sequentially. Between files, bun test isolates `process.env` mutations on
+ * its own, so this helper is composable without leaking across files.
+ */
+export async function withIsolatedIdeaStorageEnv<T>(
+  base: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const origHome = process.env.HOME;
+  const origClaudeCfg = process.env.CLAUDE_CONFIG_DIR;
+  const origXdgConfig = process.env.XDG_CONFIG_HOME;
+  const origXdgState = process.env.XDG_STATE_HOME;
+  const origXdgData = process.env.XDG_DATA_HOME;
+  process.env.HOME = base;
+  process.env.CLAUDE_CONFIG_DIR = base;
+  process.env.XDG_CONFIG_HOME = join(base, ".config");
+  process.env.XDG_STATE_HOME = join(base, "state");
+  process.env.XDG_DATA_HOME = join(base, "data");
+  try {
+    return await fn();
+  } finally {
+    if (origHome === undefined) delete process.env.HOME;
+    else process.env.HOME = origHome;
+    if (origClaudeCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = origClaudeCfg;
+    if (origXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdgConfig;
+    if (origXdgState === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = origXdgState;
+    if (origXdgData === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = origXdgData;
+  }
+}
+
+export interface ConfigFixtureOpts {
+  /** claudeDirs override. Defaults to [`<base>/.claude`]. */
+  claudeDirs?: string[];
+  /** minAgeMinutes override. Defaults to 120 (idea-storage's default). */
+  minAgeMinutes?: number;
+}
+
+/**
+ * Write `<base>/.config/idea-storage/config.ts` so the real `loadConfig()`
+ * picks it up via XDG_CONFIG_HOME (paired with `withIsolatedIdeaStorageEnv`).
+ */
+export async function writeConfigFixture(base: string, opts: ConfigFixtureOpts): Promise<void> {
+  const configDir = join(base, ".config", "idea-storage");
+  await mkdir(configDir, { recursive: true });
+  const claudeDirs = opts.claudeDirs ?? [join(base, ".claude")];
+  const minAgeMinutes = opts.minAgeMinutes ?? 120;
+  const content = `export default ${JSON.stringify({ claudeDirs, minAgeMinutes }, null, 2)};\n`;
+  await writeFile(join(configDir, "config.ts"), content);
+}
+
+export interface RecipeFixtureSpec {
+  /** recipe name (becomes recipe-<name>.md) */
+  name: string;
+  /** match block (project / minTurns / minAge) */
+  match?: { project?: string; min_turns?: number; min_age?: number };
+  /** default "append" */
+  onExisting?: "append" | "separate" | "skip";
+  /** optional Phase 2 hint for the dispatcher */
+  hint?: string;
+  /** optional Phase 3 inject_recent N */
+  injectRecent?: number;
+  /** prompt body (the `## Hint` etc. below frontmatter) */
+  prompt?: string;
+}
+
+/**
+ * Write each recipe spec as `<base>/.config/idea-storage/recipe-<name>.md` so
+ * the real `loadRecipes()` discovers them via XDG_CONFIG_HOME.
+ */
+export async function writeRecipeFixtures(
+  base: string,
+  recipes: RecipeFixtureSpec[],
+): Promise<void> {
+  const configDir = join(base, ".config", "idea-storage");
+  await mkdir(configDir, { recursive: true });
+  for (const r of recipes) {
+    const frontmatter: Record<string, unknown> = {};
+    if (r.match && Object.keys(r.match).length > 0) frontmatter.match = r.match;
+    if (r.onExisting) frontmatter.on_existing = r.onExisting;
+    if (r.hint) frontmatter.hint = r.hint;
+    if (r.injectRecent !== undefined) frontmatter.inject_recent = r.injectRecent;
+    const fmYaml =
+      Object.keys(frontmatter).length === 0
+        ? "---\n---\n"
+        : `---\n${stringifyFrontmatter(frontmatter)}---\n`;
+    const body = r.prompt ?? `Write a ${r.name}`;
+    await writeFile(join(configDir, `recipe-${r.name}.md`), `${fmYaml}${body}\n`);
+  }
+}
+
+/** Minimal YAML serializer for the keys we use in recipe frontmatter. */
+function stringifyFrontmatter(obj: Record<string, unknown>): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      lines.push(`${key}:`);
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        lines.push(`  ${k}: ${formatYamlValue(v)}`);
+      }
+    } else {
+      lines.push(`${key}: ${formatYamlValue(value)}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatYamlValue(v: unknown): string {
+  if (typeof v === "string") {
+    // Quote strings that contain YAML-significant characters; otherwise leave bare.
+    if (/[:#\[\]{},&*!|>'"%@`]/.test(v) || /^\s|\s$/.test(v)) {
+      return JSON.stringify(v);
+    }
+    return v;
+  }
+  return String(v);
+}

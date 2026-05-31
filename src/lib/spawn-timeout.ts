@@ -25,9 +25,13 @@ export interface SpawnResult {
 export async function spawnWithTimeout(options: SpawnWithTimeoutOptions): Promise<SpawnResult> {
   const { cmd, timeoutMs } = options;
 
+  // Pass env explicitly so tests can override HOME / CLAUDE_CONFIG_DIR (used by
+  // CSA for session discovery) via process.env. Bun.spawn does not inherit
+  // process.env by default.
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env },
   });
 
   const stdoutPromise = new Response(proc.stdout).text();

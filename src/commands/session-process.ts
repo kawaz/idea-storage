@@ -406,6 +406,25 @@ export type ProcessSessionResult =
   | { kind: "processed"; outputFile: string; lineCount: number }
   | { kind: "skipped"; reason: string; lineCount: number };
 
+/**
+ * Count the number of standalone `---` lines in a CSA timeline output.
+ * Used by {@link isValidCsaTimeline} to detect malformed CSA output.
+ * Exported so tests can verify the contract directly without mocking spawn.
+ */
+export function countTimelineSeparators(convText: string): number {
+  return convText.split("\n").filter((l) => l.trim() === "---").length;
+}
+
+/**
+ * Returns true if `convText` looks like a valid CSA `timeline --md` output.
+ * A valid output always has at least two `---` separators (the open and close
+ * lines of the YAML-style frontmatter). Anything less is malformed (e.g. CSA
+ * wrote `error: ...` to stdout while still exiting 0).
+ */
+export function isValidCsaTimeline(convText: string): boolean {
+  return countTimelineSeparators(convText) >= 2;
+}
+
 export async function processSession(input: ProcessSessionInput): Promise<ProcessSessionResult> {
   const {
     sessionId,
@@ -488,8 +507,8 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
   // than two `---` separators, exitCode==0 notwithstanding, the output is not
   // a valid timeline (e.g. CSA wrote "error: ..." to stdout). Skip such
   // sessions instead of feeding malformed text into the recipe prompt.
-  const separatorCount = convText.split("\n").filter((l) => l.trim() === "---").length;
-  if (separatorCount < 2) {
+  if (!isValidCsaTimeline(convText)) {
+    const separatorCount = countTimelineSeparators(convText);
     log({ key, msg: "skip", reason: "empty_or_invalid_timeline", separatorCount });
     return {
       kind: "skipped",
