@@ -244,7 +244,7 @@ function stringifyFrontmatter(obj: Record<string, unknown>): string {
 function formatYamlValue(v: unknown): string {
   if (typeof v === "string") {
     // Quote strings that contain YAML-significant characters; otherwise leave bare.
-    if (/[:#\[\]{},&*!|>'"%@`]/.test(v) || /^\s|\s$/.test(v)) {
+    if (/[:#[\]{},&*!|>'"%@`]/.test(v) || /^\s|\s$/.test(v)) {
       return JSON.stringify(v);
     }
     return v;
