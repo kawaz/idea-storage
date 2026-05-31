@@ -416,6 +416,36 @@ Effective filter pass rate (last 30 days): X.X%
 | Phase 3                | Phase 2 安定後                 | quality_rejected 率、`_rejected/` 内容のスポットチェック   |
 | Phase 4 (DR-0009 予定) | Phase 3 運用結果を見てから設計 | quality_guidelines.md の自動更新ループ                     |
 
+## 実装完了状況 (2026-05-30)
+
+DR-0008 の §1〜§11 すべて main にマージ済み。Phase 4 (DR-0009 予定) は本 DR の
+スコープ外で、運用結果を見てから別 DR として起案する。
+
+| §               | 内容                                                        | 対応 PR / commit                                                      |
+| --------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| §1〜§3 (三段階) | パイプライン全体                                            | PR① / PR② / PR③ / PR④ で段階的に実装                                  |
+| §4              | CSA jsonl フィールド拡張 (消費側; CSA 本体は別リポで対応済) | PR① (`10e043a6`)                                                      |
+| §5              | 静的フィルタ + `skipped(no_effective_turn)` 記録            | PR② (`a256eb91`)                                                      |
+| §5.1            | enqueue UPSERT 遷移ルール                                   | PR② (`a256eb91`) + PR③ (`7404b6a4`) で `dispatcher_rejected` 復帰追加 |
+| §6              | dispatcher (二段キュー)                                     | PR③ (`7404b6a4`)                                                      |
+| §7              | recipe `hint:` frontmatter                                  | PR③ (`7404b6a4`)                                                      |
+| §8              | 品質ガード + `_rejected/` 退避                              | PR④ (`d3b8c628`)                                                      |
+| §9              | 過去出力注入 (`inject_recent: N`)                           | PR⑤ (`69a6131d`)                                                      |
+| §10             | 出力 frontmatter に `claude_model` / `claude_version`       | PR⑤ (`69a6131d`)                                                      |
+| §11             | `session status` skipped breakdown (lifetime totals)        | PR⑥ (`4cde212d`)                                                      |
+
+各 PR の経緯・設計判断詳細は `docs/journal/2026-05-30-pr{1,2,3,4,5,6}-*.md` を参照。
+
+### スコープ内で残した未完了部分 (運用安定後に別 PR で対応)
+
+- §11 の「last 30 days」時間窓フィルタ (現状は lifetime totals)
+- §11 の `dispatcher fallback rate` / `quality gate rejection rate` /
+  `effective filter pass rate` (history.action='dispatch_decided' のパース集計が必要)
+- `session-enqueue.test.ts` で `mock.module("../lib/queue.ts")` を継続使用している点
+  (PR① の「mock 排除」方針との不整合; mock 撤去は別 PR で対応予定)
+- `session-process.test.ts` の dispatcher / quality gate / inject_recent
+  end-to-end 統合テスト (現状は各単体のみ)
+
 ## 関連 DR
 
 - DR-0004: queue persistence — SQLite キューの基盤
