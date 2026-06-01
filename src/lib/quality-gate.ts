@@ -15,7 +15,7 @@
  * - 採否表現は二値 (accepted/rejected) + reason テキスト (DR-0008 §8、スコアは校正不安定)
  */
 
-import { runClaude } from "./claude-runner.ts";
+import { type ClaudeRunner, runClaude } from "./claude-runner.ts";
 import { getQualityGuidelinesPath } from "./paths.ts";
 import { redactForPrompt } from "./redact-pipeline.ts";
 
@@ -26,8 +26,11 @@ export interface QualityGateInput {
   recipeName: string;
   /** Guidelines text. Defaults to loadQualityGuidelines() (stateDir → default). */
   guidelines?: string;
-  /** Override runClaude (for tests). */
-  _runClaude?: (prompt: string) => Promise<string>;
+  /**
+   * Override runClaude (for tests). Uses the unified `ClaudeRunner` signature
+   * (DR-0009 Phase 3 step 3-e): receives full options, returns the response text.
+   */
+  _runClaude?: ClaudeRunner;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -123,15 +126,14 @@ export async function runQualityGate(input: QualityGateInput): Promise<QualityVe
     redactForPrompt(input.output),
   ].join("\n");
 
+  const run = input._runClaude ?? runClaude;
   let raw: string;
   try {
-    raw = input._runClaude
-      ? await input._runClaude(prompt)
-      : await runClaude({
-          prompt,
-          timeoutMs: input.timeoutMs,
-          signal: input.signal,
-        });
+    raw = await run({
+      prompt,
+      timeoutMs: input.timeoutMs,
+      signal: input.signal,
+    });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     return {

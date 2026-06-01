@@ -6,7 +6,7 @@ import {
   getSessionTimeline,
   isValidCsaTimeline,
 } from "../csa.ts";
-import { runClaude, ClaudeTimeoutError } from "../claude-runner.ts";
+import { type ClaudeRunner, runClaude, ClaudeTimeoutError } from "../claude-runner.ts";
 import { runQualityGate } from "../quality-gate.ts";
 import { getClaudeMeta } from "../claude-meta.ts";
 import { listRecentOutputs, formatInjectedRecent } from "../recent-outputs.ts";
@@ -61,6 +61,15 @@ export interface ProcessSessionInput {
   appendPreviousRunNote?: boolean;
   /** ロギング用の key (デフォルト: `${sessionId}.${recipe.name}`) */
   logKey?: string;
+  /**
+   * Override runClaude for tests (DR-0009 Phase 3 step 3-e). When set, this
+   * replaces runClaude across all three LLM sinks invoked by processSession:
+   * the single-pass call, processChunked, and runQualityGate. Production code
+   * leaves this undefined; tests use it instead of `mock.module()` to avoid
+   * the dynamic-import mock leak documented in
+   * `docs/journal/2026-05-31-mock-removal-real-cause.md`.
+   */
+  _runClaude?: ClaudeRunner;
 }
 
 export type ProcessSessionResult =
@@ -78,7 +87,9 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
     signal,
     forceProcess = false,
     appendPreviousRunNote = false,
+    _runClaude,
   } = input;
+  const run = _runClaude ?? runClaude;
   const recipeName = recipe.name;
   const key = input.logKey ?? `${sessionId}.${recipeName}`;
 
@@ -197,7 +208,7 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
         sessionId,
         meta,
         taskTimeoutMs,
-        undefined,
+        _runClaude,
         signal,
       );
     } else {
@@ -214,7 +225,7 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
 
 ## 会話タイムライン
 ${timelineText}`;
-      output = await runClaude({
+      output = await run({
         prompt: fullPrompt,
         addDir: dataDir,
         timeoutMs: taskTimeoutMs,
@@ -263,6 +274,7 @@ ${timelineText}`;
     recipeName,
     timeoutMs: taskTimeoutMs,
     signal,
+    _runClaude,
   });
   log({
     key,

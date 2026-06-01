@@ -61,8 +61,8 @@ describe("runQualityGate", () => {
     let captured = "";
     await runQualityGate({
       ...baseInput,
-      _runClaude: async (p) => {
-        captured = p;
+      _runClaude: async (options) => {
+        captured = options.prompt;
         return JSON.stringify({ kind: "accepted", reason: "ok" });
       },
     });
@@ -87,8 +87,8 @@ describe("runQualityGate", () => {
       output: `生成テキスト token=${ghToken} さらに続く文章`,
       recipeName: "diary",
       guidelines: "GUIDELINES",
-      _runClaude: async (p) => {
-        captured = p;
+      _runClaude: async (options) => {
+        captured = options.prompt;
         return JSON.stringify({ kind: "accepted", reason: "ok" });
       },
     });

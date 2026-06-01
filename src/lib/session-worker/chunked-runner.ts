@@ -1,5 +1,4 @@
-import { ClaudeAbortError, runClaude } from "../claude-runner.ts";
-import type { ClaudeRunOptions } from "../claude-runner.ts";
+import { type ClaudeRunner, ClaudeAbortError, runClaude } from "../claude-runner.ts";
 import { DEFAULT_MAX_CHUNK_BYTES, extractChunkText, type TimelineChunk } from "../chunker.ts";
 import { log } from "../logging.ts";
 import { redactForPrompt } from "../redact-pipeline.ts";
@@ -17,7 +16,8 @@ import { recordWorkerObservation } from "./worker-observation.ts";
  * 3. まだ失敗があり、全体サイズが maxChunkBytes 以内なら分割なしで1回再試行
  * 4. それでも失敗なら例外を投げる
  *
- * @param _runClaudeOverride - テスト用: runClaude の差し替え関数
+ * @param _runClaude - テスト用: runClaude の差し替え (DR-0009 Phase 3 step 3-e で
+ *   `ClaudeRunner` 型に統一)
  */
 export async function processChunked(
   convText: string,
@@ -26,10 +26,10 @@ export async function processChunked(
   sessionId: string,
   meta: SessionMeta,
   timeoutMs?: number,
-  _runClaudeOverride?: (options: ClaudeRunOptions) => Promise<string>,
+  _runClaude?: ClaudeRunner,
   externalSignal?: AbortSignal,
 ): Promise<string> {
-  const run = _runClaudeOverride ?? runClaude;
+  const run = _runClaude ?? runClaude;
   // meta.project (= session cwd) は session 由来の文字列で、env や path に
   // secret が含まれうる。dispatcher prompt は Phase 1 で redact 済だが、
   // article generation 系の prompt は補強コミットで対応 (codex review #3)。

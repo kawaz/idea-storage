@@ -15,6 +15,15 @@ export class ClaudeAbortError extends Error {
   }
 }
 
+/**
+ * DR-0009 Phase 3 step 3-e: unified DI seam for LLM invocation.
+ *
+ * All callers that need to override `runClaude` (tests, drivers) accept a
+ * `_runClaude?: ClaudeRunner` rather than ad-hoc per-site signatures. The
+ * signature mirrors `runClaude` itself so injection is transparent.
+ */
+export type ClaudeRunner = (options: ClaudeRunOptions) => Promise<string>;
+
 export interface ClaudeRunOptions {
   prompt: string;
   addDir?: string;

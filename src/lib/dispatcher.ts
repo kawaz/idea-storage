@@ -14,7 +14,7 @@
  */
 
 import type { Recipe, SessionMeta } from "../types/index.ts";
-import { runClaude } from "./claude-runner.ts";
+import { type ClaudeRunner, runClaude } from "./claude-runner.ts";
 import { getDispatcherPromptPath } from "./paths.ts";
 import { redactForOutput, redactForPrompt } from "./redact-pipeline.ts";
 
@@ -28,8 +28,11 @@ export interface DispatcherInput {
    * Tests can inject a fixed template here.
    */
   promptTemplate?: string;
-  /** Override runClaude (for tests). */
-  _runClaude?: (prompt: string) => Promise<string>;
+  /**
+   * Override runClaude (for tests). Uses the unified `ClaudeRunner` signature
+   * (DR-0009 Phase 3 step 3-e): receives full options, returns the response text.
+   */
+  _runClaude?: ClaudeRunner;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -158,13 +161,12 @@ export async function runDispatcher(input: DispatcherInput): Promise<DispatcherD
   const template = input.promptTemplate ?? (await loadDispatcherPrompt());
   const fullPrompt = `${template.trim()}\n\n${buildDispatcherInputBlock(input)}\n`;
 
-  const raw = input._runClaude
-    ? await input._runClaude(fullPrompt)
-    : await runClaude({
-        prompt: fullPrompt,
-        timeoutMs: input.timeoutMs,
-        signal: input.signal,
-      });
+  const run = input._runClaude ?? runClaude;
+  const raw = await run({
+    prompt: fullPrompt,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
+  });
 
   const allNames = input.recipes.map((r) => r.name);
   const parsed = parseDispatcherOutput(raw);

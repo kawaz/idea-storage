@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -9,12 +9,15 @@ import {
   writeRecipeFixtures,
 } from "../lib/test-fixtures.ts";
 
-// Policy: no internal mock.module() at file scope. config / recipe / paths /
+// Policy: no mock.module() anywhere in this file. config / recipe / paths /
 // queue / rate-limit / spawn-timeout (= CSA spawn) are all real modules
-// exercised against a temp on-disk state. Only claude-runner is mocked, and
-// we mock it inline per-test (NOT at file scope) so that the file-level
-// static import of ClaudeAbortError used by processChunked tests below
-// keeps pointing at the real class (instanceof checks would break otherwise).
+// exercised against a temp on-disk state. claude-runner — the only true
+// external API — is injected via the `_runClaude?: ClaudeRunner` DI hook on
+// ProcessSessionInput / processChunked (DR-0009 Phase 3 step 3-e). This
+// avoids the bun-test 1.3.x dynamic-import mock leak documented in
+// docs/journal/2026-05-31-mock-removal-real-cause.md, and lets the file-level
+// static import of ClaudeAbortError (used by processChunked tests below) keep
+// pointing at the real class so `instanceof` checks always hold.
 
 // Use valid UUID-format session IDs for the new validation logic.
 const MISSING_SID = "11111111-1111-4111-a111-111111111111";
@@ -214,20 +217,10 @@ describe("session-process", () => {
     await mkdir(projectDir, { recursive: true });
     await Bun.write(join(projectDir, `${EMPTY_SID}.jsonl`), "");
 
-    // Inline claude-runner mock to avoid hitting the real claude CLI in the
-    // (unlikely) event the code path reached it. Empty session should short-
-    // circuit before runClaude though.
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async () => "should-not-be-called"),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs = 0) {
-          super(`timeout ${timeoutMs}`);
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {},
-    }));
+    // Note: no claude-runner mock needed — processSession short-circuits on
+    // empty_session (meta.lineCount === 0) before any LLM call. Avoiding
+    // mock.module here also prevents the dynamic-import leak documented in
+    // docs/journal/2026-05-31-mock-removal-real-cause.md.
 
     const result = await runProcessIsolated({
       setup: async () => {
@@ -901,8 +894,9 @@ describe("processChunked single chunk", () => {
 });
 
 // --- redact integration test ---
-// Exercises processSession via real CSA (timeline). Only claude-runner is
-// mocked, inline, to capture the prompt passed in. We assert redact ran by
+// Exercises processSession via real CSA (timeline). claude-runner is replaced
+// per-test via the `_runClaude` DI hook to capture the prompt passed in.
+// We assert redact ran by
 // inspecting that captured prompt.
 
 describe("processSession redact integration", () => {
@@ -938,28 +932,12 @@ describe("processSession redact integration", () => {
     });
     await Bun.write(filePath, line + "\n");
 
-    // Capture prompts via inline claude-runner mock.
+    // Capture prompts via _runClaude DI (DR-0009 Phase 3 step 3-e).
     const runClaudeCalls: Array<{ prompt: string }> = [];
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async (options: { prompt: string }) => {
-        runClaudeCalls.push({ prompt: options.prompt });
-        return "# Title\n\nFake article output";
-      }),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
+    const fakeRunClaude = async (options: import("../lib/claude-runner.ts").ClaudeRunOptions) => {
+      runClaudeCalls.push({ prompt: options.prompt });
+      return "# Title\n\nFake article output";
+    };
 
     // Capture log output for the redacted counter assertion.
     const logLines: string[] = [];
@@ -988,6 +966,7 @@ describe("processSession redact integration", () => {
           meta,
           sessionStats: { turns: 1, bytes: 100 },
           dataDir: join(workDir, "data"),
+          _runClaude: fakeRunClaude,
         });
         expect(result.kind).toBe("processed");
       });
@@ -1031,25 +1010,12 @@ describe("processSession redact integration", () => {
     });
     await Bun.write(filePath, line + "\n");
 
-    // LLM mock: 出力に secret を含めて返す (= LLM がうっかり transcribe / hallucinate
+    // LLM injection: 出力に secret を含めて返す (= LLM がうっかり transcribe / hallucinate
     // した想定)。output 防御層がここで止めるべき。
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async () => `# Article\n\n本文内に token=${ghToken} を含む\n`),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
+    // Both single-pass + quality_gate go through the same _runClaude shim;
+    // quality_gate's response (non-JSON or accepted) doesn't matter — its
+    // parse-fallback is `accepted`, which is what this test needs.
+    const fakeRunClaude = async () => `# Article\n\n本文内に token=${ghToken} を含む\n`;
 
     let outputFile = "";
     await withIsolatedIdeaStorageEnv(workDir, async () => {
@@ -1068,6 +1034,7 @@ describe("processSession redact integration", () => {
         meta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
+        _runClaude: fakeRunClaude,
       });
       expect(result.kind).toBe("processed");
       if (result.kind === "processed") {
@@ -1104,32 +1071,16 @@ describe("processSession redact integration", () => {
     });
     await Bun.write(filePath, line + "\n");
 
-    // mock: 1 回目 (content 生成) は secret 含む output、2 回目 (quality_gate) は rejected
+    // DI: 1 回目 (content 生成) は secret 含む output、2 回目 (quality_gate) は rejected
     let callCount = 0;
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async () => {
-        callCount++;
-        if (callCount === 1) {
-          return `# Article\n\n本文 token=${ghToken}\n`;
-        }
-        // quality_gate を rejected に倒す
-        return JSON.stringify({ kind: "rejected", reason: "too thin" });
-      }),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
+    const fakeRunClaude = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return `# Article\n\n本文 token=${ghToken}\n`;
+      }
+      // quality_gate を rejected に倒す
+      return JSON.stringify({ kind: "rejected", reason: "too thin" });
+    };
 
     await withIsolatedIdeaStorageEnv(workDir, async () => {
       const { processSession } = await import("./session-process.ts");
@@ -1147,6 +1098,7 @@ describe("processSession redact integration", () => {
         meta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
+        _runClaude: fakeRunClaude,
       });
       expect(result.kind).toBe("skipped");
       if (result.kind === "skipped") {
@@ -1251,8 +1203,8 @@ Fork content here`;
 
 // --- #16 processSession fork guard test ---
 // Pure functional test: pass `meta.forkInfo.firstNewUuid=""` and verify the
-// early-skip path. Uses a real session JSONL + real CSA for timeline. Inline
-// claude-runner mock guards against accidentally hitting the real CLI.
+// early-skip path. Uses a real session JSONL + real CSA for timeline.
+// _runClaude DI guards against accidentally hitting the real CLI.
 
 describe("processSession fork guard (#16)", () => {
   let workDir: string;
@@ -1286,26 +1238,10 @@ describe("processSession fork guard (#16)", () => {
     await Bun.write(join(projectDir, `${FORK_SID}.jsonl`), line + "\n");
 
     const runClaudeCalls: Array<{ prompt: string }> = [];
-    mock.module("../lib/claude-runner.ts", () => ({
-      runClaude: mock(async (options: { prompt: string }) => {
-        runClaudeCalls.push({ prompt: options.prompt });
-        return "should-not-be-called";
-      }),
-      ClaudeTimeoutError: class extends Error {
-        readonly timeoutMs: number;
-        constructor(timeoutMs: number) {
-          super(`claude process timed out after ${timeoutMs}ms`);
-          this.name = "ClaudeTimeoutError";
-          this.timeoutMs = timeoutMs;
-        }
-      },
-      ClaudeAbortError: class extends Error {
-        constructor() {
-          super("claude process was aborted");
-          this.name = "ClaudeAbortError";
-        }
-      },
-    }));
+    const fakeRunClaude = async (options: import("../lib/claude-runner.ts").ClaudeRunOptions) => {
+      runClaudeCalls.push({ prompt: options.prompt });
+      return "should-not-be-called";
+    };
 
     const baseMeta: import("../types/index.ts").SessionMeta = {
       id: FORK_SID,
@@ -1337,6 +1273,7 @@ describe("processSession fork guard (#16)", () => {
         meta: baseMeta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
+        _runClaude: fakeRunClaude,
       });
 
       expect(result.kind).toBe("skipped");

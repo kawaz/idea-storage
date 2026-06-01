@@ -178,9 +178,67 @@ driver ロジックを `lib/driver/` 配下 4 ファイルに分離。commands/ 
 
 **検証**: bun test (828 pass) / tsc clean / just check 全 pass
 
-### Step 3-e: LLM DI シーム統一 (`_runClaude?: ClaudeRunner` 全箇所) (未着手)
+### Step 3-e + 3-f: DI シーム統一 + mock.module 撤去 ✓
 
-### Step 3-f: mock.module("../lib/claude-runner.ts") 全 4 箇所撤去 (未着手)
+LLM 呼び出しの DI を `ClaudeRunner` 型で全箇所統一、session-process.test.ts の
+mock.module 撤去。
+
+**`ClaudeRunner` 型新規**: `src/lib/claude-runner.ts:18`
+
+```ts
+export type ClaudeRunner = (options: ClaudeRunOptions) => Promise<string>;
+```
+
+**DI 統一 (production)**:
+
+- `dispatcher.ts`: `_runClaude?: ClaudeRunner` (= 旧 `(prompt: string) => Promise<string>` から
+  options 引数に拡張、内部で `options.prompt` を見る)
+- `quality-gate.ts`: 同上
+- `session-worker/chunked-runner.ts`: 7 番目引数 `_runClaudeOverride` を `_runClaude`
+  に rename + 型統一
+- `session-worker/index.ts`: `ProcessSessionInput` に `_runClaude?: ClaudeRunner` を
+  追加。**3 つの LLM sink すべてに配線**:
+  - single-pass の `run({...})` (= 旧 `runClaude` 直叩き)
+  - `processChunked(..., _runClaude, signal)`
+  - `runQualityGate({..., _runClaude })` (= advisor 助言で発見、quality_gate
+    forwarding 漏れの危険を回避)
+
+**mock.module 撤去** (session-process.test.ts、5 箇所):
+
+| line | 旧                                                     | 新                                                     |
+| ---- | ------------------------------------------------------ | ------------------------------------------------------ |
+| 220  | empty_session driver path                              | mock 不要 (= short-circuit で runClaude 未到達) → 削除 |
+| 943  | redact integration                                     | `_runClaude: fakeRunClaude` DI 注入                    |
+| 1036 | LLM output redact                                      | DI 注入                                                |
+| 1109 | `_rejected/` quality_gate=rejected (2-call sequencing) | DI 注入                                                |
+| 1289 | fork guard (runClaude unreachable assert)              | DI 注入                                                |
+
+不要 `mock` import 削除、関連 file-scope コメント 3 箇所更新。
+
+**test 書き換え (signature flip)**:
+
+- dispatcher.test.ts (3 sites) + quality-gate.test.ts (2 sites):
+  `async (prompt) => ...` → `async (options) => { ... options.prompt ... }`
+- `async () => ...` (引数を見ない箇所) は無変更
+
+**ハマり所**:
+
+- 当初「mock.module 4 箇所」予定だったが実際は **5 箇所**。L220 は driver path で
+  runClaude 未到達、DI 不要として削除
+- session-worker/index.ts の DI 配線は当初 single-pass のみの想定 → advisor
+  助言で 3 sink すべてに配線必要と判明。quality_gate 経路を忘れると test 1109
+  (= \_rejected/ 経路) が gate parse-fallback で `accepted` に流れて失敗
+- bun 1.3.13 の `mock.module()` は dynamic-import 境界をまたいで leak する
+  (`2026-05-31-mock-removal-real-cause.md`) → DI アプローチに切り替えたことで
+  static `import { ClaudeAbortError }` が確実に本物の class を指すように
+
+**範囲外 (残り)**:
+
+- `src/commands/session-convert.test.ts:28` の `mock.module` は driver path
+  (runConvert) の file-scope mock。runConvert への DI 配線は step 3-g で扱う
+- bun test の `mock.restore()` 整理は当面不要
+
+**検証**: bun test (828 pass) / bunx tsc --noEmit (clean) / just check (全 pass)
 
 ### Step 3-g: commands/session-\*.ts を define() ラッパー ~30 行に縮退 (未着手)
 

@@ -156,8 +156,8 @@ describe("runDispatcher", () => {
       meta: makeMeta({ effectiveUserTurns: 5 }),
       recipes: [makeRecipe("hinted", "ある hint"), makeRecipe("no_hint")],
       promptTemplate: "TEMPLATE",
-      _runClaude: async (prompt) => {
-        capturedPrompt = prompt;
+      _runClaude: async (options) => {
+        capturedPrompt = options.prompt;
         return JSON.stringify({ recipes: [] });
       },
     });
@@ -176,8 +176,8 @@ describe("runDispatcher", () => {
       meta: makeMeta({ project: `/tmp/repo-${ghToken}` }),
       recipes: baseRecipes,
       promptTemplate: "TEMPLATE",
-      _runClaude: async (prompt) => {
-        capturedPrompt = prompt;
+      _runClaude: async (options) => {
+        capturedPrompt = options.prompt;
         return JSON.stringify({ recipes: [] });
       },
     });
@@ -193,8 +193,8 @@ describe("runDispatcher", () => {
       meta: makeMeta(),
       recipes: [makeRecipe("leaky", `普通の hint key=${akia}`)],
       promptTemplate: "TEMPLATE",
-      _runClaude: async (prompt) => {
-        capturedPrompt = prompt;
+      _runClaude: async (options) => {
+        capturedPrompt = options.prompt;
         return JSON.stringify({ recipes: [] });
       },
     });
