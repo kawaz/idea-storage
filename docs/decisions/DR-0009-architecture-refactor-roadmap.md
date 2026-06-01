@@ -258,15 +258,26 @@ DR-0008 完了 (2026-05-30) 後、ユーザ指示で「差分修正の場当た�
 
 ### Phase 8: 運用整備 (独立、いつでも着手可能)
 
-**目的**: 新セッション・新規 contributor の onboarding 改善。kawaz のリリース慣習に整合。
+**目的**: 新セッション・新規 contributor の onboarding 改善 + install フロー整備。
 
-**該当**: 私の独自観察 (CLAUDE.md 不在、VERSION 不在、CHANGELOG 古い)
+**該当**: 私の独自観察 (CLAUDE.md 不在) + 既存 build 経路の本末転倒指摘
 
 **対象**:
 
-- `CLAUDE.md` 新設 (プロジェクトコンテキスト、責務、build/test/push コマンド、外部依存 CSA の扱い)
-- `VERSION` ファイル + `release.yml` 整備 (kawaz の `release-flow-awareness` rule に準拠、homebrew tap 配布フローに乗せる)
-- `CHANGELOG.md` を DR-0008 含む最新まで更新
+- `CLAUDE.md` 新設 (プロジェクトコンテキスト、責務、コマンド、外部依存 CSA の扱い)
+- claude-cmux-msg パターン採用 (bash wrapper + plugin.zsh、bundle 廃止)。詳細は
+  [DR-0010](DR-0010-bundle-removal-and-zsh-plugin-installation.md)
+
+**スコープ外** (= 不採用、当初リスト案からの訂正):
+
+- `VERSION` ファイル + `release.yml` + homebrew tap **不採用**: idea-storage は
+  配布物無しの kawaz 個人ローカルツール、リリース成果物が存在しないので不要
+  (= 当初は `kawaz/release-flow-awareness` rule に揃える前提だったが、本リポは
+  そもそも対象外と判断)
+- `CHANGELOG.md` 更新 **不採用**: 配布物無しでは CHANGELOG の役割が薄い
+  (= DR / journal で経緯記録は足りる)
+
+**ステータス**: 完了 (2026-06-02)
 
 **工数目安**: 半日
 

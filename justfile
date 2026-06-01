@@ -1,13 +1,10 @@
 # idea-storage
 
-default: build test
+default: check
 
 # bun で直接実行（引数をそのまま渡す）
 run *ARGS:
     bun run src/index.ts {{ARGS}}
-
-build:
-    bun run scripts/build.ts
 
 test:
     bun test

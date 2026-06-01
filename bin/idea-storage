@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# idea-storage shell wrapper
+#
+# idea-storage は bun で TypeScript (src/index.ts) を直接実行する方式。
+# コンパイル済みバイナリは持たない (= bun runtime 前提、bundle 不採用)。
+#
+# zsh プラグイン (idea-storage.plugin.zsh) から alias で指す形でも、
+# launchd plist から直接呼ぶ形でも、自分のパスから src を解決する。
+
+__here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+__src="${__here}/../src/index.ts"
+
+if command -v bun >/dev/null 2>&1; then
+  exec bun run "$__src" "$@"
+else
+  echo "idea-storage: bun が見つかりません。bun をインストールしてください。" >&2
+  echo "  https://bun.sh/" >&2
+  exit 1
+fi

@@ -14,7 +14,7 @@ const register = define({
   name: "register",
   description: "Install/update launchd plist and register the service",
   run: async () => {
-    const program = await getProgramPath();
+    const program = getProgramPath();
 
     const plist = generatePlist({
       label: SERVICE_LABEL,

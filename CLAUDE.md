@@ -56,7 +56,7 @@ src/types/      共通型 (一部は lib に colocate 移行中)
 `justfile` に集約:
 
 ```bash
-just build         # bun run scripts/build.ts (バイナリ化)
+just run <args>    # bun run src/index.ts <args> (= dev 実行)
 just test          # bun test
 just typecheck     # bunx tsc --noEmit
 just lint          # bunx oxlint
@@ -65,6 +65,16 @@ just fmt-check     # bunx oxfmt --check
 just check         # test + typecheck + lint + fmt-check
 just push          # check 経由で jj git push
 ```
+
+### install / 起動方式 (claude-cmux-msg パターン)
+
+- `bin/idea-storage` (bash wrapper) で `bun run src/index.ts "$@"` を exec。
+  `${BASH_SOURCE[0]}` から自分のリポ root を解決するので PATH / alias に依存しない
+- `idea-storage.plugin.zsh` を zsh plugin manager で source → `alias idea-storage="${0:h}/bin/idea-storage"`
+- bundle / コンパイル成果物は持たない (= bun runtime 前提、配布物無し)
+- launchd plist の `ProgramArguments` には `bin/idea-storage` の絶対パスを書く。
+  `src/lib/service.ts:getProgramPath()` が `import.meta.dir` から リポ root を resolve
+  して算出する (= `which` / PATH に依存しない)
 
 完了条件 (= main に出す前の起点 / 完了確認):
 
@@ -109,7 +119,8 @@ watch (gh-monitor 経由が標準)。
 - Phase 3+4+5 (本命解体 + test 分割 + lib/ subdir): 未着手
 - Phase 6 (DR 整合): 未着手 (DR-0008 §6 amend vs 拡張は kawaz 判断)
 - Phase 7 (横断細部): 部分着手 (= redact pattern 拡充済)
-- Phase 8 (運用整備): 部分着手 (= 本 CLAUDE.md)
+- Phase 8 (運用整備): 完了 (= CLAUDE.md + claude-cmux-msg パターン採用、DR-0006
+  を DR-0010 で supersede、bundle 廃止、bash wrapper + plugin.zsh 方式へ)
 
 ### セキュリティ姿勢
 

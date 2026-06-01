@@ -62,10 +62,25 @@ Other built-in-style recipes include `changelog`, `letter`, `report-for-boss`, `
 
 ## Install
 
+Requires [Bun](https://bun.sh/). Source the bundled zsh plugin from your
+favorite plugin manager (or directly from `.zshrc`):
+
+```zsh
+# zinit
+zinit light kawaz/idea-storage
+
+# antidote / oh-my-zsh / antigen: equivalent — add `kawaz/idea-storage` to your plugin list
+
+# manual
+source /path/to/idea-storage/idea-storage.plugin.zsh
+```
+
+The plugin aliases `idea-storage` to `bin/idea-storage` (a thin bash wrapper
+that runs `bun run src/index.ts "$@"`). No build / bundle step is needed —
+the source is executed directly by Bun.
+
 ```bash
-bun install
-bun run build
-# Copy or symlink dist/idea-storage to a directory in your PATH
+bun install   # install dependencies once
 ```
 
 ## Usage
@@ -165,7 +180,7 @@ All paths follow the XDG Base Directory Specification.
 ```bash
 bun test          # Run tests
 bun run typecheck # Type check
-bun run build     # Build to dist/idea-storage
+just check        # test + typecheck + lint + fmt-check (CI mirror)
 ```
 
 ## Requirements

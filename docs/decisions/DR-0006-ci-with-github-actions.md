@@ -1,5 +1,9 @@
 # DR-0006: CI/CD with GitHub Actions
 
+Status: accepted (2026-05-08), **partially superseded by
+[DR-0010](DR-0010-bundle-removal-and-zsh-plugin-installation.md) (2026-06-02)**
+(= `just build` 強制 + `test -x dist/idea-storage` の必須化を破棄。残りの CI 構成は維持)
+
 ## 背景
 
 idea-storage はパーソナルツールだが、サブエージェント並列実装やリファクタの規模が拡大したことで、push 時に手元で `just check` を回すだけでは品質担保しきれない場面が増えた。具体的には:

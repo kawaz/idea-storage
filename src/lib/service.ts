@@ -16,20 +16,12 @@ export function getLaunchdDomain(): string {
   return `gui/${uid}`;
 }
 
-export async function getProgramPath(): Promise<string> {
-  // Use the absolute path to the built binary
-  const proc = Bun.spawn(["which", "idea-storage"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const stdout = await new Response(proc.stdout).text();
-  await proc.exited;
-
-  if (stdout.trim()) {
-    return stdout.trim();
-  }
-
-  // Fallback: use the dist path relative to this project
-  // Resolve from process.argv[0] which is the running binary
-  return process.argv[1] ?? "idea-storage";
+export function getProgramPath(): string {
+  // launchd plist に書く絶対パスは `bin/idea-storage` (bash wrapper)。
+  // PATH / alias / which に依存せず、本ファイルからリポ root を解決して
+  // bin/ を組み立てる (= 自分が誰か自分で知ってる、外部に聞かない)。
+  //
+  // service.ts は src/lib/ 配下なので、`../..` でリポ root。
+  const repoRoot = join(import.meta.dir, "..", "..");
+  return join(repoRoot, "bin", "idea-storage");
 }

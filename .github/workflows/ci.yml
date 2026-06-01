@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   check:
-    name: check & build
+    name: check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -52,8 +52,5 @@ jobs:
       - name: Run check (test + typecheck + lint + fmt-check)
         run: just check
 
-      - name: Build
-        run: just build
-
-      - name: Verify build artifact
-        run: test -x dist/idea-storage
+      - name: Verify shell wrapper is executable
+        run: test -x bin/idea-storage
