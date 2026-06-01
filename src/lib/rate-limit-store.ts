@@ -61,7 +61,18 @@ function getDb(dirs?: RateLimitStoreDirs): Database {
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA busy_timeout = 5000");
   initSchema(db);
+  // WAL/SHM も owner-only に (codex review #5)。
+  chmodIfExists(`${dbPath}-wal`, 0o600);
+  chmodIfExists(`${dbPath}-shm`, 0o600);
   return db;
+}
+
+function chmodIfExists(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
 
 export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs): void {

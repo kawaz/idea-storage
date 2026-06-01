@@ -7,6 +7,7 @@
 import { basename } from "node:path";
 import { stat } from "node:fs/promises";
 import { streamSessionLines } from "./session-jsonl.ts";
+import { buildCsaEnv } from "./spawn-env.ts";
 import type { ConversationMessage, SessionMeta } from "../types/index.ts";
 
 /**
@@ -175,9 +176,10 @@ async function runCsaSessions(sessionIds: string[]): Promise<unknown[]> {
     const batch = sessionIds.slice(i, i + BATCH);
     const proc = Bun.spawn(
       ["claude-session-analysis", "sessions", "--format", "jsonl", ...batch],
-      // env を明示的に渡すことで、テスト時の process.env 変更 (HOME / CLAUDE_CONFIG_DIR
-      // 隔離) が CSA の探索先に確実に反映される。
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env } },
+      // CSA は session JSONL の読み取りしかしないため、API クレデンシャル類は
+      // 必要ない。allowlist で env を絞り込む (= 子プロセスから ANTHROPIC_API_KEY /
+      // GH_TOKEN / SSH_AUTH_SOCK 等にアクセスさせない、DR-0009 Phase 1 補強)。
+      { stdout: "pipe", stderr: "pipe", env: buildCsaEnv() },
     );
     const [out, err, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),

@@ -16,15 +16,20 @@ const DANGEROUS_FIELDS: ReadonlySet<string> = new Set([
   "body",
 ]);
 
+function sanitizeValue(value: unknown): unknown {
+  if (typeof value === "string") return redactForLog(value);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  return sanitizeLogPayload(value as Record<string, unknown>);
+}
+
 function sanitizeLogPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
+    // DANGEROUS_FIELDS は階層問わず drop (e.g. log({ meta: { prompt: "..." } })
+    // のような future caller を保護)。
     if (DANGEROUS_FIELDS.has(key)) continue;
-    if (typeof value === "string") {
-      result[key] = redactForLog(value);
-      continue;
-    }
-    result[key] = value;
+    result[key] = sanitizeValue(value);
   }
   return result;
 }

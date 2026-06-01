@@ -135,6 +135,34 @@ describe("log", () => {
     const obj = parseLast("stdout");
     expect(obj).not.toHaveProperty("body");
   });
+
+  test("ネスト object 内の string も再帰的に redact される (codex review #4)", () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    log({ msg: "fail", details: { stderr: `cmd failed: ${ghToken}`, code: 1 } });
+    const obj = parseLast("stdout");
+    const details = obj.details as Record<string, unknown>;
+    expect(details.stderr).not.toContain(ghToken);
+    expect(details.stderr).toContain("[REDACTED:GITHUB_TOKEN]");
+    expect(details.code).toBe(1);
+  });
+
+  test("ネスト object 内の DANGEROUS_FIELDS も階層問わず drop される", () => {
+    log({ msg: "fail", meta: { prompt: "secret", code: 7 } });
+    const obj = parseLast("stdout");
+    const meta = obj.meta as Record<string, unknown>;
+    expect(meta).not.toHaveProperty("prompt");
+    expect(meta.code).toBe(7);
+  });
+
+  test("array 内の string も再帰的に redact される", () => {
+    const akia = "AKIAIOSFODNN7EXAMPLE";
+    log({ msg: "trace", keys: [`first=${akia}`, "second=safe"] });
+    const obj = parseLast("stdout");
+    const keys = obj.keys as string[];
+    expect(keys[0]).not.toContain(akia);
+    expect(keys[0]).toContain("[REDACTED:AWS_ACCESS_KEY]");
+    expect(keys[1]).toBe("second=safe");
+  });
 });
 
 describe("logError", () => {

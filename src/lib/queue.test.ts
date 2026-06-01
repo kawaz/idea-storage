@@ -60,6 +60,22 @@ describe("queue", () => {
       const s = statSync(dbPath);
       expect(s.mode & 0o777).toBe(0o600);
     });
+
+    test("WAL / SHM ファイルも mode 0600 (codex review #5)", async () => {
+      const db = getDb(dirs);
+      // applyMigrations 後に WAL/SHM が生成されている前提
+      const { statSync, existsSync } = await import("node:fs");
+      const dbPath = join(tempDir, "queue.db");
+      const walPath = `${dbPath}-wal`;
+      const shmPath = `${dbPath}-shm`;
+      if (existsSync(walPath)) {
+        expect(statSync(walPath).mode & 0o777).toBe(0o600);
+      }
+      if (existsSync(shmPath)) {
+        expect(statSync(shmPath).mode & 0o777).toBe(0o600);
+      }
+      db.close();
+    });
   });
 
   describe("enqueue", () => {

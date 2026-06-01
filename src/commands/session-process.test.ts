@@ -597,6 +597,68 @@ describe("processChunked", () => {
     expect(chunk2CallCount).toBe(2);
     expect(result).toContain("Synthesized");
   });
+
+  test("DR-0009 Phase 1 補強 (codex review #2): chunked synthesis prompt は section LLM 出力を redact する", async () => {
+    const ghToken = "ghp_" + "d".repeat(36);
+    const chunks = makeChunks(2);
+
+    let callCount = 0;
+    let synthesisPrompt = "";
+    await processChunked(
+      "dummy timeline text",
+      chunks,
+      "test prompt",
+      "test-session-id",
+      dummyMeta,
+      undefined,
+      async (options) => {
+        callCount++;
+        if (callCount <= 2) {
+          // section LLM が transcribe / hallucinate した secret を含む出力
+          return `## Section\nLeaked content with token=${ghToken}`;
+        }
+        // synthesis LLM 呼び出し: prompt を capture
+        synthesisPrompt = options.prompt;
+        return "## Synthesized\nResult";
+      },
+    );
+
+    expect(synthesisPrompt).not.toContain(ghToken);
+    expect(synthesisPrompt).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
+
+  test("DR-0009 Phase 1 補強 (codex review #3): meta.project に secret を含むと section / synthesis prompt 両方で redact される", async () => {
+    const akia = "AKIAIOSFODNN7EXAMPLE";
+    const metaWithSecret: import("../types/index.ts").SessionMeta = {
+      ...dummyMeta,
+      project: `/tmp/repo-${akia}`,
+    };
+    const chunks = makeChunks(2);
+
+    let firstSectionPrompt = "";
+    let synthesisPrompt = "";
+    let callCount = 0;
+    await processChunked(
+      "dummy timeline text",
+      chunks,
+      "test prompt",
+      "test-session-id",
+      metaWithSecret,
+      undefined,
+      async (options) => {
+        callCount++;
+        if (callCount === 1) firstSectionPrompt = options.prompt;
+        if (callCount <= 2) return "section result";
+        synthesisPrompt = options.prompt;
+        return "synth";
+      },
+    );
+
+    expect(firstSectionPrompt).not.toContain(akia);
+    expect(firstSectionPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
+    expect(synthesisPrompt).not.toContain(akia);
+    expect(synthesisPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
+  });
 });
 
 // --- processChunked の外部 signal 連携テスト ---
@@ -1022,6 +1084,93 @@ describe("processSession redact integration", () => {
     const fileStat = await stat(outputFile);
     expect(fileStat.mode & 0o777).toBe(0o600);
     const dirStat = await stat(join(outputFile, ".."));
+    expect(dirStat.mode & 0o777).toBe(0o700);
+  });
+
+  test("DR-0009 Phase 1 補強 (codex review #6): _rejected/ 経路でも output redact + mode 0600 + dir mode 0700", async () => {
+    const ghToken = "ghp_" + "e".repeat(36);
+    const SID = "66666666-6666-4666-9666-666666666666";
+    const projectDir = join(redactClaudeDir, "projects", "rejected-redact-test");
+    await mkdir(projectDir, { recursive: true });
+    const filePath = join(projectDir, `${SID}.jsonl`);
+    const startTime = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const line = JSON.stringify({
+      type: "user",
+      timestamp: startTime,
+      uuid: "66666666-line-0001",
+      sessionId: SID,
+      cwd: "/tmp/rejected-redact-test",
+      message: { role: "user", content: "普通のセッション本文" },
+    });
+    await Bun.write(filePath, line + "\n");
+
+    // mock: 1 回目 (content 生成) は secret 含む output、2 回目 (quality_gate) は rejected
+    let callCount = 0;
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return `# Article\n\n本文 token=${ghToken}\n`;
+        }
+        // quality_gate を rejected に倒す
+        return JSON.stringify({ kind: "rejected", reason: "too thin" });
+      }),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    await withIsolatedIdeaStorageEnv(workDir, async () => {
+      const { processSession } = await import("./session-process.ts");
+      const { getSessionMeta } = await import("../lib/conversation.ts");
+      const meta = await getSessionMeta(filePath);
+      const result = await processSession({
+        sessionId: SID,
+        recipe: {
+          name: "diary",
+          filePath: "/tmp/recipe-diary.md",
+          match: {},
+          onExisting: "append",
+          prompt: "Write a diary",
+        } as import("../types/index.ts").Recipe,
+        meta,
+        sessionStats: { turns: 1, bytes: 100 },
+        dataDir: join(workDir, "data"),
+      });
+      expect(result.kind).toBe("skipped");
+      if (result.kind === "skipped") {
+        expect(result.reason).toBe("quality_rejected");
+      }
+    });
+
+    // _rejected/ 配下に書かれた md ファイルを探す
+    const glob = new Bun.Glob("**/_rejected/**/*.md");
+    const rejectedFiles: string[] = [];
+    for await (const rel of glob.scan(workDir)) {
+      rejectedFiles.push(join(workDir, rel));
+    }
+    expect(rejectedFiles.length).toBe(1);
+    const rejectedFile = rejectedFiles[0]!;
+
+    const written = await Bun.file(rejectedFile).text();
+    expect(written).not.toContain(ghToken);
+    expect(written).toContain("[REDACTED:GITHUB_TOKEN]");
+
+    const { stat } = await import("node:fs/promises");
+    const fileStat = await stat(rejectedFile);
+    expect(fileStat.mode & 0o777).toBe(0o600);
+    const dirStat = await stat(join(rejectedFile, ".."));
     expect(dirStat.mode & 0o777).toBe(0o700);
   });
 });

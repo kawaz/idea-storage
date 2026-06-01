@@ -33,10 +33,11 @@ import {
   type TimelineChunk,
 } from "../lib/chunker.ts";
 import { spawnWithTimeout, SpawnTimeoutError } from "../lib/spawn-timeout.ts";
+import { buildCsaEnv } from "../lib/spawn-env.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { redactSecrets } from "../lib/redact.ts";
-import { redactForOutput } from "../lib/redact-pipeline.ts";
+import { redactForOutput, redactForPrompt } from "../lib/redact-pipeline.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import { CSA_TIMEOUT_MS } from "../lib/constants.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
@@ -199,7 +200,11 @@ export async function processChunked(
   externalSignal?: AbortSignal,
 ): Promise<string> {
   const run = _runClaudeOverride ?? runClaude;
-  const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${meta.project || "unknown"}\n- Created: ${meta.startTime.toISOString()}`;
+  // meta.project (= session cwd) は session 由来の文字列で、env や path に
+  // secret が含まれうる。dispatcher prompt は Phase 1 で redact 済だが、
+  // article generation 系の prompt は補強コミットで対応 (codex review #3)。
+  const projectSafe = redactForPrompt(meta.project || "unknown");
+  const sessionInfo = `- Session ID: ${sessionId}\n- Project: ${projectSafe}\n- Created: ${meta.startTime.toISOString()}`;
   const lines = convText.split("\n");
 
   const controller = new AbortController();
@@ -346,7 +351,11 @@ ${convText}`;
   }
 
   // 複数チャンク: 合成 (外部signalも渡す)
-  const synthesisPrompt = buildSynthesisPrompt(orderedResults, sessionInfo);
+  // 各 section は section LLM の生出力。LLM が transcribe / hallucinate
+  // した secret を synthesis LLM に再送信しないよう redact pipeline を通す
+  // (codex review CRITICAL #2)。
+  const redactedSections = orderedResults.map(redactForPrompt);
+  const synthesisPrompt = buildSynthesisPrompt(redactedSections, sessionInfo);
   return run({
     prompt: synthesisPrompt,
     timeoutMs,
@@ -482,6 +491,7 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
     const csaResult = await spawnWithTimeout({
       cmd: [csaBin, "timeline", sessionId, "--md", "--no-emoji"],
       timeoutMs: CSA_TIMEOUT_MS,
+      env: buildCsaEnv(),
     });
 
     if (csaResult.exitCode !== 0) {
@@ -566,13 +576,15 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
         signal,
       );
     } else {
-      // 既存の単一パス（変更なし）
+      // single-pass: meta.project を redact 経由 (codex review #3、
+      // chunked path と挙動を揃える)
+      const projectSafe = redactForPrompt(meta.project || "unknown");
       const fullPrompt = `${prompt}
 
 ---
 ## セッション情報
 - Session ID: ${sessionId}
-- Project: ${meta.project || "unknown"}
+- Project: ${projectSafe}
 - Created: ${sessionStart}
 
 ## 会話タイムライン
@@ -686,6 +698,7 @@ export async function fetchSessionStats(
     const statsResult = await spawnWithTimeout({
       cmd: [csaBin, "sessions", "--format", "jsonl", sessionId],
       timeoutMs: CSA_TIMEOUT_MS,
+      env: buildCsaEnv(),
     });
     const line = statsResult.stdout.trim().split("\n")[0];
     if (line) return JSON.parse(line);

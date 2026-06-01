@@ -10,6 +10,12 @@ export class SpawnTimeoutError extends BaseTimeoutError {
 export interface SpawnWithTimeoutOptions {
   cmd: string[];
   timeoutMs: number;
+  /**
+   * Override the subprocess env. Default is `{ ...process.env }`. Pass
+   * `buildCsaEnv()` for CSA spawns to drop API credentials and agent sockets
+   * (see DR-0009 Phase 1 codex review: env全送 was a defense-in-depth gap).
+   */
+  env?: Record<string, string>;
 }
 
 export interface SpawnResult {
@@ -23,7 +29,7 @@ export interface SpawnResult {
  * If the process does not exit within timeoutMs, it is killed and SpawnTimeoutError is thrown.
  */
 export async function spawnWithTimeout(options: SpawnWithTimeoutOptions): Promise<SpawnResult> {
-  const { cmd, timeoutMs } = options;
+  const { cmd, timeoutMs, env } = options;
 
   // Pass env explicitly so tests can override HOME / CLAUDE_CONFIG_DIR (used by
   // CSA for session discovery) via process.env. Bun.spawn does not inherit
@@ -31,7 +37,7 @@ export async function spawnWithTimeout(options: SpawnWithTimeoutOptions): Promis
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env },
+    env: env ?? { ...process.env },
   });
 
   const stdoutPromise = new Response(proc.stdout).text();

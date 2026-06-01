@@ -110,7 +110,20 @@ export function getDb(dirs?: QueueDirs): Database {
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA busy_timeout = 5000");
   applyMigrations(db);
+  // WAL/SHM ファイルも owner-only に。applyMigrations の DDL で write が走り
+  // queue.db-wal / queue.db-shm が生成されているのでここで chmod。
+  // ファイル不在時 (= 完全 empty 状態) は ENOENT を投げるので ignore (codex review #5)。
+  chmodIfExists(`${dbPath}-wal`, 0o600);
+  chmodIfExists(`${dbPath}-shm`, 0o600);
   return db;
+}
+
+function chmodIfExists(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
 
 // --- Internal helpers for pk lookup / creation ---
