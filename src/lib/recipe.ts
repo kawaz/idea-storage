@@ -1,7 +1,9 @@
 import { basename, join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { parseFrontmatter } from "./frontmatter.ts";
-import type { Recipe } from "../types/index.ts";
+import { getRecipesDir } from "./paths.ts";
+import { CliError } from "./errors.ts";
+import type { Recipe, SessionMeta } from "../types/index.ts";
 
 /**
  * Parse a recipe-*.md file into a Recipe object.
@@ -58,4 +60,53 @@ export async function loadRecipes(recipesDir: string): Promise<Recipe[]> {
 
   const recipes = await Promise.all(recipeFiles.map((f) => parseRecipe(join(recipesDir, f))));
   return recipes;
+}
+
+/**
+ * Load recipes, throwing a CliError with a helpful message if the recipes dir
+ * doesn't exist. Shared by runProcess and runConvert.
+ */
+export async function loadRecipesOrFail(): Promise<Recipe[]> {
+  try {
+    return await loadRecipes(getRecipesDir());
+  } catch {
+    throw new CliError(
+      `No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`,
+    );
+  }
+}
+
+/**
+ * Find a recipe by name from a list of recipes.
+ */
+export function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
+  return recipes.find((r) => r.name === name);
+}
+
+/**
+ * Test if a session matches a recipe's conditions.
+ * All specified conditions must be satisfied (AND logic).
+ * Unspecified conditions are skipped (always match).
+ */
+export function matchesRecipe(recipe: Recipe, session: SessionMeta): boolean {
+  const { match } = recipe;
+
+  // project: glob match
+  // Design rationale: Recipe patterns use single `*` intending to match across
+  // path separators (e.g. `*/emeradaco/*`), but Bun.Glob treats `*` as not
+  // matching `/`. We normalize lone `*` to `**` for path-level globbing.
+  if (match.project != null) {
+    const pattern = match.project.replace(/(?<!\*)\*(?!\*)/g, "**");
+    const glob = new Bun.Glob(pattern);
+    if (!glob.match(session.project)) return false;
+  }
+
+  // minTurns (default 1: filter out sessions with no user interaction)
+  const minTurns = match.minTurns ?? 1;
+  if (session.userTurns < minTurns) return false;
+
+  // minAge
+  if (match.minAge != null && session.ageSec < match.minAge) return false;
+
+  return true;
 }

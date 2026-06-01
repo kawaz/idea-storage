@@ -1,10 +1,9 @@
 import { define } from "gunshi";
 import { join } from "node:path";
 import { loadConfig } from "../lib/config.ts";
-import { loadRecipes } from "../lib/recipe.ts";
+import { loadRecipes, matchesRecipe } from "../lib/recipe.ts";
 import { getRecipesDir } from "../lib/paths.ts";
 import { getSessionMeta } from "../lib/csa.ts";
-import { matchesRecipe } from "../lib/recipe-matcher.ts";
 import {
   DISPATCHER_RECIPE_NAME,
   enqueueBatch,

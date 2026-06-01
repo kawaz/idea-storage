@@ -48,7 +48,46 @@ CSA (claude-session-analysis) ドメインを 1 ファイルに集約。
 
 **検証**: bun test (822 pass) / bunx tsc --noEmit (clean) / oxlint (clean) / oxfmt (clean)
 
-### Step 3-b: lib/recipe.ts に findRecipeByName + loadRecipesOrFail + matchesRecipe 統合 (未着手)
+### Step 3-b: lib/recipe.ts 統合 ✓
+
+recipe 関連を 1 ファイル集約、recipe-matcher.ts を廃止。
+
+**統合後 lib/recipe.ts (112 行) export**:
+
+- `parseRecipe(filePath)` (= 既存)
+- `loadRecipes(recipesDir)` (= 既存)
+- `loadRecipesOrFail()` (= session-process.ts から移植)
+- `findRecipeByName(recipes, name)` (= session-process.ts から移植)
+- `matchesRecipe(recipe, session)` (= recipe-matcher.ts から移植)
+
+**削除**:
+
+- `src/lib/recipe-matcher.ts`
+- `src/lib/recipe-matcher.test.ts`
+- `session-process.ts` 内の `findRecipeByName` / `loadRecipesOrFail` 定義 + 末尾の
+  `export { findRecipeByName }`
+- `session-process.ts` の不要 import (`loadRecipes` / `getRecipesDir` / `CliError`)
+
+**caller 更新**:
+
+- `session-process.ts`: matchesRecipe を recipe.ts 経由に
+- `session-convert.ts`: import を 2 行分割 (findRecipeByName/loadRecipesOrFail は
+  recipe.ts、processSession のみ session-process.ts)
+- `session-enqueue.ts`: matchesRecipe を recipe.ts 経由 (loadRecipes と同じ行に統合)
+
+**test 統合**:
+
+- recipe-matcher.test.ts の matchesRecipe describe (11 件) を recipe.test.ts に追記
+- 新規 findRecipeByName describe (3 件: 一致 / 不一致 / 空配列)
+- 新規 loadRecipesOrFail describe (3 件: 1+ recipe / 空 dir / 不在 dir)
+- XDG_CONFIG_HOME を tmpdir で isolate
+
+**検証**: bun test (828 pass、+6) / bunx tsc --noEmit (clean) / just check (全 pass)
+
+**ハマり所**:
+
+- loadRecipesOrFail の元仕様コメント「0 recipe で throws」と実装が不一致 (実装は
+  `[]` を返す)。実装どおりの挙動でテスト化、Design rationale コメント付き
 
 ### Step 3-c: lib/session-worker/ 6 ファイル分解 (未着手)
 

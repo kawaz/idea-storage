@@ -2,8 +2,8 @@ import { define } from "gunshi";
 import { join } from "node:path";
 import { chmod, mkdir } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
-import { loadRecipes } from "../lib/recipe.ts";
-import { getRecipesDir, getDataDir, getRejectedDir } from "../lib/paths.ts";
+import { findRecipeByName, loadRecipesOrFail, matchesRecipe } from "../lib/recipe.ts";
+import { getDataDir, getRejectedDir } from "../lib/paths.ts";
 import {
   CsaTimelineError,
   countTimelineSeparators,
@@ -29,10 +29,8 @@ import {
 } from "../lib/queue.ts";
 import { runDispatcher } from "../lib/dispatcher.ts";
 import { runQualityGate } from "../lib/quality-gate.ts";
-import { matchesRecipe } from "../lib/recipe-matcher.ts";
 import { getClaudeMeta } from "../lib/claude-meta.ts";
 import { listRecentOutputs, formatInjectedRecent } from "../lib/recent-outputs.ts";
-import { CliError } from "../lib/errors.ts";
 import {
   splitTimeline,
   extractChunkText,
@@ -63,10 +61,6 @@ function recordWorkerObservation(obs: RateLimitObservation): void {
   } catch (err) {
     logError({ msg: "rate_limit_record_failed", error: String(err) });
   }
-}
-
-function findRecipeByName(recipes: Recipe[], name: string): Recipe | undefined {
-  return recipes.find((r) => r.name === name);
 }
 
 // --- フォークセッション用のタイムライン切り詰め ---
@@ -664,22 +658,6 @@ ${timelineText}`;
 
   return { kind: "processed", outputFile, lineCount: meta.lineCount };
 }
-
-/**
- * Load recipes, throwing a CliError with a helpful message if the recipes dir
- * doesn't exist. Shared by runProcess and runConvert.
- */
-export async function loadRecipesOrFail(): Promise<Recipe[]> {
-  try {
-    return await loadRecipes(getRecipesDir());
-  } catch {
-    throw new CliError(
-      `No recipes found in ${getRecipesDir()}\nCreate recipe-*.md files in that directory. See config-examples/ for examples.`,
-    );
-  }
-}
-
-export { findRecipeByName };
 
 export async function runProcess(options: RunProcessOptions = {}): Promise<ProcessResult> {
   const entry = await dequeue();

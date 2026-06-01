@@ -12,7 +12,8 @@ import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { getLatestObservations } from "../lib/rate-limit-store.ts";
 import { shouldSkip } from "../lib/rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
-import { findRecipeByName, loadRecipesOrFail, processSession } from "./session-process.ts";
+import { findRecipeByName, loadRecipesOrFail } from "../lib/recipe.ts";
+import { processSession } from "./session-process.ts";
 
 export interface RunConvertInput {
   sessionId: string;
