@@ -1,7 +1,6 @@
-import { Database } from "bun:sqlite";
-import { dirname, join } from "node:path";
-import { chmodSync, mkdirSync } from "node:fs";
-import { getStateDir } from "./paths.ts";
+import type { Database } from "bun:sqlite";
+import { getDb as getQueueDb } from "./queue-internal.ts";
+import type { QueueDirs } from "./queue.ts";
 import type { BucketObservation } from "./rate-limit-parser.ts";
 
 export interface RateLimitStoreDirs {
@@ -29,50 +28,27 @@ export interface ObservationRow {
   source: ObservationSource;
 }
 
-function resolveDbPath(dirs?: RateLimitStoreDirs): string {
-  if (dirs) {
-    return join(dirs.stateDir, "queue.db");
-  }
-  return join(getStateDir(), "queue.db");
-}
-
-function initSchema(db: Database): void {
-  db.run(`CREATE TABLE IF NOT EXISTS rate_limits (
-    ts INTEGER PRIMARY KEY,
-    five_hour_util REAL,
-    five_hour_reset INTEGER,
-    five_hour_status TEXT,
-    seven_day_util REAL,
-    seven_day_reset INTEGER,
-    seven_day_status TEXT,
-    source TEXT NOT NULL
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_rl_ts ON rate_limits(ts DESC)`);
+/**
+ * DR-0009 Phase 2: consolidate to a single getDb (queue-internal).
+ * rate_limits is now part of queue-schema.applyMigrations (version 2),
+ * so the legacy initSchema + dedicated getDb were removed.
+ *
+ * Map `RateLimitStoreDirs` to `QueueDirs`: queue-internal.resolveDbPath
+ * uses dirname(queueDir) + "/queue.db", so any queueDir under stateDir
+ * resolves to `${stateDir}/queue.db` — the same path the legacy
+ * resolveDbPath produced.
+ */
+function toQueueDirs(dirs?: RateLimitStoreDirs): QueueDirs | undefined {
+  if (!dirs) return undefined;
+  return {
+    queueDir: `${dirs.stateDir}/queue/`,
+    doneDir: `${dirs.stateDir}/done/`,
+    failedDir: `${dirs.stateDir}/failed/`,
+  };
 }
 
 function getDb(dirs?: RateLimitStoreDirs): Database {
-  const dbPath = resolveDbPath(dirs);
-  // DR-0009 Phase 1: state dir gets owner-only mode (newly-created only).
-  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-  const db = new Database(dbPath);
-  // queue.db (shared with queue-internal) — Phase 2 will consolidate getDb,
-  // until then both call sites enforce owner-only file mode.
-  chmodSync(dbPath, 0o600);
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA busy_timeout = 5000");
-  initSchema(db);
-  // WAL/SHM も owner-only に (codex review #5)。
-  chmodIfExists(`${dbPath}-wal`, 0o600);
-  chmodIfExists(`${dbPath}-shm`, 0o600);
-  return db;
-}
-
-function chmodIfExists(path: string, mode: number): void {
-  try {
-    chmodSync(path, mode);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
+  return getQueueDb(toQueueDirs(dirs));
 }
 
 export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs): void {

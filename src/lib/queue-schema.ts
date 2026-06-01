@@ -9,8 +9,34 @@ import type { Database } from "bun:sqlite";
  * messages. Everything else is private to this file.
  */
 
-/** Current schema version. Bumped whenever sessions/recipes/queue_entries/history change. */
-export const CURRENT_SCHEMA_VERSION = 1;
+/**
+ * Current schema version. Bumped whenever sessions/recipes/queue_entries/history/
+ * rate_limits change.
+ *
+ * Version history:
+ * - v1: sessions / recipes / queue_entries / history (initial v0 → v1 migration)
+ * - v2: rate_limits (DR-0009 Phase 2: consolidate rate-limit-store schema into
+ *   queue-schema; previously rate_limits was managed outside user_version by
+ *   rate-limit-store.initSchema)
+ */
+export const CURRENT_SCHEMA_VERSION = 2;
+
+function createSchemaV2(db: Database): void {
+  // rate_limits: previously created by rate-limit-store.initSchema outside
+  // user_version control. CREATE IF NOT EXISTS keeps existing rows when an old
+  // v1 DB upgrades to v2 (= seamless rollover for already-running installs).
+  db.run(`CREATE TABLE IF NOT EXISTS rate_limits (
+    ts INTEGER PRIMARY KEY,
+    five_hour_util REAL,
+    five_hour_reset INTEGER,
+    five_hour_status TEXT,
+    seven_day_util REAL,
+    seven_day_reset INTEGER,
+    seven_day_status TEXT,
+    source TEXT NOT NULL
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_rl_ts ON rate_limits(ts DESC)`);
+}
 
 function createSchemaV1(db: Database): void {
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
@@ -197,7 +223,18 @@ export function applyMigrations(db: Database): void {
     version = 1;
   }
 
-  // Future: if (version === 1) migrate to v2, etc.
+  if (version === 1) {
+    // v1 → v2: add rate_limits (DR-0009 Phase 2). Idempotent: CREATE IF NOT
+    // EXISTS lets a v1 DB that already had a rate-limit-store-managed
+    // rate_limits table absorb cleanly with no row loss.
+    const tx = db.transaction(() => {
+      createSchemaV2(db);
+    });
+    tx();
+    db.run(`PRAGMA user_version = 2`);
+    version = 2;
+  }
+
   if (version > CURRENT_SCHEMA_VERSION) {
     throw new Error(
       `queue.db schema version ${version} is newer than supported ${CURRENT_SCHEMA_VERSION}. ` +

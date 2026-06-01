@@ -1057,7 +1057,7 @@ describe("queue", () => {
   });
 });
 
-describe("schema migration v0 → v1", () => {
+describe("schema migration v0 → v1 → v2", () => {
   let dirs: QueueDirs;
   let tempDir: string;
 
@@ -1117,7 +1117,7 @@ describe("schema migration v0 → v1", () => {
     try {
       // Verify user_version bumped
       const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
-      expect(v.user_version).toBe(1);
+      expect(v.user_version).toBe(2);
 
       // Verify sessions table populated
       const sessionCount = db.query(`SELECT COUNT(*) as c FROM sessions`).get() as { c: number };
@@ -1183,11 +1183,11 @@ describe("schema migration v0 → v1", () => {
     }
   });
 
-  test("fresh DB starts directly at v1", async () => {
+  test("fresh DB starts directly at v2 (= rate_limits 含む)", async () => {
     const db = getDb(dirs);
     try {
       const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
-      expect(v.user_version).toBe(1);
+      expect(v.user_version).toBe(2);
 
       // Tables exist
       const tables = db
@@ -1198,6 +1198,123 @@ describe("schema migration v0 → v1", () => {
       expect(names).toContain("recipes");
       expect(names).toContain("queue_entries");
       expect(names).toContain("history");
+      // DR-0009 Phase 2: rate_limits も同 schema 管理者の下に統合
+      expect(names).toContain("rate_limits");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("DR-0009 Phase 2: v1 → v2 migration で rate_limits テーブルが追加される", async () => {
+    // 既存 v1 DB (= legacy initSchema 経由で rate_limits が無い状態) を再現
+    const { Database } = await import("bun:sqlite");
+    const dbPath = join(tempDir, "queue.db");
+    const legacy = new Database(dbPath);
+    legacy.run(
+      `CREATE TABLE sessions (pk INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE)`,
+    );
+    legacy.run(
+      `CREATE TABLE recipes (pk INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)`,
+    );
+    legacy.run(`CREATE TABLE queue_entries (
+      pk INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_pk INTEGER NOT NULL REFERENCES sessions(pk),
+      recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
+      status TEXT NOT NULL DEFAULT 'queued',
+      reason TEXT,
+      line_count INTEGER,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(session_pk, recipe_pk)
+    )`);
+    legacy.run(`CREATE TABLE history (
+      pk INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      session_pk INTEGER NOT NULL REFERENCES sessions(pk),
+      recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
+      action TEXT NOT NULL,
+      message TEXT
+    )`);
+    legacy.run(`PRAGMA user_version = 1`);
+    legacy.close();
+
+    const db = getDb(dirs);
+    try {
+      const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
+      expect(v.user_version).toBe(2);
+      const tables = db
+        .query(`SELECT name FROM sqlite_master WHERE type='table' AND name='rate_limits'`)
+        .all() as { name: string }[];
+      expect(tables.length).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("DR-0009 Phase 2: v1 → v2 migration で既存 rate_limits 行は温存される", async () => {
+    // legacy initSchema (旧 rate-limit-store) で v1 DB に rate_limits を作って行を入れる
+    const { Database } = await import("bun:sqlite");
+    const dbPath = join(tempDir, "queue.db");
+    const legacy = new Database(dbPath);
+    legacy.run(
+      `CREATE TABLE sessions (pk INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE)`,
+    );
+    legacy.run(
+      `CREATE TABLE recipes (pk INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)`,
+    );
+    legacy.run(`CREATE TABLE queue_entries (
+      pk INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_pk INTEGER NOT NULL REFERENCES sessions(pk),
+      recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
+      status TEXT NOT NULL DEFAULT 'queued',
+      reason TEXT,
+      line_count INTEGER,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(session_pk, recipe_pk)
+    )`);
+    legacy.run(`CREATE TABLE history (
+      pk INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      session_pk INTEGER NOT NULL REFERENCES sessions(pk),
+      recipe_pk INTEGER NOT NULL REFERENCES recipes(pk),
+      action TEXT NOT NULL,
+      message TEXT
+    )`);
+    // 旧 rate-limit-store.initSchema 相当 (= user_version 管理外で作られた)
+    legacy.run(`CREATE TABLE rate_limits (
+      ts INTEGER PRIMARY KEY,
+      five_hour_util REAL,
+      five_hour_reset INTEGER,
+      five_hour_status TEXT,
+      seven_day_util REAL,
+      seven_day_reset INTEGER,
+      seven_day_status TEXT,
+      source TEXT NOT NULL
+    )`);
+    legacy.run(
+      `INSERT INTO rate_limits (ts, five_hour_util, five_hour_reset, five_hour_status,
+         seven_day_util, seven_day_reset, seven_day_status, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [1776046000, 0.5, 1776056400, "allowed", 0.1, 1776646800, "allowed", "worker"],
+    );
+    legacy.run(`PRAGMA user_version = 1`);
+    legacy.close();
+
+    const db = getDb(dirs);
+    try {
+      const rows = db.query(`SELECT * FROM rate_limits WHERE ts = ?`).all(1776046000) as Array<{
+        ts: number;
+        five_hour_util: number;
+        source: string;
+      }>;
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.five_hour_util).toBe(0.5);
+      expect(rows[0]!.source).toBe("worker");
+      const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
+      expect(v.user_version).toBe(2);
     } finally {
       db.close();
     }
@@ -1208,11 +1325,11 @@ describe("schema migration v0 → v1", () => {
     const db1 = getDb(dirs);
     db1.close();
 
-    // Second open: no migration runs (user_version already 1)
+    // Second open: no migration runs (user_version already 2)
     const db2 = getDb(dirs);
     try {
       const v = db2.query(`PRAGMA user_version`).get() as { user_version: number };
-      expect(v.user_version).toBe(1);
+      expect(v.user_version).toBe(2);
     } finally {
       db2.close();
     }
