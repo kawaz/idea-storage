@@ -89,7 +89,52 @@ recipe 関連を 1 ファイル集約、recipe-matcher.ts を廃止。
 - loadRecipesOrFail の元仕様コメント「0 recipe で throws」と実装が不一致 (実装は
   `[]` を返す)。実装どおりの挙動でテスト化、Design rationale コメント付き
 
-### Step 3-c: lib/session-worker/ 6 ファイル分解 (未着手)
+### Step 3-c: lib/session-worker/ 分解 ✓
+
+session-process.ts の "ライブラリ的責務" を `lib/session-worker/` 配下に分解。
+advisor 助言で 6 ファイル予定 → **7 ファイル** に (cycle 回避のため leaf `worker-observation.ts` を追加)。
+
+**新規ファイル**:
+
+| File                     | Lines | Main exports                                                                         |
+| ------------------------ | ----- | ------------------------------------------------------------------------------------ |
+| `index.ts`               | 289   | `processSession`, `ProcessSessionInput`, `ProcessSessionResult`                      |
+| `chunked-runner.ts`      | 196   | `processChunked`                                                                     |
+| `prompt-builder.ts`      | 65    | `buildSectionPrompt`, `buildSynthesisPrompt`                                         |
+| `fork-timeline.ts`       | 47    | `trimTimelineForFork`                                                                |
+| `persistence.ts`         | 43    | `persistAccepted`, `persistRejected`                                                 |
+| `frontmatter-builder.ts` | 41    | `buildFrontmatter`                                                                   |
+| `worker-observation.ts`  | 25    | `recordWorkerObservation` (= cycle 回避用 leaf、index + chunked-runner の両方が依存) |
+
+**session-process.ts: 850 → 231 行 (-619)**
+
+残った 231 行: imports + re-export block + runProcess driver + runDispatcherEntry
+driver + 関連型 + define() default export。driver 系は step 3-d で別途分離。
+
+**re-export で test 互換性維持** (= session-process.test.ts は無変更で動く):
+
+- `processSession`, `ProcessSessionInput`, `ProcessSessionResult`
+- `buildSectionPrompt`, `buildSynthesisPrompt`
+- `trimTimelineForFork`
+- `processChunked`
+
+**Phase 1 防御層を persistence.ts に集約**:
+
+- `redactForOutput` を `persist()` 内 1 箇所で呼ぶ (= accepted / rejected 両方の経路で
+  共通化、idempotent なので重複呼び出しは無害)
+- `mkdir({ mode: 0o700 })` も `persist()` 内
+- `chmod 0o600` も `persist()` 内、accepted / rejected 統一
+
+**processSession 自体は ~180 行で停止** (= advisor 助言で過剰分割を避けた)。
+~40 行目標は守れなかったが、責務は適切に外出しできており、これ以上の分割は
+"凝集した orchestrator" を fragment するだけと判断。
+
+**検証**: bun test (828 pass、+0) / bunx tsc --noEmit (clean) / just check (全 pass)。
+oxfmt 1 回 auto-fix (chunked-runner + session-process)。
+
+**ハマり所**: 当初 6 ファイル予定だったが `recordWorkerObservation` が
+`session-process.ts ↔ session-worker/index.ts ↔ chunked-runner.ts` の循環を生む。
+advisor 助言通り `worker-observation.ts` を leaf として切り出し、cycle 回避。
 
 ### Step 3-d: lib/driver/ 4 ファイル分離 (未着手)
 
