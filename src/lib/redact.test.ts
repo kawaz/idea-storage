@@ -250,4 +250,92 @@ content
       expect(result.count).toBe(0);
     });
   });
+
+  describe("DR-0009 Phase 7 部分: pattern 拡充", () => {
+    test("OpenAI 新形式 sk-proj- を検出する", () => {
+      const fake = "sk-proj-" + "A".repeat(40);
+      const result = redactSecrets(`KEY=${fake}`);
+      expect(result.text).toContain("[REDACTED:OPENAI_API_KEY]");
+      expect(result.text).not.toContain(fake);
+      expect(result.count).toBeGreaterThanOrEqual(1);
+    });
+
+    test("OpenAI 新形式 sk-svcacct- を検出する", () => {
+      const fake = "sk-svcacct-" + "B".repeat(40);
+      const result = redactSecrets(`KEY=${fake}`);
+      expect(result.text).toContain("[REDACTED:OPENAI_API_KEY]");
+      expect(result.text).not.toContain(fake);
+    });
+
+    test("GitHub fine-grained PAT (github_pat_) を検出する", () => {
+      const fake = "github_pat_" + "C".repeat(80);
+      const result = redactSecrets(`token=${fake}`);
+      expect(result.text).toContain("[REDACTED:GITHUB_PAT]");
+      expect(result.text).not.toContain(fake);
+    });
+
+    test("Slack bot token (xoxb-) を検出する", () => {
+      // GitHub secret scanning を発火させないため、英字のみの fake 値を使う
+      // (= 実在しないパターン)。regex は `xoxb-[A-Za-z0-9-]{10,}` なので OK。
+      const fake = "xoxb-" + "a".repeat(40);
+      const result = redactSecrets(`SLACK=${fake}`);
+      expect(result.text).toContain("[REDACTED:SLACK_TOKEN]");
+      expect(result.text).not.toContain(fake);
+    });
+
+    test("Slack user / app / refresh / signing token (xoxp/xoxa/xoxr/xoxs) も検出する", () => {
+      for (const prefix of ["xoxp-", "xoxa-", "xoxr-", "xoxs-"]) {
+        const fake = `${prefix}${"a".repeat(30)}`;
+        const result = redactSecrets(`token=${fake}`);
+        expect(result.text).toContain("[REDACTED:SLACK_TOKEN]");
+      }
+    });
+
+    test("Stripe live secret key (sk_live_) を検出する", () => {
+      const fake = "sk_live_" + "D".repeat(40);
+      const result = redactSecrets(`STRIPE_KEY=${fake}`);
+      expect(result.text).toContain("[REDACTED:STRIPE_KEY]");
+      expect(result.text).not.toContain(fake);
+    });
+
+    test("Stripe publishable / restricted / test key も検出する", () => {
+      for (const fake of [
+        "pk_live_" + "E".repeat(30),
+        "rk_live_" + "F".repeat(30),
+        "sk_test_" + "G".repeat(30),
+      ]) {
+        const result = redactSecrets(`KEY=${fake}`);
+        expect(result.text).toContain("[REDACTED:STRIPE_KEY]");
+      }
+    });
+
+    test("一般 env 名 (FOO_API_KEY=) も検出する (loose pattern)", () => {
+      const result = redactSecrets("MY_SERVICE_API_KEY=somerandomvalue");
+      expect(result.text).toContain("MY_SERVICE_API_KEY=[REDACTED]");
+      expect(result.text).not.toContain("somerandomvalue");
+    });
+
+    test("一般 env 名 (FOO_SECRET=) も検出する", () => {
+      const result = redactSecrets("DATABASE_PASSWORD=hunter2longer");
+      expect(result.text).toContain("DATABASE_PASSWORD=[REDACTED]");
+      expect(result.text).not.toContain("hunter2longer");
+    });
+
+    test("一般 env 名 (FOO_TOKEN=) も検出する", () => {
+      const result = redactSecrets("INTERNAL_API_TOKEN=abcdefghijklmn");
+      expect(result.text).toContain("INTERNAL_API_TOKEN=[REDACTED]");
+    });
+
+    test("SLACK_BOT_TOKEN env 名は GENERIC_API_KEY_ENV で正規化される", () => {
+      const result = redactSecrets("SLACK_BOT_TOKEN=somevaluexyz");
+      expect(result.text).toContain("SLACK_BOT_TOKEN=[REDACTED]");
+    });
+
+    test("loose pattern は短すぎる NAME (= 全大文字 3 字未満) には反応しない", () => {
+      // 例えば "AB_KEY=foo" は照合しない (= [A-Z][A-Z0-9_]{2,} なので最低 4 字必要)
+      const result = redactSecrets("AB_KEY=foo");
+      expect(result.text).toBe("AB_KEY=foo");
+      expect(result.count).toBe(0);
+    });
+  });
 });

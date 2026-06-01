@@ -43,16 +43,40 @@ const AWS_SECRET_KEY = /aws_secret_access_key\s*[=:]\s*\S+/gi;
 // Placed before the generic sk- pattern so this wins.
 const ANTHROPIC_API_KEY = /\bsk-ant-[A-Za-z0-9_-]{50,}\b/g;
 
+// OpenAI new key formats (sk-proj-, sk-svcacct-) — these include hyphens and
+// underscores in the body, so they need to match before the strict OpenAI sk-
+// pattern below (which rejects non-alphanumerics).
+const OPENAI_API_KEY_NEW = /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b/g;
+
 // OpenAI-style key: sk- prefix + long body. Stricter than Anthropic by char set.
 const OPENAI_API_KEY = /\bsk-[A-Za-z0-9]{20,}\b/g;
 
-// GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ + 36 url-safe chars.
+// GitHub classic tokens: ghp_/gho_/ghu_/ghs_/ghr_ + 36 url-safe chars.
 const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g;
+
+// GitHub fine-grained Personal Access Token: github_pat_ + 22 + _ + 59 chars.
+const GITHUB_PAT_FG = /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g;
+
+// Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs- + body separated by dashes.
+const SLACK_TOKEN = /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g;
+
+// Stripe keys: sk_live_ / pk_live_ / rk_live_ + body (test variants too).
+const STRIPE_KEY = /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g;
 
 // Generic env-style assignment of well-known credential variable names.
 // Captures the variable name in group 1 so the replacement keeps it readable.
 const GENERIC_API_KEY_ENV =
-  /\b(ANTHROPIC_API_KEY|OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|HF_TOKEN)\s*[=:]\s*\S+/g;
+  /\b(ANTHROPIC_API_KEY|OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|HF_TOKEN|SLACK_TOKEN|SLACK_BOT_TOKEN|STRIPE_SECRET_KEY|STRIPE_API_KEY)\s*[=:]\s*\S+/g;
+
+// Loose generic env assignment: catches `<ALL_CAPS>_(KEY|SECRET|PASSWORD|TOKEN)=`
+// patterns we haven't enumerated above. Intentionally aggressive (false
+// positives are tolerable in a personal tool — leaking a real secret is not).
+//
+// Negative lookahead `(?!\[REDACTED)` ensures we don't double-count when an
+// earlier specific pattern (e.g. GENERIC_API_KEY_ENV) already normalized the
+// value to `[REDACTED]`.
+const LOOSE_CREDENTIAL_ENV =
+  /\b([A-Z][A-Z0-9_]{2,}_(?:API_KEY|SECRET_KEY|PRIVATE_KEY|ACCESS_KEY|PASSWORD|TOKEN|SECRET))\s*[=:]\s*(?!\[REDACTED)\S+/g;
 
 const PATTERNS: Pattern[] = [
   // Multi-line / structural patterns first
@@ -61,7 +85,11 @@ const PATTERNS: Pattern[] = [
 
   // Provider-specific tokens (most specific first)
   { regex: ANTHROPIC_API_KEY, replacement: "[REDACTED:ANTHROPIC_API_KEY]" },
+  { regex: OPENAI_API_KEY_NEW, replacement: "[REDACTED:OPENAI_API_KEY]" },
+  { regex: GITHUB_PAT_FG, replacement: "[REDACTED:GITHUB_PAT]" },
   { regex: GITHUB_TOKEN, replacement: "[REDACTED:GITHUB_TOKEN]" },
+  { regex: SLACK_TOKEN, replacement: "[REDACTED:SLACK_TOKEN]" },
+  { regex: STRIPE_KEY, replacement: "[REDACTED:STRIPE_KEY]" },
   { regex: AWS_ACCESS_KEY, replacement: "[REDACTED:AWS_ACCESS_KEY]" },
 
   // Structured assignments — these normalize to NAME=[REDACTED]
@@ -74,8 +102,16 @@ const PATTERNS: Pattern[] = [
     replacement: (_match, name) => `${name}=[REDACTED]`,
   },
 
-  // Generic OpenAI-style key last (broadest sk- match)
+  // Generic OpenAI-style key (broader sk- match, after specific variants)
   { regex: OPENAI_API_KEY, replacement: "[REDACTED:OPENAI_API_KEY]" },
+
+  // Loose generic credential env assignment — catches `<ALL_CAPS>_(API_KEY|
+  // SECRET|TOKEN|PASSWORD|...)=` patterns not enumerated above. Placed last
+  // so specific patterns win.
+  {
+    regex: LOOSE_CREDENTIAL_ENV,
+    replacement: (_match, name) => `${name}=[REDACTED]`,
+  },
 ];
 
 /**
