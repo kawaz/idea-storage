@@ -136,7 +136,47 @@ oxfmt 1 回 auto-fix (chunked-runner + session-process)。
 `session-process.ts ↔ session-worker/index.ts ↔ chunked-runner.ts` の循環を生む。
 advisor 助言通り `worker-observation.ts` を leaf として切り出し、cycle 回避。
 
-### Step 3-d: lib/driver/ 4 ファイル分離 (未着手)
+### Step 3-d: lib/driver/ 4 ファイル分離 ✓
+
+driver ロジックを `lib/driver/` 配下 4 ファイルに分離。commands/ ラッパーは
+~30 行に近づく (step 3-g 部分着手)。
+
+**新規 lib/driver/**:
+
+| File                  | Lines | Main exports                                               |
+| --------------------- | ----- | ---------------------------------------------------------- |
+| `process-driver.ts`   | 114   | `runProcess(opts)`, `ProcessResult`, `RunProcessOptions`   |
+| `dispatcher-entry.ts` | 103   | `runDispatcherEntry(args)` (Phase 2 dispatcher エントリ)   |
+| `convert-driver.ts`   | 188   | `runConvert(input)`, `RunConvertInput`, `RunConvertResult` |
+| `enqueue-driver.ts`   | 124   | `runEnqueue()`                                             |
+
+**commands/ 縮退**:
+
+| File                 | 旧 → 新      |
+| -------------------- | ------------ |
+| `session-process.ts` | 231 → **31** |
+| `session-convert.ts` | 242 → **63** |
+| `session-enqueue.ts` | 135 → **18** |
+
+合計 608 → 112 行 (82% 削減)。
+
+**re-export 構成**:
+
+- session-process.ts: session-worker から 5 個 + driver から 3 個
+- session-convert.ts: driver から runConvert + 型 2 個
+- session-enqueue.ts: driver から runEnqueue のみ
+
+→ test (動的 import 含む) と session-run.ts は無改修で動く。
+
+**設計判断**:
+
+- driver 内 2 ファイル間 (process-driver / dispatcher-entry) の依存方向を
+  `process-driver → dispatcher-entry` 片方向に保つ (= 循環回避)
+- convert-driver の `processSession` import は再エクスポートチェーン短縮のため
+  直接 `../session-worker/index.ts` を参照
+- session-convert.ts はまだ 63 行、step 3-g で更に縮退余地
+
+**検証**: bun test (828 pass) / tsc clean / just check 全 pass
 
 ### Step 3-e: LLM DI シーム統一 (`_runClaude?: ClaudeRunner` 全箇所) (未着手)
 
