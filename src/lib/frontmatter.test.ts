@@ -148,4 +148,52 @@ describe("generateFrontmatter", () => {
     expect(parsed.frontmatter).toEqual(data);
     expect(parsed.body).toBe("Body text");
   });
+
+  test("値にコロンを含むと quote される (構造破壊防止)", () => {
+    const result = generateFrontmatter({ url: "https://example.com/x" });
+    expect(result).toContain('url: "https://example.com/x"');
+  });
+
+  test("値に改行を含むと quote + literal \\n に escape する", () => {
+    const result = generateFrontmatter({ note: "line1\nline2" });
+    expect(result).toContain('note: "line1\\nline2"');
+    // 生の改行が frontmatter に漏れない
+    const fmBlock = result.split("---")[1] ?? "";
+    expect(fmBlock).not.toContain("line1\nline2");
+  });
+
+  test("値が --- なら quote される", () => {
+    const result = generateFrontmatter({ sep: "---" });
+    expect(result).toContain('sep: "---"');
+  });
+
+  test("値にダブルクオートを含むと escape される", () => {
+    const result = generateFrontmatter({ msg: 'he said "hi"' });
+    expect(result).toContain('msg: "he said \\"hi\\""');
+  });
+
+  test("値にバックスラッシュを含むと escape される", () => {
+    const result = generateFrontmatter({ path: "a\\b" });
+    expect(result).toContain('path: "a\\\\b"');
+  });
+
+  test("値に secret を含むと redact される", () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    const result = generateFrontmatter({ session_log: `token=${ghToken}` });
+    expect(result).not.toContain(ghToken);
+    expect(result).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
+
+  test("frontmatter injection 攻撃: '\\n---\\n' を含む値で構造が壊れない", () => {
+    const malicious = "x\n---\nbody injection\n---\n";
+    const result = generateFrontmatter({ name: malicious });
+    // --- は冒頭と末尾の 2 個だけ
+    const delimiters = result.match(/^---$/gm) ?? [];
+    expect(delimiters.length).toBe(2);
+  });
+
+  test("先頭/末尾空白を含む値も quote される", () => {
+    const result = generateFrontmatter({ key: " padded " });
+    expect(result).toContain('key: " padded "');
+  });
 });

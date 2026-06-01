@@ -17,6 +17,25 @@ function makeTestDirs(): RateLimitStoreDirs {
 }
 
 describe("rate-limit-store", () => {
+  describe("DR-0009 Phase 1 S3: db file permission", () => {
+    test("recordObservation 経由で作成された DB は mode 0600 (owner-only)", () => {
+      const dirs = makeTestDirs();
+      recordObservation(
+        {
+          ts: 1776046000,
+          fiveHour: null,
+          sevenDay: null,
+          source: "worker",
+        },
+        dirs,
+      );
+      const { statSync } = require("node:fs");
+      const dbPath = join(dirs.stateDir, "queue.db");
+      const s = statSync(dbPath);
+      expect(s.mode & 0o777).toBe(0o600);
+    });
+  });
+
   describe("recordObservation", () => {
     test("records a single observation", () => {
       const dirs = makeTestDirs();

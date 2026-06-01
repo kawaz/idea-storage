@@ -951,6 +951,79 @@ describe("processSession redact integration", () => {
     expect(redactLog).toBeDefined();
     expect(redactLog!.count).toBeGreaterThanOrEqual(1);
   });
+
+  test("DR-0009 Phase 1 S2: LLM 出力に含まれる secret も Bun.write 直前で redact される (output 防御層)", async () => {
+    const ghToken = "ghp_" + "b".repeat(36);
+    const SID = "55555555-5555-4555-9555-555555555555";
+    const projectDir = join(redactClaudeDir, "projects", "output-redact-test");
+    await mkdir(projectDir, { recursive: true });
+    const filePath = join(projectDir, `${SID}.jsonl`);
+    const startTime = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const line = JSON.stringify({
+      type: "user",
+      timestamp: startTime,
+      uuid: "55555555-line-0001",
+      sessionId: SID,
+      cwd: "/tmp/output-redact-test",
+      message: { role: "user", content: "普通のセッション本文" },
+    });
+    await Bun.write(filePath, line + "\n");
+
+    // LLM mock: 出力に secret を含めて返す (= LLM がうっかり transcribe / hallucinate
+    // した想定)。output 防御層がここで止めるべき。
+    mock.module("../lib/claude-runner.ts", () => ({
+      runClaude: mock(async () => `# Article\n\n本文内に token=${ghToken} を含む\n`),
+      ClaudeTimeoutError: class extends Error {
+        readonly timeoutMs: number;
+        constructor(timeoutMs: number) {
+          super(`claude process timed out after ${timeoutMs}ms`);
+          this.name = "ClaudeTimeoutError";
+          this.timeoutMs = timeoutMs;
+        }
+      },
+      ClaudeAbortError: class extends Error {
+        constructor() {
+          super("claude process was aborted");
+          this.name = "ClaudeAbortError";
+        }
+      },
+    }));
+
+    let outputFile = "";
+    await withIsolatedIdeaStorageEnv(workDir, async () => {
+      const { processSession } = await import("./session-process.ts");
+      const { getSessionMeta } = await import("../lib/conversation.ts");
+      const meta = await getSessionMeta(filePath);
+      const result = await processSession({
+        sessionId: SID,
+        recipe: {
+          name: "diary",
+          filePath: "/tmp/recipe-diary.md",
+          match: {},
+          onExisting: "append",
+          prompt: "Write a diary",
+        } as import("../types/index.ts").Recipe,
+        meta,
+        sessionStats: { turns: 1, bytes: 100 },
+        dataDir: join(workDir, "data"),
+      });
+      expect(result.kind).toBe("processed");
+      if (result.kind === "processed") {
+        outputFile = result.outputFile;
+      }
+    });
+
+    const written = await Bun.file(outputFile).text();
+    expect(written).not.toContain(ghToken);
+    expect(written).toContain("[REDACTED:GITHUB_TOKEN]");
+
+    // DR-0009 Phase 1 S3: file mode 0600 + parent dir mode 0700 (新規分のみ)
+    const { stat } = await import("node:fs/promises");
+    const fileStat = await stat(outputFile);
+    expect(fileStat.mode & 0o777).toBe(0o600);
+    const dirStat = await stat(join(outputFile, ".."));
+    expect(dirStat.mode & 0o777).toBe(0o700);
+  });
 });
 
 // --- フォークセッションのタイムライン切り詰めテスト ---

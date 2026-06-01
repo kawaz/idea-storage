@@ -51,6 +51,17 @@ describe("queue", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  describe("DR-0009 Phase 1 S3: db file permission", () => {
+    test("getDb で作成された queue.db は mode 0600 (owner-only)", async () => {
+      const db = getDb(dirs);
+      db.close();
+      const { statSync } = await import("node:fs");
+      const dbPath = join(tempDir, "queue.db");
+      const s = statSync(dbPath);
+      expect(s.mode & 0o777).toBe(0o600);
+    });
+  });
+
   describe("enqueue", () => {
     test("creates a queued entry", async () => {
       await enqueue(SID_ABC, "diary", 10, dirs);

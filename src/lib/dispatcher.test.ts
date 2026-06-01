@@ -167,4 +167,52 @@ describe("runDispatcher", () => {
     expect(capturedPrompt).toContain("- no_hint: (no hint)");
     expect(capturedPrompt).toContain("effective_user_turns: 5");
   });
+
+  test("DR-0009 Phase 1 S2: project に含まれる secret は dispatcher prompt で redact される", async () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    let capturedPrompt = "";
+    await runDispatcher({
+      sessionId,
+      meta: makeMeta({ project: `/tmp/repo-${ghToken}` }),
+      recipes: baseRecipes,
+      promptTemplate: "TEMPLATE",
+      _runClaude: async (prompt) => {
+        capturedPrompt = prompt;
+        return JSON.stringify({ recipes: [] });
+      },
+    });
+    expect(capturedPrompt).not.toContain(ghToken);
+    expect(capturedPrompt).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
+
+  test("DR-0009 Phase 1 S2: recipe.hint に含まれる secret も dispatcher prompt で redact される", async () => {
+    const akia = "AKIAIOSFODNN7EXAMPLE";
+    let capturedPrompt = "";
+    await runDispatcher({
+      sessionId,
+      meta: makeMeta(),
+      recipes: [makeRecipe("leaky", `普通の hint key=${akia}`)],
+      promptTemplate: "TEMPLATE",
+      _runClaude: async (prompt) => {
+        capturedPrompt = prompt;
+        return JSON.stringify({ recipes: [] });
+      },
+    });
+    expect(capturedPrompt).not.toContain(akia);
+    expect(capturedPrompt).toContain("[REDACTED:AWS_ACCESS_KEY]");
+  });
+
+  test("DR-0009 Phase 1 S2: json parse 失敗時の raw_excerpt も redact される (history DB 永続化前)", async () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    const decision = await runDispatcher({
+      sessionId,
+      meta: makeMeta(),
+      recipes: baseRecipes,
+      promptTemplate: "TEMPLATE",
+      _runClaude: async () => `BAD response token=${ghToken} not json`,
+    });
+    expect(decision.fallback?.reason).toBe("json_parse_error");
+    expect(decision.decisionMessage).not.toContain(ghToken);
+    expect(decision.decisionMessage).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
 });

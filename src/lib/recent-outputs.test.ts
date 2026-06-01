@@ -75,4 +75,13 @@ describe("formatInjectedRecent", () => {
     // 末尾に区切り --- が入って prompt 本体と分離される
     expect(text).toMatch(/---\n+$/);
   });
+
+  test("DR-0009 Phase 1 S2: body に含まれる secret は注入時に redact される", () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    const text = formatInjectedRecent([
+      { filePath: "/data/diary/2026/05/30/x.md", body: `本文 token=${ghToken} 続き` },
+    ]);
+    expect(text).not.toContain(ghToken);
+    expect(text).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
 });

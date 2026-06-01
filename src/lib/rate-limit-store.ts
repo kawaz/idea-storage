@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { getStateDir } from "./paths.ts";
 import type { BucketObservation } from "./rate-limit-parser.ts";
 
@@ -52,8 +52,12 @@ function initSchema(db: Database): void {
 
 function getDb(dirs?: RateLimitStoreDirs): Database {
   const dbPath = resolveDbPath(dirs);
-  mkdirSync(dirname(dbPath), { recursive: true });
+  // DR-0009 Phase 1: state dir gets owner-only mode (newly-created only).
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new Database(dbPath);
+  // queue.db (shared with queue-internal) — Phase 2 will consolidate getDb,
+  // until then both call sites enforce owner-only file mode.
+  chmodSync(dbPath, 0o600);
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA busy_timeout = 5000");
   initSchema(db);

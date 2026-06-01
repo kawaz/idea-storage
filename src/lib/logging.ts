@@ -1,15 +1,4 @@
-import { redactSecrets } from "./redact.ts";
-
-/**
- * Maximum length for the `error` field in log payloads. Anything longer is
- * truncated with a `...(truncated)` marker.
- *
- * Design rationale: error messages from spawned processes (claude CLI, csa,
- * etc.) can include large stderr or stack traces. Logs are intended for
- * structured operational signal, not full diagnostic capture, so we cap the
- * size aggressively.
- */
-const MAX_ERROR_LEN = 500;
+import { redactForLog } from "./redact-pipeline.ts";
 
 /**
  * Field names that may carry large user / session bodies. These are always
@@ -31,12 +20,8 @@ function sanitizeLogPayload(payload: Record<string, unknown>): Record<string, un
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
     if (DANGEROUS_FIELDS.has(key)) continue;
-    if (key === "error" && typeof value === "string") {
-      const redacted = redactSecrets(value).text;
-      result[key] =
-        redacted.length > MAX_ERROR_LEN
-          ? redacted.slice(0, MAX_ERROR_LEN) + "...(truncated)"
-          : redacted;
+    if (typeof value === "string") {
+      result[key] = redactForLog(value);
       continue;
     }
     result[key] = value;

@@ -16,6 +16,7 @@
 import type { Recipe, SessionMeta } from "../types/index.ts";
 import { runClaude } from "./claude-runner.ts";
 import { getDispatcherPromptPath } from "./paths.ts";
+import { redactForOutput, redactForPrompt } from "./redact-pipeline.ts";
 
 export interface DispatcherInput {
   sessionId: string;
@@ -87,11 +88,17 @@ export async function loadDispatcherPrompt(): Promise<string> {
 function buildDispatcherInputBlock(input: DispatcherInput): string {
   const { meta, recipes } = input;
   const ageMinutes = Math.floor(meta.ageSec / 60);
-  const recipesList = recipes.map((r) => `- ${r.name}: ${r.hint ?? "(no hint)"}`).join("\n");
+  // project / recipe.hint are session/config-derived strings that might carry
+  // accidental secrets (e.g. a path containing a token, a hint authored with
+  // an env var leak). Redact before sending to the dispatcher LLM.
+  const project = redactForPrompt(meta.project || "unknown");
+  const recipesList = recipes
+    .map((r) => `- ${r.name}: ${redactForPrompt(r.hint ?? "(no hint)")}`)
+    .join("\n");
   return [
     "## Session",
     `- id: ${input.sessionId}`,
-    `- project: ${meta.project || "unknown"}`,
+    `- project: ${project}`,
     `- age_minutes: ${ageMinutes}`,
     `- user_turns: ${meta.userTurns}`,
     `- effective_user_turns: ${meta.effectiveUserTurns}`,
@@ -168,7 +175,9 @@ export async function runDispatcher(input: DispatcherInput): Promise<DispatcherD
       rejectedRecipes: [],
       decisionMessage: JSON.stringify({
         fallback: "json_parse_error",
-        raw_excerpt: raw.slice(0, 500),
+        // raw_excerpt is persisted into history via recordDispatchDecision —
+        // redact before the slice lands on disk.
+        raw_excerpt: redactForOutput(raw.slice(0, 500)),
       }),
       fallback: { reason: "json_parse_error" },
     };

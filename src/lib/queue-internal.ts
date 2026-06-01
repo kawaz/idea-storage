@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { getStateDir } from "./paths.ts";
 import { applyMigrations } from "./queue-schema.ts";
 
@@ -99,8 +99,14 @@ function resolveDbPath(dirs?: QueueDirs): string {
 
 export function getDb(dirs?: QueueDirs): Database {
   const dbPath = resolveDbPath(dirs);
-  mkdirSync(dirname(dbPath), { recursive: true });
+  // Newly-created state dirs get owner-only mode. Existing dirs are left
+  // untouched per DR-0009 Phase 1 (no retroactive migration).
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new Database(dbPath);
+  // queue.db is touched on every getDb() call; chmod is idempotent so always
+  // enforce owner-only. Multi-user host protection: prevent another local
+  // user from reading queue / history / rate_limit observations.
+  chmodSync(dbPath, 0o600);
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA busy_timeout = 5000");
   applyMigrations(db);

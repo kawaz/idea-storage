@@ -17,6 +17,7 @@
 
 import { runClaude } from "./claude-runner.ts";
 import { getQualityGuidelinesPath } from "./paths.ts";
+import { redactForPrompt } from "./redact-pipeline.ts";
 
 export interface QualityGateInput {
   /** Generated output (markdown body, without frontmatter). */
@@ -109,6 +110,9 @@ function parseVerdictOutput(raw: string): VerdictJson | null {
  */
 export async function runQualityGate(input: QualityGateInput): Promise<QualityVerdict> {
   const guidelines = input.guidelines ?? (await loadQualityGuidelines());
+  // Defense in depth: even though processSession redacts the timeline before
+  // generation, the LLM output itself can re-introduce secrets (verbatim
+  // transcription, hallucinated keys). Strip before re-sending to the gate LLM.
   const prompt = [
     VERDICT_PROMPT_HEADER,
     "",
@@ -116,7 +120,7 @@ export async function runQualityGate(input: QualityGateInput): Promise<QualityVe
     guidelines.trim(),
     "",
     `## Output (recipe=${input.recipeName})`,
-    input.output,
+    redactForPrompt(input.output),
   ].join("\n");
 
   let raw: string;

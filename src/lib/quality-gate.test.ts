@@ -79,4 +79,20 @@ describe("runQualityGate", () => {
     expect(verdict.kind).toBe("rejected");
     expect(verdict.reason).toBe("過剰総括");
   });
+
+  test("DR-0009 Phase 1 S2: output に含まれる secret は gate LLM への prompt で redact される", async () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    let captured = "";
+    await runQualityGate({
+      output: `生成テキスト token=${ghToken} さらに続く文章`,
+      recipeName: "diary",
+      guidelines: "GUIDELINES",
+      _runClaude: async (p) => {
+        captured = p;
+        return JSON.stringify({ kind: "accepted", reason: "ok" });
+      },
+    });
+    expect(captured).not.toContain(ghToken);
+    expect(captured).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
 });

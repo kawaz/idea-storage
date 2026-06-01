@@ -1,6 +1,6 @@
 import { define } from "gunshi";
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
 import { loadRecipes } from "../lib/recipe.ts";
 import { getRecipesDir, getDataDir, getRejectedDir } from "../lib/paths.ts";
@@ -36,6 +36,7 @@ import { spawnWithTimeout, SpawnTimeoutError } from "../lib/spawn-timeout.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { redactSecrets } from "../lib/redact.ts";
+import { redactForOutput } from "../lib/redact-pipeline.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import { CSA_TIMEOUT_MS } from "../lib/constants.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
@@ -533,9 +534,12 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
     prompt += `\n\n---\nNote: このセッションは元セッション ${meta.forkInfo.parentSessionId} からフォークされたものです。以下のタイムラインはフォーク後の新規会話のみです。`;
   }
 
-  // Redact secrets from the timeline before sending to Claude.
-  // Best-effort filter: applies to both the prompt sent to the API and (by
-  // extension) anything the model may transcribe into the output article.
+  // Redact secrets from the timeline before sending to Claude. We use the
+  // primitive (not redactForPrompt) here because we want the hit count for
+  // observability — pipeline wrappers discard the count.
+  // The "by extension covers output" assumption was wrong (output paths can
+  // re-introduce secrets via LLM transcription) — defense in depth happens at
+  // Bun.write below via redactForOutput.
   const redacted = redactSecrets(timelineText);
   timelineText = redacted.text;
   if (redacted.count > 0) {
@@ -617,13 +621,20 @@ ${timelineText}`;
   const fm = generateFrontmatter(fmData);
 
   // Output file path: {dataDir}/{recipeName}/YYYY/MM/DD/{yyyymmddTHHMMSSZ}.{sessionId}.md
+  // Newly-created directories along the path get mode 0700 (owner-only). Existing
+  // directories along the path are left untouched (DR-0009 Phase 1 decision:
+  // do not migrate legacy permissions retroactively — only protect fresh writes).
   const datePath = formatDatePath(meta.startTime);
   const outputDir = join(dataDir, recipeName, datePath);
-  await mkdir(outputDir, { recursive: true });
+  await mkdir(outputDir, { recursive: true, mode: 0o700 });
 
   const fileTs = formatFileTimestamp(meta.startTime);
   const outputFile = join(outputDir, `${fileTs}.${sessionId}.md`);
-  const fullOutput = fm + output;
+  // Final defense layer before any persistence path: even though the
+  // timeline was redacted on input, the LLM can re-emit secrets it observed.
+  // frontmatter values are already redacted by generateFrontmatter; this
+  // second pass is idempotent for them and primarily protects the body.
+  const fullOutput = redactForOutput(fm + output);
 
   // DR-0008 §8: quality gate before persisting. Gate is conservative — any
   // LLM unreachability or parse failure falls back to accepted (don't block
@@ -645,15 +656,19 @@ ${timelineText}`;
   if (verdict.kind === "rejected") {
     // Divert to _rejected/<recipe>/YYYY/MM/DD/ for later inspection (manual
     // re-evaluation when quality_guidelines.md is improved).
+    // _rejected/ is the highest-sensitivity path (LLM raw output that the
+    // quality gate refused) — mode 0600/0700 applies the same as accepted.
     const rejectedDir = join(getRejectedDir(), recipeName, datePath);
-    await mkdir(rejectedDir, { recursive: true });
+    await mkdir(rejectedDir, { recursive: true, mode: 0o700 });
     const rejectedFile = join(rejectedDir, `${fileTs}.${sessionId}.md`);
     await Bun.write(rejectedFile, fullOutput);
+    await chmod(rejectedFile, 0o600);
     log({ key, msg: "quality_rejected", output: rejectedFile, reason: verdict.reason });
     return { kind: "skipped", reason: "quality_rejected", lineCount: meta.lineCount };
   }
 
   await Bun.write(outputFile, fullOutput);
+  await chmod(outputFile, 0o600);
   log({ key, msg: "success", output: outputFile });
 
   return { kind: "processed", outputFile, lineCount: meta.lineCount };

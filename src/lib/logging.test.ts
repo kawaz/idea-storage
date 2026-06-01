@@ -38,7 +38,7 @@ describe("log", () => {
     expect(typeof obj.ts).toBe("string");
   });
 
-  test("error 文字列が MAX_ERROR_LEN (500) を超えると ...(truncated) で切り詰められる", () => {
+  test("error 文字列が 500 文字を超えると ...(truncated) で切り詰められる", () => {
     const big = "x".repeat(1000);
     log({ msg: "boom", error: big });
     const obj = parseLast("stdout");
@@ -48,11 +48,37 @@ describe("log", () => {
     expect(error.startsWith("x".repeat(500))).toBe(true);
   });
 
-  test("error 文字列がちょうど MAX_ERROR_LEN なら切り詰められない", () => {
+  test("error 文字列がちょうど 500 文字なら切り詰められない", () => {
     const exact = "y".repeat(500);
     log({ msg: "edge", error: exact });
     const obj = parseLast("stdout");
     expect(obj.error).toBe(exact);
+  });
+
+  test("error 以外の string フィールド (例: stderr) も redact + truncate される", () => {
+    const ghToken = "ghp_" + "a".repeat(36);
+    log({ msg: "fail", stderr: `command failed: ${ghToken}` });
+    const obj = parseLast("stdout");
+    const stderr = obj.stderr as string;
+    expect(stderr).not.toContain(ghToken);
+    expect(stderr).toContain("[REDACTED:GITHUB_TOKEN]");
+  });
+
+  test("error 以外の長文 string フィールドも 500 文字で切り詰められる", () => {
+    const big = "z".repeat(1000);
+    log({ msg: "trace", note: big });
+    const obj = parseLast("stdout");
+    const note = obj.note as string;
+    expect(note.length).toBe(500 + "...(truncated)".length);
+    expect(note.endsWith("...(truncated)")).toBe(true);
+  });
+
+  test("非 string フィールド (number / boolean / object) は素通り", () => {
+    log({ count: 42, ok: true, meta: { code: 7 } });
+    const obj = parseLast("stdout");
+    expect(obj.count).toBe(42);
+    expect(obj.ok).toBe(true);
+    expect(obj.meta).toEqual({ code: 7 });
   });
 
   test("error 文字列内の Anthropic API キーが redact される", () => {

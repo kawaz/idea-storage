@@ -3,6 +3,54 @@
  * Supports up to 2 levels of nesting.
  */
 
+import { redactForOutput } from "./redact-pipeline.ts";
+
+/**
+ * Encode a value as a single-line YAML scalar that survives parseFrontmatter
+ * round-trip without breaking the surrounding `---` delimiters.
+ *
+ * Design rationale: generateFrontmatter is fed user / session-derived data
+ * (cwd, project, session_id, ...). `String(value)` directly would let a value
+ * like `x\n---\nbody\n---\n` re-open the frontmatter block. We:
+ *
+ * 1. Redact secrets first (defense in depth — frontmatter is part of output).
+ * 2. Plain-emit when the scalar is "obviously safe" (matches the unquoted
+ *    string shape that parseValue() treats as a plain string).
+ * 3. Otherwise double-quote and escape backslash / quote / control chars.
+ *
+ * parseFrontmatter does *not* decode `\n` inside double-quoted strings (it
+ * just strips the surrounding quotes), so multi-line values round-trip as
+ * the literal 2-char sequence `\n`. That is acceptable: frontmatter is for
+ * single-line metadata; long-form text belongs in the body.
+ */
+function encodeYamlScalar(value: unknown): string {
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  const raw = redactForOutput(String(value));
+  if (isSafePlainScalar(raw)) return raw;
+  const escaped = raw
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
+  return `"${escaped}"`;
+}
+
+function isSafePlainScalar(s: string): boolean {
+  if (s === "") return false;
+  if (s !== s.trim()) return false;
+  if (s === "---") return false;
+  for (const ch of s) {
+    if (ch === "\n" || ch === "\r" || ch === "\t") return false;
+    if (ch === ":" || ch === '"' || ch === "'" || ch === "\\" || ch === "#") {
+      return false;
+    }
+  }
+  return true;
+}
+
 function parseValue(raw: string): unknown {
   const trimmed = raw.trim();
   // Boolean
@@ -108,7 +156,7 @@ export function generateFrontmatter(data: Record<string, unknown>): string {
   const lines = ["---"];
   for (const [key, value] of Object.entries(data)) {
     if (value == null) continue;
-    lines.push(`${key}: ${String(value)}`);
+    lines.push(`${key}: ${encodeYamlScalar(value)}`);
   }
   lines.push("---", "");
   return lines.join("\n");

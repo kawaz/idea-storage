@@ -13,6 +13,7 @@
  */
 
 import { join } from "node:path";
+import { redactForPrompt } from "./redact-pipeline.ts";
 
 interface RecentOutput {
   filePath: string;
@@ -73,10 +74,13 @@ export function formatInjectedRecent(outputs: RecentOutput[]): string {
     "以下は同じ recipe の直近の出力です。同じ表現の繰り返しを避け、観点を変える材料に。",
     "",
   ];
+  // Defense in depth: past output files have already been redacted at write
+  // time, but a missed pattern from an earlier version would otherwise be
+  // re-amplified into the next prompt. Re-redact at injection.
   for (const o of outputs) {
     lines.push(`### ${o.filePath}`);
     lines.push("");
-    lines.push(o.body);
+    lines.push(redactForPrompt(o.body));
     lines.push("");
   }
   return `${lines.join("\n")}\n---\n\n`;
