@@ -2,12 +2,8 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import {
-  extractConversation,
-  formatConversationToText,
-  getSessionMeta,
-  getSessionMetaBatch,
-} from "./conversation.ts";
+import { extractConversation, formatConversationToText } from "./conversation.ts";
+import { getSessionMeta, getSessionMetaBatch } from "./csa.ts";
 import {
   createCsaFixtureDir,
   writeSessionFixture,

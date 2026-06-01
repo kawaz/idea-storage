@@ -2,6 +2,7 @@ import { define } from "gunshi";
 import { dirname } from "node:path";
 import { getDataDir } from "../lib/paths.ts";
 import { parseFrontmatter } from "../lib/frontmatter.ts";
+import { runCsaSessions } from "../lib/csa.ts";
 import { listViewEntries } from "./article-view.ts";
 import {
   C,
@@ -163,31 +164,27 @@ interface CsaSession {
   turns: number;
 }
 
+/**
+ * Best-effort fetch of session stats from claude-session-analysis.
+ * Swallows CSA spawn failures and returns whatever was collected so that
+ * article listing degrades gracefully (frontmatter fallback covers the rest).
+ *
+ * Wraps {@link runCsaSessions} (which throws on non-zero exit) to preserve the
+ * original silent-failure behavior. DR-0009 Phase 3 集約。
+ */
 async function fetchSessionStats(sessionIds: string[]): Promise<Map<string, CsaSession>> {
   const map = new Map<string, CsaSession>();
   if (sessionIds.length === 0) return map;
-  // コマンドライン引数制限を避けるためバッチで分割
-  const BATCH = 200;
-  for (let i = 0; i < sessionIds.length; i += BATCH) {
-    const batch = sessionIds.slice(i, i + BATCH);
-    try {
-      const proc = Bun.spawn(
-        ["claude-session-analysis", "sessions", "--format", "jsonl", ...batch],
-        {
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      );
-      const out = await new Response(proc.stdout).text();
-      await proc.exited;
-      for (const line of out.trim().split("\n")) {
-        if (!line) continue;
-        const s = JSON.parse(line) as CsaSession;
+  try {
+    const records = await runCsaSessions(sessionIds);
+    for (const r of records) {
+      const s = r as CsaSession;
+      if (s && typeof s.sessionId === "string") {
         map.set(s.sessionId, s);
       }
-    } catch {
-      // continue with next batch
     }
+  } catch {
+    // Best-effort: degrade to frontmatter fallback if CSA fails.
   }
   return map;
 }

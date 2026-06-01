@@ -2,7 +2,7 @@ import { define } from "gunshi";
 import { join } from "node:path";
 import { loadConfig } from "../lib/config.ts";
 import { getDataDir } from "../lib/paths.ts";
-import { getSessionMeta } from "../lib/conversation.ts";
+import { getSessionMeta, getSessionStats } from "../lib/csa.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import { claim, markDone, markFailed, markSkipped, waitForCompletion } from "../lib/queue.ts";
 import { CliError, exitWithError } from "../lib/errors.ts";
@@ -12,12 +12,7 @@ import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { getLatestObservations } from "../lib/rate-limit-store.ts";
 import { shouldSkip } from "../lib/rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
-import {
-  fetchSessionStats,
-  findRecipeByName,
-  loadRecipesOrFail,
-  processSession,
-} from "./session-process.ts";
+import { findRecipeByName, loadRecipesOrFail, processSession } from "./session-process.ts";
 
 export interface RunConvertInput {
   sessionId: string;
@@ -165,7 +160,7 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
   });
 
   // Best-effort session stats fetch
-  const sessionStats = await fetchSessionStats(sessionId, key);
+  const sessionStats = await getSessionStats(sessionId, key);
 
   try {
     const result = await processSession({

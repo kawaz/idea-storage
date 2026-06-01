@@ -974,7 +974,7 @@ describe("processSession redact integration", () => {
         // since redact's claudeDir lives under workDir, the helper already
         // points HOME at workDir, so CSA discovers redactClaudeDir.
         const { processSession } = await import("./session-process.ts");
-        const { getSessionMeta } = await import("../lib/conversation.ts");
+        const { getSessionMeta } = await import("../lib/csa.ts");
         const meta = await getSessionMeta(filePath);
         const result = await processSession({
           sessionId: REDACT_SID,
@@ -1054,7 +1054,7 @@ describe("processSession redact integration", () => {
     let outputFile = "";
     await withIsolatedIdeaStorageEnv(workDir, async () => {
       const { processSession } = await import("./session-process.ts");
-      const { getSessionMeta } = await import("../lib/conversation.ts");
+      const { getSessionMeta } = await import("../lib/csa.ts");
       const meta = await getSessionMeta(filePath);
       const result = await processSession({
         sessionId: SID,
@@ -1133,7 +1133,7 @@ describe("processSession redact integration", () => {
 
     await withIsolatedIdeaStorageEnv(workDir, async () => {
       const { processSession } = await import("./session-process.ts");
-      const { getSessionMeta } = await import("../lib/conversation.ts");
+      const { getSessionMeta } = await import("../lib/csa.ts");
       const meta = await getSessionMeta(filePath);
       const result = await processSession({
         sessionId: SID,
@@ -1354,7 +1354,7 @@ describe("processSession fork guard (#16)", () => {
 // (open + close of the YAML frontmatter). Producing exitCode=0 + malformed
 // output from real CSA is not achievable, so the malformed-output skip path
 // in processSession is asserted at the pure-function level instead.
-import { isValidCsaTimeline, countTimelineSeparators } from "./session-process.ts";
+import { isValidCsaTimeline, countTimelineSeparators } from "../lib/csa.ts";
 
 describe("processSession CSA timeline validation (#17)", () => {
   test("`---` セパレータを 1 つも含まない出力は invalid と判定される", () => {

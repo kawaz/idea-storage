@@ -4,7 +4,14 @@ import { chmod, mkdir } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
 import { loadRecipes } from "../lib/recipe.ts";
 import { getRecipesDir, getDataDir, getRejectedDir } from "../lib/paths.ts";
-import { getSessionMeta } from "../lib/conversation.ts";
+import {
+  CsaTimelineError,
+  countTimelineSeparators,
+  getSessionMeta,
+  getSessionStats,
+  getSessionTimeline,
+  isValidCsaTimeline,
+} from "../lib/csa.ts";
 import { generateFrontmatter } from "../lib/frontmatter.ts";
 import { runClaude, ClaudeTimeoutError, ClaudeAbortError } from "../lib/claude-runner.ts";
 import type { ClaudeRunOptions } from "../lib/claude-runner.ts";
@@ -32,8 +39,7 @@ import {
   DEFAULT_MAX_CHUNK_BYTES,
   type TimelineChunk,
 } from "../lib/chunker.ts";
-import { spawnWithTimeout, SpawnTimeoutError } from "../lib/spawn-timeout.ts";
-import { buildCsaEnv } from "../lib/spawn-env.ts";
+import { SpawnTimeoutError } from "../lib/spawn-timeout.ts";
 import { log, logError } from "../lib/logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../lib/format.ts";
 import { redactSecrets } from "../lib/redact.ts";
@@ -41,8 +47,6 @@ import { redactForOutput, redactForPrompt } from "../lib/redact-pipeline.ts";
 import { findSessionFile } from "../lib/session-finder.ts";
 import { CSA_TIMEOUT_MS } from "../lib/constants.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
-
-const csaBin = "claude-session-analysis";
 
 /**
  * Record a rate_limit observation from a worker claude call.
@@ -416,25 +420,6 @@ export type ProcessSessionResult =
   | { kind: "processed"; outputFile: string; lineCount: number }
   | { kind: "skipped"; reason: string; lineCount: number };
 
-/**
- * Count the number of standalone `---` lines in a CSA timeline output.
- * Used by {@link isValidCsaTimeline} to detect malformed CSA output.
- * Exported so tests can verify the contract directly without mocking spawn.
- */
-export function countTimelineSeparators(convText: string): number {
-  return convText.split("\n").filter((l) => l.trim() === "---").length;
-}
-
-/**
- * Returns true if `convText` looks like a valid CSA `timeline --md` output.
- * A valid output always has at least two `---` separators (the open and close
- * lines of the YAML-style frontmatter). Anything less is malformed (e.g. CSA
- * wrote `error: ...` to stdout while still exiting 0).
- */
-export function isValidCsaTimeline(convText: string): boolean {
-  return countTimelineSeparators(convText) >= 2;
-}
-
 export async function processSession(input: ProcessSessionInput): Promise<ProcessSessionResult> {
   const {
     sessionId,
@@ -488,18 +473,12 @@ export async function processSession(input: ProcessSessionInput): Promise<Proces
   // Extract conversation timeline via claude-session-analysis
   let convText: string;
   try {
-    const csaResult = await spawnWithTimeout({
-      cmd: [csaBin, "timeline", sessionId, "--md", "--no-emoji"],
-      timeoutMs: CSA_TIMEOUT_MS,
-      env: buildCsaEnv(),
-    });
-
-    if (csaResult.exitCode !== 0) {
-      logError({ key, msg: "csa_failed", exitCode: csaResult.exitCode, stderr: csaResult.stderr });
-      throw new Error(`csa failed with exit code ${csaResult.exitCode}`);
-    }
-    convText = csaResult.stdout;
+    convText = await getSessionTimeline(sessionId);
   } catch (err) {
+    if (err instanceof CsaTimelineError) {
+      logError({ key, msg: "csa_failed", exitCode: err.exitCode, stderr: err.stderr });
+      throw new Error(err.message);
+    }
     if (err instanceof SpawnTimeoutError) {
       logError({ key, msg: "csa_timeline_timeout", timeoutMs: CSA_TIMEOUT_MS });
       throw new Error(`csa timeline timed out after ${CSA_TIMEOUT_MS}ms`);
@@ -687,31 +666,6 @@ ${timelineText}`;
 }
 
 /**
- * Fetch session stats from claude-session-analysis.
- * Best-effort: returns empty object if CSA fails or times out.
- */
-export async function fetchSessionStats(
-  sessionId: string,
-  logKey: string,
-): Promise<{ turns?: number; bytes?: number; duration_ms?: number }> {
-  try {
-    const statsResult = await spawnWithTimeout({
-      cmd: [csaBin, "sessions", "--format", "jsonl", sessionId],
-      timeoutMs: CSA_TIMEOUT_MS,
-      env: buildCsaEnv(),
-    });
-    const line = statsResult.stdout.trim().split("\n")[0];
-    if (line) return JSON.parse(line);
-    return {};
-  } catch (err) {
-    if (err instanceof SpawnTimeoutError) {
-      logError({ key: logKey, msg: "csa_stats_timeout", timeoutMs: CSA_TIMEOUT_MS });
-    }
-    return {};
-  }
-}
-
-/**
  * Load recipes, throwing a CliError with a helpful message if the recipes dir
  * doesn't exist. Shared by runProcess and runConvert.
  */
@@ -766,7 +720,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   const meta = await getSessionMeta(sessionFile);
 
   // Get session stats from claude-session-analysis (early fetch for log + frontmatter)
-  const sessionStats = await fetchSessionStats(sessionId, key);
+  const sessionStats = await getSessionStats(sessionId, key);
 
   // Determine mode based on on_existing and done state
   let hasPreviousRun = false;
