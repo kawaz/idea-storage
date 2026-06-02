@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { trimTimelineForFork } from "./session-process.ts";
-import { isValidCsaTimeline, countTimelineSeparators } from "../lib/csa.ts";
+import { isValidCsaTimeline, countTimelineSeparators } from "../lib/csa/csa.ts";
 
 describe("trimTimelineForFork", () => {
   const sampleTimeline = `---

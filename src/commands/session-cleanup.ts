@@ -1,5 +1,5 @@
 import { define } from "gunshi";
-import { cleanup } from "../lib/queue.ts";
+import { cleanup } from "../lib/queue/queue.ts";
 import { loadConfig } from "../lib/config.ts";
 
 const sessionCleanup = define({

@@ -54,7 +54,7 @@ describe("session-process", () => {
 
   /** Read queue_entries for a given session. */
   async function readEntries(sessionId: string): Promise<ReadEntry[]> {
-    const { getDb } = await import("../lib/queue.ts");
+    const { getDb } = await import("../lib/queue/queue.ts");
     const db = getDb();
     try {
       const rows = db
@@ -91,7 +91,7 @@ describe("session-process", () => {
     recipeName: string,
     lineCount = 1,
   ): Promise<void> {
-    const { enqueue } = await import("../lib/queue.ts");
+    const { enqueue } = await import("../lib/queue/queue.ts");
     await enqueue(sessionId, recipeName, lineCount);
   }
 

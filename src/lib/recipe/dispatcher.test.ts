@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decideDispatch } from "./dispatcher.ts";
-import type { Recipe, SessionMeta } from "../types/index.ts";
+import type { Recipe, SessionMeta } from "../../types/index.ts";
 
 function makeRecipe(name: string, hint?: string): Recipe {
   return {

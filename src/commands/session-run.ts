@@ -6,9 +6,12 @@ import { acquireLock } from "../lib/lockfile.ts";
 import { getStateDir } from "../lib/paths.ts";
 import { CliError } from "../lib/errors.ts";
 import { log } from "../lib/logging.ts";
-import { migrateIfNeeded } from "../lib/migrate-queue.ts";
-import { cleanupOldObservations, getLatestObservations } from "../lib/rate-limit-store.ts";
-import { shouldSkip } from "../lib/rate-limit-judge.ts";
+import { migrateIfNeeded } from "../lib/queue/migrate-queue.ts";
+import {
+  cleanupOldObservations,
+  getLatestObservations,
+} from "../lib/rate-limit/rate-limit-store.ts";
+import { shouldSkip } from "../lib/rate-limit/rate-limit-judge.ts";
 import {
   DEFAULT_TASK_TIMEOUT_MS,
   MAX_CONSECUTIVE_FAILURES,

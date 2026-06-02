@@ -13,10 +13,10 @@
  * - `"recipes": []`: 「書かない判断」として尊重、全 recipe を rejected に
  */
 
-import type { Recipe, SessionMeta } from "../types/index.ts";
-import { type ClaudeRunner, runClaude } from "./claude-runner.ts";
-import { getDispatcherPromptPath } from "./paths.ts";
-import { redactForOutput, redactForPrompt } from "./redact-pipeline.ts";
+import type { Recipe, SessionMeta } from "../../types/index.ts";
+import { type ClaudeRunner, runClaude } from "../claude/claude-runner.ts";
+import { getDispatcherPromptPath } from "../paths.ts";
+import { redactForOutput, redactForPrompt } from "../redact-pipeline.ts";
 
 export interface DispatcherInput {
   sessionId: string;

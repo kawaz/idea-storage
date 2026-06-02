@@ -1,5 +1,5 @@
 import { define } from "gunshi";
-import { SERVICE_LABEL, getLaunchdDomain } from "../lib/service.ts";
+import { SERVICE_LABEL, getLaunchdDomain } from "../lib/service/service.ts";
 
 const status = define({
   name: "status",

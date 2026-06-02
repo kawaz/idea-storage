@@ -2,7 +2,7 @@ import { readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { QueueDirs } from "./queue.ts";
 import { getDb } from "./queue.ts";
-import { getQueueDir, getDoneDir, getFailedDir } from "./paths.ts";
+import { getQueueDir, getDoneDir, getFailedDir } from "../paths.ts";
 
 interface ResolvedDirs {
   queueDir: string;

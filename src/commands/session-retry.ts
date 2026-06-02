@@ -1,5 +1,5 @@
 import { define } from "gunshi";
-import { retry, formatLogKey } from "../lib/queue.ts";
+import { retry, formatLogKey } from "../lib/queue/queue.ts";
 import { exitWithError } from "../lib/errors.ts";
 import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
 

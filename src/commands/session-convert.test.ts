@@ -61,7 +61,7 @@ describe("session-convert", () => {
 
   /** Read all queue_entries rows joined with sessions/recipes. */
   async function readEntries(sessionId: string): Promise<ReadEntry[]> {
-    const { getDb } = await import("../lib/queue.ts");
+    const { getDb } = await import("../lib/queue/queue.ts");
     const db = getDb();
     try {
       const rows = db
@@ -95,7 +95,7 @@ describe("session-convert", () => {
 
   /** Pre-claim an entry to put it into 'processing' (only state in which real claim returns claimed=false). */
   async function preClaim(sessionId: string, recipeName: string): Promise<void> {
-    const { claim } = await import("../lib/queue.ts");
+    const { claim } = await import("../lib/queue/queue.ts");
     const result = await claim(sessionId, recipeName);
     if (!result.claimed) {
       throw new Error(`preClaim failed to take ownership: prev=${result.prevStatus}`);
@@ -104,7 +104,7 @@ describe("session-convert", () => {
 
   /** Pre-record a rate-limit observation that triggers shouldSkip. */
   async function seedOverPaceObservation(): Promise<void> {
-    const { recordObservation } = await import("../lib/rate-limit-store.ts");
+    const { recordObservation } = await import("../lib/rate-limit/rate-limit-store.ts");
     const nowSec = Math.floor(Date.now() / 1000);
     const fiveHourWindowSec = 5 * 3600;
     const elapsedRatio = 0.1;
@@ -118,7 +118,7 @@ describe("session-convert", () => {
   }
 
   async function seedHealthyObservation(): Promise<void> {
-    const { recordObservation } = await import("../lib/rate-limit-store.ts");
+    const { recordObservation } = await import("../lib/rate-limit/rate-limit-store.ts");
     const nowSec = Math.floor(Date.now() / 1000);
     recordObservation({
       ts: nowSec,
@@ -295,7 +295,7 @@ describe("session-convert", () => {
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
-          const { markDone } = await import("../lib/queue.ts");
+          const { markDone } = await import("../lib/queue/queue.ts");
           await markDone(VALID_SID, "diary", 42, null);
         },
       },
@@ -317,7 +317,7 @@ describe("session-convert", () => {
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
-          const { markFailed } = await import("../lib/queue.ts");
+          const { markFailed } = await import("../lib/queue/queue.ts");
           await markFailed(VALID_SID, "diary", "boom");
         },
       },
@@ -456,7 +456,7 @@ describe("session-convert", () => {
       {
         setup: async () => {
           await preClaim(VALID_SID, "diary");
-          const { markSkipped } = await import("../lib/queue.ts");
+          const { markSkipped } = await import("../lib/queue/queue.ts");
           await markSkipped(VALID_SID, "diary", "empty_session", 0);
         },
       },

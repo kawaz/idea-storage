@@ -1,7 +1,7 @@
 import { define } from "gunshi";
 import { existsSync } from "node:fs";
 import { getStateDir } from "../lib/paths.ts";
-import { SERVICE_LABEL } from "../lib/service.ts";
+import { SERVICE_LABEL } from "../lib/service/service.ts";
 
 const log = define({
   name: "log",

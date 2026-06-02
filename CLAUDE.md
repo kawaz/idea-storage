@@ -19,23 +19,26 @@
 
 ```
 commands/        — CLI エントリ (session-{process,convert,enqueue,run,status,...})
-lib/             — ドメインロジック
-  redact.ts             secret パターン primitive
-  redact-pipeline.ts    用途別 redact (log/output/prompt) 高レベル層
-  spawn-env.ts          subprocess env allowlist (CSA 用)
-  queue-internal.ts     queue.db open + applyMigrations (v2)
-  queue-schema.ts       schema migration (v0→v1→v2)
-  queue.ts              queue write API (enqueue / claim / markDone ...)
-  queue-state.ts        queue read API (status / loadQueueState ...)
-  rate-limit-store.ts   rate_limits 永続化 (queue.db 同居、queue-internal の wrapper)
-  conversation.ts       CSA sessions / meta / timeline
-  recipe.ts             recipe loading / matching
-  dispatcher.ts         dispatcher recipe (= recipe 採否を LLM に判定)
-  quality-gate.ts       quality_gate recipe (= 生成物の採否)
-  recent-outputs.ts     §9 過去出力注入 (繰り返し回避)
+lib/             — ドメインロジック (DR-0009 Phase 5 で副ディレクトリ化)
+  queue/                queue.db 周り (queue / queue-internal / queue-schema /
+                        queue-state / migrate-queue)
+  rate-limit/           rate_limits 観測・判定・永続化
+                        (rate-limit-judge / parser / store)
+  csa/                  CSA セッション抽出 (csa / conversation /
+                        session-jsonl / session-finder)
+  claude/               claude CLI 呼び出し (claude-runner / claude-meta)
+  recipe/               recipe / dispatcher / quality-gate / recent-outputs
+  article/              article-format (生成物の表示用整形)
+  service/              launchd plist + サービス制御 (service / plist)
+  session-worker/       Phase 3 で新設、processSession ロジック分割
+  driver/               Phase 3 で新設、commands と recipe 間の薄い配線層
+  redact.ts / redact-pipeline.ts    secret 除去 (primitive + 用途別)
   frontmatter.ts        YAML scalar safe encode + parse
   logging.ts            redact + size cap した structured log
-  ...
+  spawn-env.ts / spawn-timeout.ts / timeout-error.ts   subprocess 共通
+  paths.ts / config.ts / constants.ts / errors.ts      横断 primitive
+  help.ts / validate.ts / format.ts                    CLI 共通
+  chunker.ts / dir-exists.ts / lockfile.ts / test-fixtures.ts
 docs/
   decisions/    DR-NNNN-... (設計判断記録)、INDEX.md で一覧
   journal/      日付別の作業ジャーナル
@@ -73,7 +76,7 @@ just push          # check 経由で jj git push
 - `idea-storage.plugin.zsh` を zsh plugin manager で source → `alias idea-storage="${0:h}/bin/idea-storage"`
 - bundle / コンパイル成果物は持たない (= bun runtime 前提、配布物無し)
 - launchd plist の `ProgramArguments` には `bin/idea-storage` の絶対パスを書く。
-  `src/lib/service.ts:getProgramPath()` が `import.meta.dir` から リポ root を resolve
+  `src/lib/service/service.ts:getProgramPath()` が `import.meta.dir` から リポ root を resolve
   して算出する (= `which` / PATH に依存しない)
 
 完了条件 (= main に出す前の起点 / 完了確認):

@@ -1,5 +1,5 @@
-import { getSessionMeta } from "../csa.ts";
-import { matchesRecipe } from "../recipe.ts";
+import { getSessionMeta } from "../csa/csa.ts";
+import { matchesRecipe } from "../recipe/recipe.ts";
 import {
   DISPATCHER_RECIPE_NAME,
   enqueueBatch,
@@ -7,8 +7,8 @@ import {
   markFailed,
   markSkipped,
   recordDispatchDecision,
-} from "../queue.ts";
-import { decideDispatch } from "../dispatcher.ts";
+} from "../queue/queue.ts";
+import { decideDispatch } from "../recipe/dispatcher.ts";
 import { log, logError } from "../logging.ts";
 import type { Recipe } from "../../types/index.ts";
 import type { ProcessResult, RunProcessOptions } from "./process-driver.ts";

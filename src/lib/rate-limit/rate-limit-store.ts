@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { getDb as getQueueDb } from "./queue-internal.ts";
-import type { QueueDirs } from "./queue.ts";
+import { getDb as getQueueDb } from "../queue/queue-internal.ts";
+import type { QueueDirs } from "../queue/queue.ts";
 import type { BucketObservation } from "./rate-limit-parser.ts";
 
 export interface RateLimitStoreDirs {

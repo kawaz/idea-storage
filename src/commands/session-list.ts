@@ -2,9 +2,9 @@ import { define } from "gunshi";
 import { join, basename } from "node:path";
 import { stat } from "node:fs/promises";
 import { loadConfig } from "../lib/config.ts";
-import { getSessionMetaBatch } from "../lib/csa.ts";
+import { getSessionMetaBatch } from "../lib/csa/csa.ts";
 import { formatDuration, formatSmartSize } from "../lib/format.ts";
-import { UUID_JSONL_PATTERN } from "../lib/session-finder.ts";
+import { UUID_JSONL_PATTERN } from "../lib/csa/session-finder.ts";
 
 function projectName(project: string): string {
   if (!project) return "-";

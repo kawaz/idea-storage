@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.ts";
-import { findRecipeByName, loadRecipesOrFail } from "../recipe.ts";
+import { findRecipeByName, loadRecipesOrFail } from "../recipe/recipe.ts";
 import { getDataDir } from "../paths.ts";
-import { getSessionMeta, getSessionStats } from "../csa.ts";
+import { getSessionMeta, getSessionStats } from "../csa/csa.ts";
 import {
   DISPATCHER_RECIPE_NAME,
   dequeue,
@@ -9,9 +9,9 @@ import {
   markFailed,
   markSkipped,
   getDoneLineCount,
-} from "../queue.ts";
+} from "../queue/queue.ts";
 import { log } from "../logging.ts";
-import { findSessionFile } from "../session-finder.ts";
+import { findSessionFile } from "../csa/session-finder.ts";
 import { processSession } from "../session-worker/index.ts";
 import { processDispatcherEntry } from "./dispatcher-entry.ts";
 

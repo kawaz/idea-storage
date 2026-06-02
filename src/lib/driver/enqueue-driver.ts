@@ -1,19 +1,19 @@
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";
-import { loadRecipes, matchesRecipe } from "../recipe.ts";
+import { loadRecipes, matchesRecipe } from "../recipe/recipe.ts";
 import { getRecipesDir } from "../paths.ts";
-import { getSessionMeta } from "../csa.ts";
+import { getSessionMeta } from "../csa/csa.ts";
 import {
   DISPATCHER_RECIPE_NAME,
   enqueueBatch,
   loadQueueState,
   isFailedByState,
   markSkipped,
-} from "../queue.ts";
+} from "../queue/queue.ts";
 import { CliError } from "../errors.ts";
 import { dirExists } from "../dir-exists.ts";
 import { log } from "../logging.ts";
-import { UUID_JSONL_PATTERN } from "../session-finder.ts";
+import { UUID_JSONL_PATTERN } from "../csa/session-finder.ts";
 
 export async function runEnqueue(): Promise<void> {
   const config = await loadConfig();

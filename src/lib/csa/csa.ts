@@ -16,11 +16,11 @@
 
 import { basename } from "node:path";
 import { stat } from "node:fs/promises";
-import { buildCsaEnv } from "./spawn-env.ts";
-import { spawnWithTimeout, SpawnTimeoutError } from "./spawn-timeout.ts";
-import { CSA_TIMEOUT_MS } from "./constants.ts";
-import { logError } from "./logging.ts";
-import type { SessionMeta } from "../types/index.ts";
+import { buildCsaEnv } from "../spawn-env.ts";
+import { spawnWithTimeout, SpawnTimeoutError } from "../spawn-timeout.ts";
+import { CSA_TIMEOUT_MS } from "../constants.ts";
+import { logError } from "../logging.ts";
+import type { SessionMeta } from "../../types/index.ts";
 
 /** CSA binary name (resolved via PATH). */
 export const csaBin = "claude-session-analysis";

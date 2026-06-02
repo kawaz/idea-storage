@@ -1,5 +1,8 @@
-import { parseRateLimitHeaders, type RateLimitObservation } from "./rate-limit-parser.ts";
-import { BaseTimeoutError } from "./timeout-error.ts";
+import {
+  parseRateLimitHeaders,
+  type RateLimitObservation,
+} from "../rate-limit/rate-limit-parser.ts";
+import { BaseTimeoutError } from "../timeout-error.ts";
 
 export class ClaudeTimeoutError extends BaseTimeoutError {
   constructor(timeoutMs: number) {

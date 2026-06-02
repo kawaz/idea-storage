@@ -5,7 +5,7 @@ import {
   formatTimestamp,
   parseProject,
   stripAnsi,
-} from "../lib/article-format.ts";
+} from "../lib/article/article-format.ts";
 import {
   parseSortKeys,
   sortEntries,

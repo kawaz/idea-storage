@@ -8,8 +8,8 @@ import {
   createCsaFixtureDir,
   writeSessionFixture,
   withIsolatedClaudeEnv,
-} from "./test-fixtures.ts";
-import type { ConversationMessage } from "../types/index.ts";
+} from "../test-fixtures.ts";
+import type { ConversationMessage } from "../../types/index.ts";
 
 describe("conversation", () => {
   let tmpDir: string;

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BaseTimeoutError } from "./timeout-error.ts";
-import { ClaudeTimeoutError } from "./claude-runner.ts";
+import { ClaudeTimeoutError } from "./claude/claude-runner.ts";
 import { SpawnTimeoutError } from "./spawn-timeout.ts";
 
 describe("BaseTimeoutError", () => {

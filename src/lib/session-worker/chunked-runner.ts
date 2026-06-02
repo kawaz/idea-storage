@@ -1,4 +1,4 @@
-import { type ClaudeRunner, ClaudeAbortError, runClaude } from "../claude-runner.ts";
+import { type ClaudeRunner, ClaudeAbortError, runClaude } from "../claude/claude-runner.ts";
 import { DEFAULT_MAX_CHUNK_BYTES, extractChunkText, type TimelineChunk } from "../chunker.ts";
 import { log } from "../logging.ts";
 import { redactForPrompt } from "../redact-pipeline.ts";

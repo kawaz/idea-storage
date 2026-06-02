@@ -21,7 +21,7 @@ export function getProgramPath(): string {
   // PATH / alias / which に依存せず、本ファイルからリポ root を解決して
   // bin/ を組み立てる (= 自分が誰か自分で知ってる、外部に聞かない)。
   //
-  // service.ts は src/lib/ 配下なので、`../..` でリポ root。
-  const repoRoot = join(import.meta.dir, "..", "..");
+  // service.ts は src/lib/service/ 配下なので、`../../..` でリポ root。
+  const repoRoot = join(import.meta.dir, "..", "..", "..");
   return join(repoRoot, "bin", "idea-storage");
 }

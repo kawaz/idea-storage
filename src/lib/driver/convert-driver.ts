@@ -1,18 +1,18 @@
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";
 import { getDataDir } from "../paths.ts";
-import { getSessionMeta, getSessionStats } from "../csa.ts";
-import { findSessionFile } from "../session-finder.ts";
-import { claim, markDone, markFailed, markSkipped, waitForCompletion } from "../queue.ts";
+import { getSessionMeta, getSessionStats } from "../csa/csa.ts";
+import { findSessionFile } from "../csa/session-finder.ts";
+import { claim, markDone, markFailed, markSkipped, waitForCompletion } from "../queue/queue.ts";
 import { CliError } from "../errors.ts";
 import { log, logError } from "../logging.ts";
 import { formatDatePath, formatFileTimestamp } from "../format.ts";
-import { getLatestObservations } from "../rate-limit-store.ts";
-import { shouldSkip } from "../rate-limit-judge.ts";
+import { getLatestObservations } from "../rate-limit/rate-limit-store.ts";
+import { shouldSkip } from "../rate-limit/rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../constants.ts";
-import { findRecipeByName, loadRecipesOrFail } from "../recipe.ts";
+import { findRecipeByName, loadRecipesOrFail } from "../recipe/recipe.ts";
 import { processSession } from "../session-worker/index.ts";
-import type { ClaudeRunner } from "../claude-runner.ts";
+import type { ClaudeRunner } from "../claude/claude-runner.ts";
 
 export interface RunConvertInput {
   sessionId: string;

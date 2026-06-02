@@ -1,4 +1,4 @@
-import { getStateDir } from "./paths.ts";
+import { getStateDir } from "../paths.ts";
 
 export interface PlistOptions {
   label: string;

@@ -5,7 +5,7 @@ import {
   formatDuration as formatDurationPlain,
   formatTimestamp as formatTimestampPlain,
   shouldUseColor,
-} from "./format.ts";
+} from "../format.ts";
 
 /**
  * Shared formatters for `article list` / `article view` output.

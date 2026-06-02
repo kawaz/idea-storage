@@ -13,7 +13,7 @@
  */
 
 import { join } from "node:path";
-import { redactForPrompt } from "./redact-pipeline.ts";
+import { redactForPrompt } from "../redact-pipeline.ts";
 
 interface RecentOutput {
   filePath: string;

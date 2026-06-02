@@ -10,7 +10,7 @@ import {
   validateSessionId,
 } from "./queue-internal.ts";
 import type { QueueDirs, QueueStatus } from "./queue-internal.ts";
-import type { QueueEntry } from "../types/index.ts";
+import type { QueueEntry } from "../../types/index.ts";
 
 /**
  * Public entry point for queue operations.

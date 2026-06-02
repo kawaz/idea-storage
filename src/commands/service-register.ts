@@ -1,6 +1,6 @@
 import { define } from "gunshi";
 import { mkdir } from "node:fs/promises";
-import { generatePlist } from "../lib/plist.ts";
+import { generatePlist } from "../lib/service/plist.ts";
 import { exitWithError } from "../lib/errors.ts";
 import {
   SERVICE_LABEL,
@@ -8,7 +8,7 @@ import {
   getLaunchdDomain,
   getPlistPath,
   getProgramPath,
-} from "../lib/service.ts";
+} from "../lib/service/service.ts";
 
 const register = define({
   name: "register",

@@ -15,9 +15,9 @@
  * - 採否表現は二値 (accepted/rejected) + reason テキスト (DR-0008 §8、スコアは校正不安定)
  */
 
-import { type ClaudeRunner, runClaude } from "./claude-runner.ts";
-import { getQualityGuidelinesPath } from "./paths.ts";
-import { redactForPrompt } from "./redact-pipeline.ts";
+import { type ClaudeRunner, runClaude } from "../claude/claude-runner.ts";
+import { getQualityGuidelinesPath } from "../paths.ts";
+import { redactForPrompt } from "../redact-pipeline.ts";
 
 export interface QualityGateInput {
   /** Generated output (markdown body, without frontmatter). */

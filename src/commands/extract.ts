@@ -1,8 +1,8 @@
 import { define } from "gunshi";
 import { loadConfig } from "../lib/config.ts";
-import { formatConversationToText } from "../lib/conversation.ts";
+import { formatConversationToText } from "../lib/csa/conversation.ts";
 import { exitWithError } from "../lib/errors.ts";
-import { UUID_PATTERN, findSessionFile } from "../lib/session-finder.ts";
+import { UUID_PATTERN, findSessionFile } from "../lib/csa/session-finder.ts";
 
 const extract = define({
   name: "extract",

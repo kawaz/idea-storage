@@ -36,7 +36,7 @@ describe("session-enqueue", () => {
 
   /** Read the queue_entries rows for a given session, joined with sessions/recipes. */
   async function readEntries(sessionId: string): Promise<ReadEntry[]> {
-    const { getDb } = await import("../lib/queue.ts");
+    const { getDb } = await import("../lib/queue/queue.ts");
     const db = getDb();
     try {
       const rows = db
@@ -69,7 +69,7 @@ describe("session-enqueue", () => {
   }
 
   async function readAllEntries(): Promise<ReadEntry[]> {
-    const { getDb } = await import("../lib/queue.ts");
+    const { getDb } = await import("../lib/queue/queue.ts");
     const db = getDb();
     try {
       const rows = db
@@ -108,7 +108,7 @@ describe("session-enqueue", () => {
     lineCount: number,
     reason?: string,
   ): Promise<void> {
-    const { enqueue, markDone, markFailed, markSkipped } = await import("../lib/queue.ts");
+    const { enqueue, markDone, markFailed, markSkipped } = await import("../lib/queue/queue.ts");
     if (status === "queued") await enqueue(sessionId, recipeName, lineCount);
     else if (status === "done") await markDone(sessionId, recipeName, lineCount, null);
     else if (status === "failed") await markFailed(sessionId, recipeName, reason);

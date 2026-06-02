@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_RETRIES } from "./constants.ts";
+import { DEFAULT_MAX_RETRIES } from "../constants.ts";
 import {
   DEFAULT_RETRY_AFTER_MS,
   formatLogKey,

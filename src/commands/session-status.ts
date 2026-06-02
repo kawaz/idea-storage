@@ -1,7 +1,7 @@
 import { define } from "gunshi";
-import { getStatus, getSkippedBreakdown } from "../lib/queue.ts";
-import { getLatestObservations } from "../lib/rate-limit-store.ts";
-import { shouldSkip } from "../lib/rate-limit-judge.ts";
+import { getStatus, getSkippedBreakdown } from "../lib/queue/queue.ts";
+import { getLatestObservations } from "../lib/rate-limit/rate-limit-store.ts";
+import { shouldSkip } from "../lib/rate-limit/rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../lib/constants.ts";
 
 function formatBucket(

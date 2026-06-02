@@ -2,7 +2,7 @@ import { define } from "gunshi";
 import { unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { exitWithError, errorMessage } from "../lib/errors.ts";
-import { SERVICE_LABEL, getLaunchdDomain, getPlistPath } from "../lib/service.ts";
+import { SERVICE_LABEL, getLaunchdDomain, getPlistPath } from "../lib/service/service.ts";
 
 const unregister = define({
   name: "unregister",

@@ -2,7 +2,7 @@ import { define } from "gunshi";
 import { dirname } from "node:path";
 import { getDataDir } from "../lib/paths.ts";
 import { parseFrontmatter } from "../lib/frontmatter.ts";
-import { runCsaSessions } from "../lib/csa.ts";
+import { runCsaSessions } from "../lib/csa/csa.ts";
 import { listViewEntries } from "./article-view.ts";
 import {
   C,
@@ -12,7 +12,7 @@ import {
   oscLink,
   parseProject,
   stripAnsi,
-} from "../lib/article-format.ts";
+} from "../lib/article/article-format.ts";
 
 interface ListEntry {
   fullPath: string;

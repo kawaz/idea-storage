@@ -1,9 +1,9 @@
 import { basename, join } from "node:path";
 import { readdir } from "node:fs/promises";
-import { parseFrontmatter } from "./frontmatter.ts";
-import { getRecipesDir } from "./paths.ts";
-import { CliError } from "./errors.ts";
-import type { Recipe, SessionMeta } from "../types/index.ts";
+import { parseFrontmatter } from "../frontmatter.ts";
+import { getRecipesDir } from "../paths.ts";
+import { CliError } from "../errors.ts";
+import type { Recipe, SessionMeta } from "../../types/index.ts";
 
 /**
  * Parse a recipe-*.md file into a Recipe object.

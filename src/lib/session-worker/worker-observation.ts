@@ -1,5 +1,5 @@
-import type { RateLimitObservation } from "../rate-limit-parser.ts";
-import { recordObservation } from "../rate-limit-store.ts";
+import type { RateLimitObservation } from "../rate-limit/rate-limit-parser.ts";
+import { recordObservation } from "../rate-limit/rate-limit-store.ts";
 import { logError } from "../logging.ts";
 
 /**

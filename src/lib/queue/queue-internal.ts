@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
 import { chmodSync, mkdirSync } from "node:fs";
-import { getStateDir } from "./paths.ts";
+import { getStateDir } from "../paths.ts";
 import { applyMigrations } from "./queue-schema.ts";
 
 /**

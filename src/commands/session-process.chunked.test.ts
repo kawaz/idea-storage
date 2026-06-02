@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { processChunked } from "./session-process.ts";
-import { ClaudeAbortError } from "../lib/claude-runner.ts";
+import { ClaudeAbortError } from "../lib/claude/claude-runner.ts";
 import type { ProcessResult } from "./session-process.ts";
 
 describe("processChunked", () => {

@@ -39,7 +39,9 @@ describe("processSession redact integration", () => {
 
     // Capture prompts via _runClaude DI (DR-0009 Phase 3 step 3-e).
     const runClaudeCalls: Array<{ prompt: string }> = [];
-    const fakeRunClaude = async (options: import("../lib/claude-runner.ts").ClaudeRunOptions) => {
+    const fakeRunClaude = async (
+      options: import("../lib/claude/claude-runner.ts").ClaudeRunOptions,
+    ) => {
       runClaudeCalls.push({ prompt: options.prompt });
       return "# Title\n\nFake article output";
     };
@@ -57,7 +59,7 @@ describe("processSession redact integration", () => {
         // since redact's claudeDir lives under workDir, the helper already
         // points HOME at workDir, so CSA discovers redactClaudeDir.
         const { processSession } = await import("./session-process.ts");
-        const { getSessionMeta } = await import("../lib/csa.ts");
+        const { getSessionMeta } = await import("../lib/csa/csa.ts");
         const meta = await getSessionMeta(filePath);
         const result = await processSession({
           sessionId: REDACT_SID,
@@ -125,7 +127,7 @@ describe("processSession redact integration", () => {
     let outputFile = "";
     await withIsolatedIdeaStorageEnv(workDir, async () => {
       const { processSession } = await import("./session-process.ts");
-      const { getSessionMeta } = await import("../lib/csa.ts");
+      const { getSessionMeta } = await import("../lib/csa/csa.ts");
       const meta = await getSessionMeta(filePath);
       const result = await processSession({
         sessionId: SID,
@@ -189,7 +191,7 @@ describe("processSession redact integration", () => {
 
     await withIsolatedIdeaStorageEnv(workDir, async () => {
       const { processSession } = await import("./session-process.ts");
-      const { getSessionMeta } = await import("../lib/csa.ts");
+      const { getSessionMeta } = await import("../lib/csa/csa.ts");
       const meta = await getSessionMeta(filePath);
       const result = await processSession({
         sessionId: SID,
@@ -264,7 +266,9 @@ describe("processSession fork guard (#16)", () => {
     await Bun.write(join(projectDir, `${FORK_SID}.jsonl`), line + "\n");
 
     const runClaudeCalls: Array<{ prompt: string }> = [];
-    const fakeRunClaude = async (options: import("../lib/claude-runner.ts").ClaudeRunOptions) => {
+    const fakeRunClaude = async (
+      options: import("../lib/claude/claude-runner.ts").ClaudeRunOptions,
+    ) => {
       runClaudeCalls.push({ prompt: options.prompt });
       return "should-not-be-called";
     };
