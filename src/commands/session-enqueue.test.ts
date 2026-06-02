@@ -1,11 +1,12 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import {
   withIsolatedIdeaStorageEnv,
   writeConfigFixture,
   writeRecipeFixtures,
+  writeSessionFixture,
   type RecipeFixtureSpec,
 } from "../lib/test-fixtures.ts";
 
@@ -114,7 +115,13 @@ describe("session-enqueue", () => {
     else await markSkipped(sessionId, recipeName, reason, lineCount);
   }
 
-  /** Create a minimal JSONL session file with the given UUID. */
+  /**
+   * Thin wrapper over the shared {@link writeSessionFixture} helper. Kept for
+   * caller readability; derives the fixture base (= dir containing `projects/`)
+   * from the legacy `projectsDir` arg. The `noEffectiveTurn` knob maps to
+   * `effectiveUserTurns: 0`, which makes CSA classify the lone user turn as
+   * SHORT_ASCII.
+   */
   async function createSessionFile(
     projectsDir: string,
     sessionId: string,
@@ -127,50 +134,16 @@ describe("session-enqueue", () => {
       noEffectiveTurn?: boolean;
     } = {},
   ): Promise<string> {
-    const {
-      project = "/tmp/test-project",
-      lines = 5,
-      ageMs = 3 * 60 * 60 * 1000,
-      subDir = "default-project",
-      noEffectiveTurn = false,
-    } = opts;
-
-    const dir = join(projectsDir, subDir);
-    await mkdir(dir, { recursive: true });
-    const filePath = join(dir, `${sessionId}.jsonl`);
-
-    const now = Date.now();
-    const sessionStart = new Date(now - ageMs).toISOString();
-    const jsonlLines: string[] = [];
-    const userContent = noEffectiveTurn ? "ok" : "ユーザの実質的な発言 hello world";
-    jsonlLines.push(
-      JSON.stringify({
-        type: "user",
-        timestamp: sessionStart,
-        uuid: `${sessionId.slice(0, 8)}-line-0001`,
-        sessionId,
-        cwd: project,
-        message: { role: "user", content: userContent },
-      }),
-    );
-    for (let i = 1; i < lines; i++) {
-      jsonlLines.push(
-        JSON.stringify({
-          type: "assistant",
-          timestamp: new Date(now - ageMs + i * 1000).toISOString(),
-          uuid: `${sessionId.slice(0, 8)}-line-${String(i + 1).padStart(4, "0")}`,
-          sessionId,
-          message: { role: "assistant", content: [{ type: "text", text: `Response ${i}` }] },
-        }),
-      );
-    }
-    await Bun.write(filePath, jsonlLines.join("\n") + "\n");
-
-    const { utimesSync } = await import("node:fs");
-    const mtime = new Date(now - ageMs);
-    utimesSync(filePath, mtime, mtime);
-
-    return filePath;
+    const lines = opts.lines ?? 5;
+    return await writeSessionFixture(dirname(projectsDir), {
+      sessionId,
+      projectSlug: opts.subDir ?? "default-project",
+      cwd: opts.project ?? "/tmp/test-project",
+      userTurns: 1,
+      effectiveUserTurns: opts.noEffectiveTurn ? 0 : 1,
+      assistantTurns: Math.max(0, lines - 1),
+      ageMs: opts.ageMs ?? 3 * 60 * 60 * 1000,
+    });
   }
 
   beforeEach(async () => {

@@ -8,6 +8,7 @@
  */
 
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,10 +26,24 @@ export interface SessionFixtureOpts {
    * Defaults to userTurns (all effective).
    */
   effectiveUserTurns?: number;
+  /**
+   * Number of trailing assistant turns to emit after the user turns. Each
+   * assistant entry is one JSONL line, so CSA's lineCount becomes
+   * `userTurns + assistantTurns`. Defaults to 0 (= legacy user-only shape used
+   * by conversation.test.ts).
+   */
+  assistantTurns?: number;
   /** ISO8601 timestamp for the first entry. */
   startTime?: string;
   /** ISO8601 timestamp for the last entry. Defaults to startTime. */
   endTime?: string;
+  /**
+   * Backdate the file mtime so CSA reports `ageSec = ageMs / 1000`. If set and
+   * `startTime` is omitted, `startTime` also defaults to `now - ageMs`.
+   * Required by recipe match (`min_age`) tests that exercise the real
+   * `loadConfig()`/CSA pipeline.
+   */
+  ageMs?: number;
   /**
    * If set, each entry will carry a `forkedFrom: { sessionId, messageUuid }`
    * field so CSA can detect this session as forked from another. Both
@@ -55,7 +70,14 @@ export async function writeSessionFixture(base: string, opts: SessionFixtureOpts
   const cwd = opts.cwd ?? `/tmp/${slug}`;
   const userTurns = opts.userTurns ?? 1;
   const effective = opts.effectiveUserTurns ?? userTurns;
-  const start = opts.startTime ?? "2024-01-01T10:00:00.000Z";
+  const assistantTurns = opts.assistantTurns ?? 0;
+  // When ageMs is set but startTime isn't, anchor startTime at `now - ageMs`
+  // so CSA's ageSec matches what the caller asked for.
+  const start =
+    opts.startTime ??
+    (opts.ageMs !== undefined
+      ? new Date(Date.now() - opts.ageMs).toISOString()
+      : "2024-01-01T10:00:00.000Z");
   const end = opts.endTime ?? start;
 
   const projDir = join(base, "projects", slug);
@@ -89,7 +111,31 @@ export async function writeSessionFixture(base: string, opts: SessionFixtureOpts
     }
     lines.push(JSON.stringify(entry));
   }
+  // Trailing assistant turns (per legacy session-process / session-convert /
+  // session-enqueue createSessionFile shape). Each assistant entry is a single
+  // JSONL line so CSA's lineCount becomes userTurns + assistantTurns.
+  for (let j = 0; j < assistantTurns; j++) {
+    const ts = new Date(startMs + (j + 1) * 1000).toISOString();
+    const entry: Record<string, unknown> = {
+      type: "assistant",
+      timestamp: ts,
+      uuid: `entry-${opts.sessionId}-asst-${j}`,
+      sessionId: opts.sessionId,
+      message: { role: "assistant", content: [{ type: "text", text: `Resp ${j + 1}` }] },
+    };
+    if (opts.forkedFromSessionId && opts.forkedFromMessageUuid) {
+      entry.forkedFrom = {
+        sessionId: opts.forkedFromSessionId,
+        messageUuid: opts.forkedFromMessageUuid,
+      };
+    }
+    lines.push(JSON.stringify(entry));
+  }
   await writeFile(filePath, `${lines.join("\n")}\n`);
+  if (opts.ageMs !== undefined) {
+    const mtime = new Date(Date.now() - opts.ageMs);
+    utimesSync(filePath, mtime, mtime);
+  }
   return filePath;
 }
 

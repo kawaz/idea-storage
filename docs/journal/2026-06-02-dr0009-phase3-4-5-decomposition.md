@@ -302,11 +302,57 @@ bun test (828 pass) / tsc clean / just check 全 pass。
 
 Phase 3 全 step (a〜h) 完了。次は Phase 4 (test 分割) と Phase 5 (lib/ subdir 化)。
 
-### Phase 4: test 分割 (未着手)
+### Phase 4: test 分割 ✓
 
-- `session-process.test.ts` (現状 1240 行) を 5 ファイル分割
-- `queue.test.ts` (現状 1205 行) を 3 ファイル分割
-- 共通 helper (`createSessionFile`) を `test-fixtures.ts` の `writeSessionFixture` に統合
+巨大 test ファイルを責務ごとに分割、共通 helper を test-fixtures.ts に集約。
+
+**session-process.test.ts 5 分割 (1399 → 208 行)**:
+
+| File                               | Lines | 主要 describe                                                     |
+| ---------------------------------- | ----- | ----------------------------------------------------------------- |
+| `session-process.test.ts`          | 208   | runProcess driver E2E (4 test)                                    |
+| `session-process.prompts.test.ts`  | 101   | buildSection/SynthesisPrompt (10 test)                            |
+| `session-process.chunked.test.ts`  | 621   | processChunked + external signal / single chunk / abort (15 test) |
+| `session-process.timeline.test.ts` | 104   | trimTimelineForFork + CSA timeline validation (8 test)            |
+| `session-process.session.test.ts`  | 313   | redact integration + fork guard (4 test)                          |
+
+**queue.test.ts 3 分割 (1349 → 928 行)**:
+
+| File                             | Lines | 主要 describe                                                                          |
+| -------------------------------- | ----- | -------------------------------------------------------------------------------------- |
+| `queue.test.ts`                  | 928   | queue write API (enqueue / dequeue / mark\* / retry / cleanup / claim / etc)           |
+| `queue-state.test.ts`            | 172   | queue state readers (isDone / isFailed / getStatus / loadQueueState / isFailedByState) |
+| `queue-schema-migration.test.ts` | 301   | schema migration v0→v1→v2 (6 test)                                                     |
+
+**writeSessionFixture 拡張 (test-fixtures.ts)**:
+
+新規 opts:
+
+- `assistantTurns?: number` (= userTurns の後ろに assistant 行、CSA lineCount は userTurns + assistantTurns)
+- `ageMs?: number` (= file mtime を now - ageMs に backdate、CSA ageSec 用)
+
+下位互換: 全 opts オプショナル、conversation.test.ts (24 test) の既存挙動温存。
+
+**createSessionFile 重複解消**:
+
+- session-process.test.ts: bespoke local 削除、直接 writeSessionFixture を呼ぶ
+- session-convert.test.ts: local createSessionFile を writeSessionFixture の thin wrapper に置換
+- session-enqueue.test.ts: 同上 + `noEffectiveTurn` を `effectiveUserTurns: 0|1` にマッピング
+
+**ハマり所**:
+
+- sed delete の境界 1 行ずれ (= 869,887d で空行 + 次 describe を巻き込む) → backup から復旧して 869,886d で修正
+- 移動後の未使用 import / 定数 (= `loadQueueState`, `dequeue`, `SID4`, `SID5` 等) を oxlint warning で発見、削除
+- session-process.test.ts から ClaudeAbortError import を chunked 側へ移したが、旧コメント残存 → 削除
+
+**検証**: bun test (828 pass) / bunx tsc --noEmit (clean) / just check (全 pass)
+
+### Phase 5: lib/ 副ディレクトリ化 (未着手)
+
+- `lib/queue/` / `lib/rate-limit/` / `lib/csa/` / `lib/claude/` / `lib/recipe/` /
+  `lib/article/` / `lib/service/` / `lib/session-worker/` (Phase 3 で新設済) /
+  `lib/driver/` (Phase 3 で新設済)
+- import 全件追従
 
 ### Phase 5: lib/ 副ディレクトリ化 (未着手)
 
