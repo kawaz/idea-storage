@@ -240,7 +240,39 @@ export type ClaudeRunner = (options: ClaudeRunOptions) => Promise<string>;
 
 **検証**: bun test (828 pass) / bunx tsc --noEmit (clean) / just check (全 pass)
 
-### Step 3-g: commands/session-\*.ts を define() ラッパー ~30 行に縮退 (未着手)
+### Step 3-g: commands ラッパー縮退 + session-convert DI 配線 ✓
+
+session-convert.ts (63 行) を define() ラッパー ~50 行に縮退、session-convert.test.ts
+の mock.module 撤去で残 1 件処理。
+
+**convert-driver.ts に DI 配線**:
+
+- `RunConvertInput._runClaude?: ClaudeRunner` フィールド追加
+- `runConvert` 内部で `_runClaude` を destructure → `processSession({ ..., _runClaude })` に forwarding
+
+**session-convert.ts 縮退**: 63 → 50 行
+
+- 削除: 冗長な `if (!sessionId || !recipeName)` ガード (gunshi `required:true` で担保)
+- 圧縮: `switch(result.kind)` を if/else に
+- oxfmt が `recipe: { ... }` 引数定義を多行展開 (+4 行)
+- session-process.ts (31 行) より長いのは convert が 3 args + result 別パス処理を
+  持つ本質的な CLI 層責務
+
+**session-convert.test.ts mock.module 撤去**:
+
+- file-scope `mock.module("../lib/claude-runner.ts", ...)` 削除
+- file-top に `const fakeRunClaude = async () => "..."` を定義
+- `runConvert({ ..., _runClaude: fakeRunClaude })` で DI 注入
+- `ClaudeTimeoutError` / `ClaudeAbortError` は test body 未使用、削除のみで OK
+- 不要 `mock` import 削除
+
+**設計判断**:
+
+- `RunConvertInput` (= driver public 型) に DI 口を開ける形になった (= test が
+  runConvert を直叩きするため)。一方 `RunProcessOptions` (= process-driver の
+  options) は `_runClaude` を持たない (= test は processSession 直叩き)
+
+**検証**: bun test (828 pass) / tsc clean / just check 全 pass
 
 ### Step 3-h: run\* 命名再編 (runDispatcher → decideDispatch 等) (未着手)
 

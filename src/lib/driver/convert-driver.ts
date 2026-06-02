@@ -12,6 +12,7 @@ import { shouldSkip } from "../rate-limit-judge.ts";
 import { RATE_LIMIT_STALE_THRESHOLD_SEC } from "../constants.ts";
 import { findRecipeByName, loadRecipesOrFail } from "../recipe.ts";
 import { processSession } from "../session-worker/index.ts";
+import type { ClaudeRunner } from "../claude-runner.ts";
 
 export interface RunConvertInput {
   sessionId: string;
@@ -27,6 +28,12 @@ export interface RunConvertInput {
    * still consumes the same quota that the worker tries to pace.
    */
   force?: boolean;
+  /**
+   * DI hook: replace the real claude-runner with a stub during tests.
+   * Forwarded to processSession. See DR-0009 Phase 3 step 3-g for the rationale
+   * (= mock.module() elimination for session-convert.test.ts).
+   */
+  _runClaude?: ClaudeRunner;
 }
 
 export type RunConvertResult =
@@ -67,7 +74,7 @@ function computeOutputFile(
  *    return the deterministic output file path on success.
  */
 export async function runConvert(input: RunConvertInput): Promise<RunConvertResult> {
-  const { sessionId, recipeName, taskTimeoutMs, signal, waitTimeoutMs } = input;
+  const { sessionId, recipeName, taskTimeoutMs, signal, waitTimeoutMs, _runClaude } = input;
   const force = input.force ?? false;
   const key = `${sessionId}.${recipeName}`;
 
@@ -172,6 +179,7 @@ export async function runConvert(input: RunConvertInput): Promise<RunConvertResu
       signal,
       forceProcess: true,
       logKey: key,
+      _runClaude,
     });
 
     if (result.kind === "skipped") {

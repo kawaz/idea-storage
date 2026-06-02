@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -10,10 +10,14 @@ import {
   type RecipeFixtureSpec,
 } from "../lib/test-fixtures.ts";
 
-// Policy: no internal mock.module() — config / recipe / paths / queue /
-// rate-limit-store / spawn-timeout (= CSA spawn) are all the real modules
-// exercised against a temp on-disk state. Only claude-runner is mocked, since
-// claude CLI is the true external API we can't (and shouldn't) hit in tests.
+// Policy: no mock.module() anywhere in this file. config / recipe / paths /
+// queue / rate-limit-store / CSA spawn are all the real modules exercised
+// against a temp on-disk state. The only external dependency we can't hit —
+// the real claude CLI — is injected via the `_runClaude?: ClaudeRunner` DI
+// hook on RunConvertInput (DR-0009 Phase 3 step 3-g), which runConvert
+// forwards to processSession. mock.module() of claude-runner.ts was retired
+// here for the same reason it was retired from session-process.test.ts:
+// dynamic-import mock leaks across test files (see journal 2026-06-01).
 //
 // - config.ts:    real loadConfig() reads <tempDir>/.config/idea-storage/config.ts
 // - recipe.ts:    real loadRecipes() reads recipe-*.md from the same dir
@@ -22,20 +26,9 @@ import {
 // - CSA spawn:    real claude-session-analysis bin reads fixture jsonl under
 //                 <tempDir>/.claude/projects/<slug>/ (HOME / CLAUDE_CONFIG_DIR)
 // - rate-limit:   real recordObservation / getLatestObservations on tempDir DB
-// - claude-runner: mock.module returns a fixed string so processSession runs
-//                  without actually invoking claude.
+// - claude-runner: replaced via _runClaude DI in runConvertIsolated below.
 
-mock.module("../lib/claude-runner.ts", () => ({
-  runClaude: mock(async () => "# Generated content\n## まとめ\nMocked\n"),
-  ClaudeTimeoutError: class ClaudeTimeoutError extends Error {
-    timeoutMs: number;
-    constructor(timeoutMs = 0) {
-      super(`timeout ${timeoutMs}`);
-      this.timeoutMs = timeoutMs;
-    }
-  },
-  ClaudeAbortError: class ClaudeAbortError extends Error {},
-}));
+const fakeRunClaude = async () => "# Generated content\n## まとめ\nMocked\n";
 
 const VALID_SID = "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee";
 
@@ -213,7 +206,7 @@ describe("session-convert", () => {
       }
       if (opts.setup) await opts.setup();
       const { runConvert } = await import("./session-convert.ts");
-      return await runConvert(args);
+      return await runConvert({ ...args, _runClaude: fakeRunClaude });
     });
   }
 

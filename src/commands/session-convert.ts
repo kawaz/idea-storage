@@ -4,9 +4,11 @@ import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
 import { runConvert } from "../lib/driver/convert-driver.ts";
 
 // --- Re-exports for backwards compatibility ---
-// The driver body moved to src/lib/driver/convert-driver.ts in DR-0009
-// Phase 3 step 3-d. Tests import { runConvert } from "./session-convert.ts",
-// so we re-export here until step 3-g retires this command file.
+// The driver body lives in src/lib/driver/convert-driver.ts (DR-0009 Phase 3
+// step 3-d). Tests import runConvert from "./session-convert.ts", so we keep
+// the re-export here. step 3-g (this commit) reduces this file to a thin
+// define() wrapper; DI for the claude-runner now flows through RunConvertInput
+// rather than mock.module() in the test file.
 export { runConvert } from "../lib/driver/convert-driver.ts";
 export type { RunConvertInput, RunConvertResult } from "../lib/driver/convert-driver.ts";
 
@@ -14,11 +16,7 @@ const sessionConvert = define({
   name: "convert",
   description: "Convert a specific (session, recipe) pair directly, bypassing queue order",
   args: {
-    session: {
-      type: "string",
-      description: "Session ID (UUID)",
-      required: true,
-    },
+    session: { type: "string", description: "Session ID (UUID)", required: true },
     recipe: {
       type: "string",
       description: "Recipe name (without 'recipe-' prefix)",
@@ -34,25 +32,14 @@ const sessionConvert = define({
     const sessionId = ctx.values.session as string;
     const recipeName = ctx.values.recipe as string;
     const force = (ctx.values.force as boolean | undefined) ?? false;
-
-    if (!sessionId || !recipeName) {
-      exitWithError("Both --session and --recipe are required");
-    }
-
     try {
       validateSessionId(sessionId);
       validateRecipeName(recipeName);
       const result = await runConvert({ sessionId, recipeName, force });
-      switch (result.kind) {
-        case "processed":
-          console.log(result.outputFile);
-          break;
-        case "waited":
-          console.log(result.outputFile);
-          break;
-        case "skipped":
-          console.error(`Skipped: ${result.reason} (lineCount=${result.lineCount})`);
-          break;
+      if (result.kind === "skipped") {
+        console.error(`Skipped: ${result.reason} (lineCount=${result.lineCount})`);
+      } else {
+        console.log(result.outputFile);
       }
     } catch (err) {
       exitWithError(err);
