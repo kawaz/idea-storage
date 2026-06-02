@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { getConfigDir } from "./paths.ts";
-import type { Config } from "../types/index.ts";
+
+export interface Config {
+  /** session JSONL 検索ディレクトリ */
+  claudeDirs: string[];
+  /** default 120 */
+  minAgeMinutes: number;
+}
 
 function defaultConfig(): Config {
   const home = process.env.HOME ?? "/";

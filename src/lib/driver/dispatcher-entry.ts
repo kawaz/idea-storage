@@ -10,7 +10,7 @@ import {
 } from "../queue/queue.ts";
 import { decideDispatch } from "../recipe/dispatcher.ts";
 import { log, logError } from "../logging.ts";
-import type { Recipe } from "../../types/index.ts";
+import type { Recipe } from "../recipe/recipe.ts";
 import type { ProcessResult, RunProcessOptions } from "./process-driver.ts";
 
 /**

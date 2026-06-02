@@ -8,13 +8,7 @@ import {
   validateRecipeName,
   validateSessionId,
 } from "./queue-internal.ts";
-import type {
-  FailedMeta,
-  QueueDirs,
-  QueueStatus,
-  RetryOptions,
-  SkippedMeta,
-} from "./queue-internal.ts";
+import type { FailedMeta, QueueStatus, RetryOptions, SkippedMeta } from "./queue-internal.ts";
 
 /**
  * Read-only view of queue state.
@@ -67,7 +61,6 @@ export async function waitForCompletion(
   sessionId: string,
   recipeName: string,
   options: WaitForCompletionOptions = {},
-  dirs?: QueueDirs,
 ): Promise<WaitForCompletionResult> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
@@ -79,7 +72,7 @@ export async function waitForCompletion(
   const start = now();
 
   while (true) {
-    const db = getDb(dirs);
+    const db = getDb();
     let row: { status: QueueStatus; line_count: number | null; reason: string | null } | null;
     try {
       const sessionPk = lookupSessionPk(db, sessionId);
@@ -125,11 +118,10 @@ export async function waitForCompletion(
 export async function getDoneLineCount(
   sessionId: string,
   recipeName: string,
-  dirs?: QueueDirs,
 ): Promise<number | null> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);
     const recipePk = lookupRecipePk(db, recipeName);
@@ -152,21 +144,16 @@ export async function isDone(
   sessionId: string,
   recipeName: string,
   currentLineCount: number,
-  dirs?: QueueDirs,
 ): Promise<boolean> {
-  const lineCount = await getDoneLineCount(sessionId, recipeName, dirs);
+  const lineCount = await getDoneLineCount(sessionId, recipeName);
   if (lineCount === null) return false;
   return lineCount >= currentLineCount;
 }
 
-export async function isQueued(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-): Promise<boolean> {
+export async function isQueued(sessionId: string, recipeName: string): Promise<boolean> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);
     const recipePk = lookupRecipePk(db, recipeName);
@@ -186,12 +173,11 @@ export async function isQueued(
 export async function isFailed(
   sessionId: string,
   recipeName: string,
-  dirs?: QueueDirs,
   retryOpts?: RetryOptions,
 ): Promise<boolean> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);
     const recipePk = lookupRecipePk(db, recipeName);
@@ -221,14 +207,14 @@ export async function isFailed(
   }
 }
 
-export async function getStatus(dirs?: QueueDirs): Promise<{
+export async function getStatus(): Promise<{
   queued: number;
   processing: number;
   done: number;
   failed: number;
   skipped: number;
 }> {
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const rows = db
       .query(`SELECT status, COUNT(*) as count FROM queue_entries GROUP BY status`)
@@ -260,13 +246,13 @@ export async function getStatus(dirs?: QueueDirs): Promise<{
  * Returns absolute counts across all-time skipped entries. A bounded
  * 30-day window can be layered later by adding a `sinceTs` filter.
  */
-export async function getSkippedBreakdown(dirs?: QueueDirs): Promise<{
+export async function getSkippedBreakdown(): Promise<{
   no_effective_turn: number;
   dispatcher_rejected: number;
   quality_rejected: number;
   other: number;
 }> {
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const rows = db
       .query(
@@ -304,8 +290,8 @@ export async function getSkippedBreakdown(dirs?: QueueDirs): Promise<{
   }
 }
 
-export async function loadQueueState(dirs?: QueueDirs): Promise<QueueState> {
-  const db = getDb(dirs);
+export async function loadQueueState(): Promise<QueueState> {
+  const db = getDb();
   try {
     const rows = db
       .query(

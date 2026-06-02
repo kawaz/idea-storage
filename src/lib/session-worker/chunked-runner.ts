@@ -2,7 +2,7 @@ import { type ClaudeRunner, ClaudeAbortError, runClaude } from "../claude/claude
 import { DEFAULT_MAX_CHUNK_BYTES, extractChunkText, type TimelineChunk } from "../chunker.ts";
 import { log } from "../logging.ts";
 import { redactForPrompt } from "../redact-pipeline.ts";
-import type { SessionMeta } from "../../types/index.ts";
+import type { SessionMeta } from "../csa/csa.ts";
 import { buildSectionPrompt, buildSynthesisPrompt } from "./prompt-builder.ts";
 import { recordWorkerObservation } from "./worker-observation.ts";
 

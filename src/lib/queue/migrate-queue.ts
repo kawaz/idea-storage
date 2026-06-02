@@ -1,8 +1,7 @@
 import { readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { QueueDirs } from "./queue.ts";
 import { getDb } from "./queue.ts";
-import { getQueueDir, getDoneDir, getFailedDir } from "../paths.ts";
+import { getStateDir } from "../paths.ts";
 
 interface ResolvedDirs {
   queueDir: string;
@@ -10,18 +9,20 @@ interface ResolvedDirs {
   failedDir: string;
 }
 
-function resolveDirs(dirs?: QueueDirs): ResolvedDirs {
-  if (dirs) {
-    return {
-      queueDir: dirs.queueDir,
-      doneDir: dirs.doneDir,
-      failedDir: dirs.failedDir,
-    };
-  }
+/**
+ * Legacy file-queue directory paths under `getStateDir()`.
+ *
+ * Design rationale (DR-0009 Phase 7): SQLite migration deprecated these
+ * directories. They are only consulted by `migrateIfNeeded` to ingest any
+ * leftover legacy files into queue.db. Kept private so the rest of the code
+ * base has no incentive to depend on the file-based layout.
+ */
+function legacyDirs(): ResolvedDirs {
+  const stateDir = getStateDir();
   return {
-    queueDir: getQueueDir(),
-    doneDir: getDoneDir(),
-    failedDir: getFailedDir(),
+    queueDir: `${stateDir}queue/`,
+    doneDir: `${stateDir}done/`,
+    failedDir: `${stateDir}failed/`,
   };
 }
 
@@ -69,8 +70,8 @@ function parseLegacyKey(key: string): { sessionId: string; recipeName: string } 
  *
  * @returns 移行したエントリ数、またはスキップ時は null
  */
-export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> {
-  const resolved = resolveDirs(dirs);
+export async function migrateIfNeeded(): Promise<number | null> {
+  const resolved = legacyDirs();
 
   // 1. .bak ディレクトリの存在チェック
   if (await dirExists(bakPath(resolved.queueDir))) {
@@ -83,7 +84,7 @@ export async function migrateIfNeeded(dirs?: QueueDirs): Promise<number | null> 
   }
 
   // 3. SQLite DB を open（getDb() が新スキーマを CREATE する）
-  const db = getDb(dirs);
+  const db = getDb();
   let count = 0;
 
   try {

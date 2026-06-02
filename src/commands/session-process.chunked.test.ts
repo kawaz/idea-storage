@@ -4,7 +4,7 @@ import { ClaudeAbortError } from "../lib/claude/claude-runner.ts";
 import type { ProcessResult } from "./session-process.ts";
 
 describe("processChunked", () => {
-  const dummyMeta: import("../types/index.ts").SessionMeta = {
+  const dummyMeta: import("../lib/csa/csa.ts").SessionMeta = {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
@@ -275,7 +275,7 @@ describe("processChunked", () => {
 
   test("DR-0009 Phase 1 補強 (codex review #3): meta.project に secret を含むと section / synthesis prompt 両方で redact される", async () => {
     const akia = "AKIAIOSFODNN7EXAMPLE";
-    const metaWithSecret: import("../types/index.ts").SessionMeta = {
+    const metaWithSecret: import("../lib/csa/csa.ts").SessionMeta = {
       ...dummyMeta,
       project: `/tmp/repo-${akia}`,
     };
@@ -310,7 +310,7 @@ describe("processChunked", () => {
 // --- processChunked の外部 signal 連携テスト ---
 
 describe("processChunked external signal propagation", () => {
-  const dummyMeta: import("../types/index.ts").SessionMeta = {
+  const dummyMeta: import("../lib/csa/csa.ts").SessionMeta = {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
@@ -461,7 +461,7 @@ describe("ProcessResult", () => {
 // --- processChunked: チャンク1つの場合 synthesis スキップ ---
 
 describe("processChunked single chunk", () => {
-  const dummyMeta: import("../types/index.ts").SessionMeta = {
+  const dummyMeta: import("../lib/csa/csa.ts").SessionMeta = {
     id: "test-session-id",
     filePath: "/tmp/test-session.jsonl",
     ageSec: 3600,
@@ -548,7 +548,7 @@ describe("processChunked single chunk", () => {
 // --- #18 processChunked: 外部signal abort と Step 2 リトライの連携 ---
 
 describe("processChunked external abort during retry (#18)", () => {
-  const dummyMeta: import("../types/index.ts").SessionMeta = {
+  const dummyMeta: import("../lib/csa/csa.ts").SessionMeta = {
     id: "abort-during-retry-session",
     filePath: "/tmp/abort-during-retry.jsonl",
     ageSec: 3600,

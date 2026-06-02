@@ -1,8 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { QueueDirs } from "./queue.ts";
 import { getDb } from "./queue.ts";
 
 const SID1 = "00000000-0000-4000-a000-000000000001";
@@ -10,26 +9,34 @@ const SID2 = "00000000-0000-4000-a000-000000000002";
 const SID3 = "00000000-0000-4000-a000-000000000003";
 
 describe("schema migration v0 → v1 → v2", () => {
-  let dirs: QueueDirs;
   let tempDir: string;
+  let dbPath: string;
+  let savedEnv: Record<string, string | undefined>;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "queue-migrate-test-"));
-    dirs = {
-      queueDir: join(tempDir, "queue") + "/",
-      doneDir: join(tempDir, "done") + "/",
-      failedDir: join(tempDir, "failed") + "/",
+    savedEnv = {
+      HOME: process.env.HOME,
+      XDG_STATE_HOME: process.env.XDG_STATE_HOME,
     };
+    process.env.HOME = tempDir;
+    process.env.XDG_STATE_HOME = join(tempDir, "state");
+    const stateDir = join(tempDir, "state", "idea-storage");
+    await mkdir(stateDir, { recursive: true });
+    dbPath = join(stateDir, "queue.db");
   });
 
   afterEach(async () => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     await rm(tempDir, { recursive: true, force: true });
   });
 
   test("migrates legacy v0 data to v1 normalized schema", async () => {
     // Manually create a legacy v0 DB
     const { Database } = await import("bun:sqlite");
-    const dbPath = join(tempDir, "queue.db");
     const legacy = new Database(dbPath);
     legacy.run(`CREATE TABLE queue_entries (
       key TEXT PRIMARY KEY,
@@ -65,7 +72,7 @@ describe("schema migration v0 → v1 → v2", () => {
     legacy.close();
 
     // Open via getDb → should auto-migrate
-    const db = getDb(dirs);
+    const db = getDb();
     try {
       // Verify user_version bumped
       const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
@@ -136,7 +143,7 @@ describe("schema migration v0 → v1 → v2", () => {
   });
 
   test("fresh DB starts directly at v2 (= rate_limits 含む)", async () => {
-    const db = getDb(dirs);
+    const db = getDb();
     try {
       const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
       expect(v.user_version).toBe(2);
@@ -160,7 +167,6 @@ describe("schema migration v0 → v1 → v2", () => {
   test("DR-0009 Phase 2: v1 → v2 migration で rate_limits テーブルが追加される", async () => {
     // 既存 v1 DB (= legacy initSchema 経由で rate_limits が無い状態) を再現
     const { Database } = await import("bun:sqlite");
-    const dbPath = join(tempDir, "queue.db");
     const legacy = new Database(dbPath);
     legacy.run(
       `CREATE TABLE sessions (pk INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE)`,
@@ -191,7 +197,7 @@ describe("schema migration v0 → v1 → v2", () => {
     legacy.run(`PRAGMA user_version = 1`);
     legacy.close();
 
-    const db = getDb(dirs);
+    const db = getDb();
     try {
       const v = db.query(`PRAGMA user_version`).get() as { user_version: number };
       expect(v.user_version).toBe(2);
@@ -207,7 +213,6 @@ describe("schema migration v0 → v1 → v2", () => {
   test("DR-0009 Phase 2: v1 → v2 migration で既存 rate_limits 行は温存される", async () => {
     // legacy initSchema (旧 rate-limit-store) で v1 DB に rate_limits を作って行を入れる
     const { Database } = await import("bun:sqlite");
-    const dbPath = join(tempDir, "queue.db");
     const legacy = new Database(dbPath);
     legacy.run(
       `CREATE TABLE sessions (pk INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE)`,
@@ -255,7 +260,7 @@ describe("schema migration v0 → v1 → v2", () => {
     legacy.run(`PRAGMA user_version = 1`);
     legacy.close();
 
-    const db = getDb(dirs);
+    const db = getDb();
     try {
       const rows = db.query(`SELECT * FROM rate_limits WHERE ts = ?`).all(1776046000) as Array<{
         ts: number;
@@ -274,11 +279,11 @@ describe("schema migration v0 → v1 → v2", () => {
 
   test("idempotent: running migration on already-migrated DB is a no-op", async () => {
     // First open creates v1 schema
-    const db1 = getDb(dirs);
+    const db1 = getDb();
     db1.close();
 
     // Second open: no migration runs (user_version already 2)
-    const db2 = getDb(dirs);
+    const db2 = getDb();
     try {
       const v = db2.query(`PRAGMA user_version`).get() as { user_version: number };
       expect(v.user_version).toBe(2);
@@ -289,12 +294,12 @@ describe("schema migration v0 → v1 → v2", () => {
 
   test("rejects DB with future schema version", async () => {
     // Create fresh, then bump version to a future value
-    const db1 = getDb(dirs);
+    const db1 = getDb();
     db1.run(`PRAGMA user_version = 99`);
     db1.close();
 
     expect(() => {
-      const db2 = getDb(dirs);
+      const db2 = getDb();
       db2.close();
     }).toThrow(/schema version 99 is newer/);
   });

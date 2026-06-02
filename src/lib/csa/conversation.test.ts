@@ -9,7 +9,7 @@ import {
   writeSessionFixture,
   withIsolatedClaudeEnv,
 } from "../test-fixtures.ts";
-import type { ConversationMessage } from "../../types/index.ts";
+import type { ConversationMessage } from "./conversation.ts";
 
 describe("conversation", () => {
   let tmpDir: string;

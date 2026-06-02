@@ -5,6 +5,12 @@ import { getStateDir } from "../paths.ts";
 import { applyMigrations } from "./queue-schema.ts";
 
 /**
+ * DR-0009 Phase 7: queue DB path is derived purely from `getStateDir()`
+ * (= XDG_STATE_HOME/idea-storage). Tests override paths via
+ * `withIsolatedIdeaStorageEnv`, not by passing per-call directories.
+ */
+
+/**
  * Internal helpers shared between the queue write API (queue.ts) and the
  * state-reading API (queue-state.ts). Not part of the public surface — the
  * stable entry point is `queue.ts`, which re-exports the items consumers need.
@@ -29,12 +35,6 @@ export interface SkippedMeta {
 export interface RetryOptions {
   retryAfterMs?: number;
   maxRetries?: number;
-}
-
-export interface QueueDirs {
-  queueDir: string;
-  doneDir: string;
-  failedDir: string;
 }
 
 export type QueueStatus = "queued" | "processing" | "done" | "failed" | "skipped";
@@ -88,17 +88,12 @@ export function formatLogKey(sessionId: string, recipeName: string): string {
   return `${sessionId}.${recipeName}`;
 }
 
-function resolveDbPath(dirs?: QueueDirs): string {
-  if (dirs) {
-    // dirs.queueDir may have a trailing slash; strip it, then go to parent
-    const parent = dirname(dirs.queueDir.replace(/\/$/, ""));
-    return join(parent, "queue.db");
-  }
+function resolveDbPath(): string {
   return join(getStateDir(), "queue.db");
 }
 
-export function getDb(dirs?: QueueDirs): Database {
-  const dbPath = resolveDbPath(dirs);
+export function getDb(): Database {
+  const dbPath = resolveDbPath();
   // Newly-created state dirs get owner-only mode. Existing dirs are left
   // untouched per DR-0009 Phase 1 (no retroactive migration).
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });

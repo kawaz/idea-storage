@@ -9,8 +9,14 @@ import {
   validateRecipeName,
   validateSessionId,
 } from "./queue-internal.ts";
-import type { QueueDirs, QueueStatus } from "./queue-internal.ts";
-import type { QueueEntry } from "../../types/index.ts";
+import type { QueueStatus } from "./queue-internal.ts";
+
+export interface QueueEntry {
+  sessionId: string;
+  recipeName: string;
+  /** {sessionId}.{recipeName} */
+  key: string;
+}
 
 /**
  * Public entry point for queue operations.
@@ -39,7 +45,6 @@ export {
 export type {
   FailedMeta,
   HistoryAction,
-  QueueDirs,
   QueueStatus,
   RetryOptions,
   SkippedMeta,
@@ -132,7 +137,6 @@ function shouldReenqueue(
  */
 export function enqueueBatch(
   entries: Array<{ sessionId: string; recipeName: string; lineCount: number }>,
-  dirs?: QueueDirs,
 ): void {
   if (entries.length === 0) return;
   for (const { sessionId, recipeName } of entries) {
@@ -140,7 +144,7 @@ export function enqueueBatch(
     validateRecipeName(recipeName);
   }
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       for (const { sessionId, recipeName, lineCount } of entries) {
@@ -160,12 +164,11 @@ export async function enqueue(
   sessionId: string,
   recipeName: string,
   lineCount: number,
-  dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       upsertQueuedTransition(db, sessionId, recipeName, lineCount, now);
@@ -239,8 +242,8 @@ function upsertQueuedTransition(
  * dequeue 順は新しいもの優先（updated_at DESC）。これは ユーザの意向に基づく設計判断:
  * 新規 enqueue 分を先に処理することで、最新のセッションがすぐに処理される利点がある。
  */
-export async function dequeue(dirs?: QueueDirs): Promise<QueueEntry | null> {
-  const db = getDb(dirs);
+export async function dequeue(): Promise<QueueEntry | null> {
+  const db = getDb();
   try {
     const now = Date.now();
     let claimed: QueueEntry | null = null;
@@ -311,15 +314,11 @@ export interface ClaimResult {
  * UPDATE には WHERE status=<expected> ガードを入れ、レース時に他プロセスが先に
  * processing 化していたら 0行更新で claim 失敗と扱う。
  */
-export async function claim(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-): Promise<ClaimResult> {
+export async function claim(sessionId: string, recipeName: string): Promise<ClaimResult> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     let result: ClaimResult = { claimed: false, prevStatus: null };
     const tx = db.transaction(() => {
@@ -389,14 +388,10 @@ export async function claim(
  * The queue_entries row itself is updated separately via markDone (after a
  * successful dispatch) so the history event is a strict append-only audit.
  */
-export async function recordDispatchDecision(
-  sessionId: string,
-  message: string,
-  dirs?: QueueDirs,
-): Promise<void> {
+export async function recordDispatchDecision(sessionId: string, message: string): Promise<void> {
   validateSessionId(sessionId);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       const sessionPk = getOrCreateSessionPk(db, sessionId);
@@ -420,12 +415,11 @@ export async function markDone(
   recipeName: string,
   lineCount: number,
   outputFile: string | null,
-  dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       const sessionPk = getOrCreateSessionPk(db, sessionId);
@@ -457,12 +451,11 @@ export async function markFailed(
   sessionId: string,
   recipeName: string,
   reason: string | undefined,
-  dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       const sessionPk = getOrCreateSessionPk(db, sessionId);
@@ -514,12 +507,11 @@ export async function markSkipped(
   recipeName: string,
   reason: string | undefined,
   lineCount: number,
-  dirs?: QueueDirs,
 ): Promise<void> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       const sessionPk = getOrCreateSessionPk(db, sessionId);
@@ -547,15 +539,11 @@ export async function markSkipped(
  * Reset an entry (failed or skipped) back to queued so it can be retried.
  * Only entries currently in failed/skipped status are moved; any other status is a no-op.
  */
-export async function retry(
-  sessionId: string,
-  recipeName: string,
-  dirs?: QueueDirs,
-): Promise<void> {
+export async function retry(sessionId: string, recipeName: string): Promise<void> {
   validateSessionId(sessionId);
   validateRecipeName(recipeName);
   const now = Date.now();
-  const db = getDb(dirs);
+  const db = getDb();
   try {
     const tx = db.transaction(() => {
       const sessionPk = lookupSessionPk(db, sessionId);
@@ -582,11 +570,8 @@ export async function retry(
  * Note: skipped/done entries are intentionally NOT cleaned up here — they form
  * the historical record of which sessions have been considered.
  */
-export async function cleanup(
-  isSessionExists: (sid: string) => Promise<boolean>,
-  dirs?: QueueDirs,
-): Promise<number> {
-  const db = getDb(dirs);
+export async function cleanup(isSessionExists: (sid: string) => Promise<boolean>): Promise<number> {
+  const db = getDb();
   try {
     const rows = db
       .query(

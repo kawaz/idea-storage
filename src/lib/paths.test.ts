@@ -1,13 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import {
-  getConfigDir,
-  getDataDir,
-  getStateDir,
-  getRecipesDir,
-  getQueueDir,
-  getDoneDir,
-  getFailedDir,
-} from "./paths.ts";
+import { getConfigDir, getDataDir, getStateDir, getRecipesDir } from "./paths.ts";
 
 describe("paths", () => {
   const originalEnv = { ...process.env };
@@ -67,27 +59,6 @@ describe("paths", () => {
     });
   });
 
-  describe("getQueueDir", () => {
-    test("returns stateDir/queue/", () => {
-      process.env.XDG_STATE_HOME = "/tmp/test-state";
-      expect(getQueueDir()).toBe("/tmp/test-state/idea-storage/queue/");
-    });
-  });
-
-  describe("getDoneDir", () => {
-    test("returns stateDir/done/", () => {
-      process.env.XDG_STATE_HOME = "/tmp/test-state";
-      expect(getDoneDir()).toBe("/tmp/test-state/idea-storage/done/");
-    });
-  });
-
-  describe("getFailedDir", () => {
-    test("returns stateDir/failed/", () => {
-      process.env.XDG_STATE_HOME = "/tmp/test-state";
-      expect(getFailedDir()).toBe("/tmp/test-state/idea-storage/failed/");
-    });
-  });
-
   describe("HOME not set", () => {
     test("throws error when HOME is not set and XDG dirs are not set", () => {
       const savedHome = process.env.HOME;
@@ -127,9 +98,6 @@ describe("paths", () => {
       expect(getDataDir()).toEndWith("/");
       expect(getStateDir()).toEndWith("/");
       expect(getRecipesDir()).toEndWith("/");
-      expect(getQueueDir()).toEndWith("/");
-      expect(getDoneDir()).toEndWith("/");
-      expect(getFailedDir()).toEndWith("/");
     });
   });
 });

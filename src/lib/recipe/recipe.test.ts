@@ -4,7 +4,8 @@ import { CliError } from "../errors.ts";
 import { join } from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import type { Recipe, SessionMeta } from "../../types/index.ts";
+import type { Recipe } from "./recipe.ts";
+import type { SessionMeta } from "../csa/csa.ts";
 
 describe("parseRecipe", () => {
   test("parses match conditions and prompt", async () => {

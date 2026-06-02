@@ -8,7 +8,13 @@
  */
 
 import { streamSessionLines } from "./session-jsonl.ts";
-import type { ConversationMessage } from "../../types/index.ts";
+
+export interface ConversationMessage {
+  type: "USER" | "ASSISTANT" | "TOOL_USE" | "TOOL_RESULT" | "THINKING" | "SUMMARY" | "QUEUED";
+  /** ローカル時刻文字列 */
+  timestamp: string;
+  content: string;
+}
 
 /**
  * Convert an ISO8601 timestamp to local time string (YYYY-MM-DDTHH:MM:SS).

@@ -3,7 +3,34 @@ import { readdir } from "node:fs/promises";
 import { parseFrontmatter } from "../frontmatter.ts";
 import { getRecipesDir } from "../paths.ts";
 import { CliError } from "../errors.ts";
-import type { Recipe, SessionMeta } from "../../types/index.ts";
+import type { SessionMeta } from "../csa/csa.ts";
+
+export interface Recipe {
+  /** recipe-*.md のファイル名から recipe- を除いた部分 */
+  name: string;
+  filePath: string;
+  match: {
+    /** glob パターン */
+    project?: string;
+    minTurns?: number;
+    /** seconds */
+    minAge?: number;
+  };
+  /** default 'append' */
+  onExisting: "append" | "separate" | "skip";
+  /** frontmatter 以外の本文 */
+  prompt: string;
+  /**
+   * DR-0008 §7: dispatcher が「向き・不向き」を判断する手がかりに使う
+   * 自由テキスト 1 行ヒント。任意。
+   */
+  hint?: string;
+  /**
+   * DR-0008 §9: recipe 実行時、directly preceding N 本の過去出力 (同一 recipe)
+   * を prompt 先頭に自動付加する。任意。未指定 / 0 で注入なし。
+   */
+  injectRecent?: number;
+}
 
 /**
  * Parse a recipe-*.md file into a Recipe object.

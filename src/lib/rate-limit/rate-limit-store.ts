@@ -1,12 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb as getQueueDb } from "../queue/queue-internal.ts";
-import type { QueueDirs } from "../queue/queue.ts";
 import type { BucketObservation } from "./rate-limit-parser.ts";
-
-export interface RateLimitStoreDirs {
-  /** state dir that contains queue.db (e.g., ~/.local/share/idea-storage) */
-  stateDir: string;
-}
 
 export type ObservationSource = "worker" | "probe";
 
@@ -29,30 +23,17 @@ export interface ObservationRow {
 }
 
 /**
- * DR-0009 Phase 2: consolidate to a single getDb (queue-internal).
- * rate_limits is now part of queue-schema.applyMigrations (version 2),
- * so the legacy initSchema + dedicated getDb were removed.
- *
- * Map `RateLimitStoreDirs` to `QueueDirs`: queue-internal.resolveDbPath
- * uses dirname(queueDir) + "/queue.db", so any queueDir under stateDir
- * resolves to `${stateDir}/queue.db` — the same path the legacy
- * resolveDbPath produced.
+ * DR-0009 Phase 2: rate_limits lives in queue.db (queue-schema migration v2),
+ * so we just reuse the queue-internal `getDb()` directly.
+ * Phase 7: dropped the explicit `RateLimitStoreDirs` indirection — tests
+ * point at a per-test state dir via `withIsolatedIdeaStorageEnv`.
  */
-function toQueueDirs(dirs?: RateLimitStoreDirs): QueueDirs | undefined {
-  if (!dirs) return undefined;
-  return {
-    queueDir: `${dirs.stateDir}/queue/`,
-    doneDir: `${dirs.stateDir}/done/`,
-    failedDir: `${dirs.stateDir}/failed/`,
-  };
+function getDb(): Database {
+  return getQueueDb();
 }
 
-function getDb(dirs?: RateLimitStoreDirs): Database {
-  return getQueueDb(toQueueDirs(dirs));
-}
-
-export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs): void {
-  const db = getDb(dirs);
+export function recordObservation(input: RecordInput): void {
+  const db = getDb();
   try {
     db.run(
       `INSERT OR IGNORE INTO rate_limits
@@ -75,8 +56,8 @@ export function recordObservation(input: RecordInput, dirs?: RateLimitStoreDirs)
   }
 }
 
-export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs): ObservationRow[] {
-  const db = getDb(dirs);
+export function getLatestObservations(limit: number): ObservationRow[] {
+  const db = getDb();
   try {
     const rows = db
       .query(
@@ -117,8 +98,8 @@ export function getLatestObservations(limit: number, dirs?: RateLimitStoreDirs):
  *
  * @param nowSec 現在時刻 (Unix epoch seconds)。テスト時に固定値を渡せる。
  */
-export function cleanupOldObservations(nowSec: number, dirs?: RateLimitStoreDirs): void {
-  const db = getDb(dirs);
+export function cleanupOldObservations(nowSec: number): void {
+  const db = getDb();
   try {
     const eightDaysAgo = nowSec - 8 * 86400;
     const oneDayAgo = nowSec - 86400;

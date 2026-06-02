@@ -20,7 +20,27 @@ import { buildCsaEnv } from "../spawn-env.ts";
 import { spawnWithTimeout, SpawnTimeoutError } from "../spawn-timeout.ts";
 import { CSA_TIMEOUT_MS } from "../constants.ts";
 import { logError } from "../logging.ts";
-import type { SessionMeta } from "../../types/index.ts";
+
+export interface SessionMeta {
+  /** UUID */
+  id: string;
+  filePath: string;
+  /** cwd */
+  project: string;
+  lineCount: number;
+  ageSec: number;
+  startTime: Date;
+  endTime?: Date;
+  userTurns: number;
+  /** ツール結果などを除いた実質的なユーザー発話ターン数（CSA 由来） */
+  effectiveUserTurns: number;
+  /** フォークセッションの場合に設定される */
+  forkInfo?: {
+    parentSessionId: string;
+    /** フォーク後の最初の行の UUID（CSA timeline との突合用） */
+    firstNewUuid: string;
+  };
+}
 
 /** CSA binary name (resolved via PATH). */
 export const csaBin = "claude-session-analysis";

@@ -1,5 +1,5 @@
 import { generateFrontmatter } from "../frontmatter.ts";
-import type { SessionMeta } from "../../types/index.ts";
+import type { SessionMeta } from "../csa/csa.ts";
 
 /**
  * Build a serialized YAML frontmatter block for a processed session output.

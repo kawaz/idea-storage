@@ -69,7 +69,7 @@ describe("processSession redact integration", () => {
             match: {},
             onExisting: "append",
             prompt: "Write a diary",
-          } as import("../types/index.ts").Recipe,
+          } as import("../lib/recipe/recipe.ts").Recipe,
           meta,
           sessionStats: { turns: 1, bytes: 100 },
           dataDir: join(workDir, "data"),
@@ -137,7 +137,7 @@ describe("processSession redact integration", () => {
           match: {},
           onExisting: "append",
           prompt: "Write a diary",
-        } as import("../types/index.ts").Recipe,
+        } as import("../lib/recipe/recipe.ts").Recipe,
         meta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
@@ -201,7 +201,7 @@ describe("processSession redact integration", () => {
           match: {},
           onExisting: "append",
           prompt: "Write a diary",
-        } as import("../types/index.ts").Recipe,
+        } as import("../lib/recipe/recipe.ts").Recipe,
         meta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
@@ -273,7 +273,7 @@ describe("processSession fork guard (#16)", () => {
       return "should-not-be-called";
     };
 
-    const baseMeta: import("../types/index.ts").SessionMeta = {
+    const baseMeta: import("../lib/csa/csa.ts").SessionMeta = {
       id: FORK_SID,
       filePath: join(projectDir, `${FORK_SID}.jsonl`),
       ageSec: 3600,
@@ -299,7 +299,7 @@ describe("processSession fork guard (#16)", () => {
           match: {},
           onExisting: "append",
           prompt: "Write a diary",
-        } as import("../types/index.ts").Recipe,
+        } as import("../lib/recipe/recipe.ts").Recipe,
         meta: baseMeta,
         sessionStats: { turns: 1, bytes: 100 },
         dataDir: join(workDir, "data"),
