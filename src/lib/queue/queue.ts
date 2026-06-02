@@ -6,8 +6,8 @@ import {
   lookupRecipePk,
   lookupSessionPk,
   recordHistory,
-  validateRecipeName,
-  validateSessionId,
+  validateStoredRecipeName,
+  validateStoredSessionId,
 } from "./queue-internal.ts";
 import type { QueueStatus } from "./queue-internal.ts";
 
@@ -39,8 +39,8 @@ export {
   DEFAULT_RETRY_AFTER_MS,
   formatLogKey,
   getDb,
-  validateRecipeName,
-  validateSessionId,
+  validateStoredRecipeName,
+  validateStoredSessionId,
 } from "./queue-internal.ts";
 export type {
   FailedMeta,
@@ -140,8 +140,8 @@ export function enqueueBatch(
 ): void {
   if (entries.length === 0) return;
   for (const { sessionId, recipeName } of entries) {
-    validateSessionId(sessionId);
-    validateRecipeName(recipeName);
+    validateStoredSessionId(sessionId);
+    validateStoredRecipeName(recipeName);
   }
   const now = Date.now();
   const db = getDb();
@@ -165,8 +165,8 @@ export async function enqueue(
   recipeName: string,
   lineCount: number,
 ): Promise<void> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {
@@ -315,8 +315,8 @@ export interface ClaimResult {
  * processing 化していたら 0行更新で claim 失敗と扱う。
  */
 export async function claim(sessionId: string, recipeName: string): Promise<ClaimResult> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {
@@ -389,7 +389,7 @@ export async function claim(sessionId: string, recipeName: string): Promise<Clai
  * successful dispatch) so the history event is a strict append-only audit.
  */
 export async function recordDispatchDecision(sessionId: string, message: string): Promise<void> {
-  validateSessionId(sessionId);
+  validateStoredSessionId(sessionId);
   const now = Date.now();
   const db = getDb();
   try {
@@ -416,8 +416,8 @@ export async function markDone(
   lineCount: number,
   outputFile: string | null,
 ): Promise<void> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {
@@ -452,8 +452,8 @@ export async function markFailed(
   recipeName: string,
   reason: string | undefined,
 ): Promise<void> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {
@@ -508,8 +508,8 @@ export async function markSkipped(
   reason: string | undefined,
   lineCount: number,
 ): Promise<void> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {
@@ -540,8 +540,8 @@ export async function markSkipped(
  * Only entries currently in failed/skipped status are moved; any other status is a no-op.
  */
 export async function retry(sessionId: string, recipeName: string): Promise<void> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const now = Date.now();
   const db = getDb();
   try {

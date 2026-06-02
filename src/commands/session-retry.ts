@@ -1,7 +1,7 @@
 import { define } from "gunshi";
 import { retry, formatLogKey } from "../lib/queue/queue.ts";
-import { exitWithError } from "../lib/errors.ts";
-import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
+import { CliError, errorMessage } from "../lib/errors.ts";
+import { assertCliRecipeName, assertCliSessionId } from "../lib/validate.ts";
 
 const sessionRetry = define({
   name: "retry",
@@ -23,16 +23,16 @@ const sessionRetry = define({
     const recipeName = ctx.values.recipe as string;
 
     if (!sessionId || !recipeName) {
-      exitWithError("Both --session and --recipe are required");
+      throw new CliError("Both --session and --recipe are required");
     }
 
     try {
-      validateSessionId(sessionId);
-      validateRecipeName(recipeName);
+      assertCliSessionId(sessionId);
+      assertCliRecipeName(recipeName);
       await retry(sessionId, recipeName);
       console.log(`Moved to queue: ${formatLogKey(sessionId, recipeName)}`);
     } catch (err) {
-      exitWithError(err);
+      throw err instanceof CliError ? err : new CliError(errorMessage(err));
     }
   },
 });

@@ -43,7 +43,52 @@ Phase 3+4+5 (mock 撤去 + lib/ subdir 化 + テスト責務分割) が main = `
 
 ## Commit 2: Phase 7 C 束 (validate 命名 + CliError 統一 + service-log 検証)
 
-(進行中)
+### 変更内容
+
+- `src/lib/validate.ts` の関数を CLI 厳格用と内部 lazy 用で名前を分離:
+  - `validateSessionId` → `assertCliSessionId` (lib/validate.ts)
+  - `validateRecipeName` → `assertCliRecipeName` (lib/validate.ts)
+  - `validateSessionId` → `validateStoredSessionId` (lib/queue/queue-internal.ts)
+  - `validateRecipeName` → `validateStoredRecipeName` (lib/queue/queue-internal.ts)
+- `exitWithError(...)` を全廃。caller は `throw new CliError(...)` に切替:
+  - `src/commands/session-retry.ts` (引数チェック + try/catch ラップ)
+  - `src/commands/session-convert.ts` (try/catch ラップ)
+  - `src/commands/extract.ts` (`Session not found`)
+  - `src/commands/service-register.ts` (launchctl bootstrap 失敗)
+  - `src/commands/service-unregister.ts` (bootout 失敗 + try/catch ラップ)
+  - `src/commands/service-log.ts` (existsSync 失敗を `console.error + process.exit(1)`
+    から `throw CliError` に揃える)
+- **トップレベル catch ハンドラを `src/index.ts` に新設** (= advisor 指摘):
+  CliError なら exit code を伝搬、それ以外は再 throw して bun のデフォルト
+  クラッシュ表示。これがないと finally / cleanup を回す目的が崩れる。
+- `errors.ts` の `exitWithError` 関数本体 + `errors.test.ts` の describe ブロック
+  (3 件) を削除。
+- service-log の `lines` 引数に整数 + 正数バリデーション追加 (`Number.isInteger`
+  - `<= 0` チェック)。
+
+### ハマり所
+
+- **トップレベル catch が必須**: 単に `process.exit` → `throw CliError` に
+  置換すると、catch がなければ uncaught throw でプロセス異常終了 + stack 出力
+  になる。advisor の事前指摘がなければ気付くのに 1 サイクル余分にかかっていた。
+- **queue-internal の自己参照**: validate 関数を rename した瞬間、queue-internal.ts
+  内の `getOrCreateSessionPk` / `getOrCreateRecipePk` も rename 対象になる
+  (内部から内部を呼んでいる)。一括 sed が効くケース。
+- **`queue.ts` の re-export**: queue.ts は internal の旧名を re-export して
+  外部 caller (queue.test.ts など) が使っていた → 同名 sed で test ファイルも
+  追従が必要。
+- **`service-unregister.ts` の try/catch**: `exitWithError` を `throw CliError`
+  に置換すると、enclosing try が CliError ごと catch してしまう。CliError なら
+  そのまま rethrow するガードを catch 側に入れる必要があった。
+
+### test 数
+
+- Commit 1 後: 817 pass
+- Commit 2 後: 814 pass (errors.test.ts の `exitWithError` describe 3 件削除)
+
+## Commit 3: Phase 6 機械的部分 (DR-0008 §11 切出 + resolved 更新 + INDEX 整合)
+
+(未着手)
 
 ## Commit 3: Phase 6 機械的部分 (DR-0008 §11 切出 + resolved 更新 + INDEX 整合)
 

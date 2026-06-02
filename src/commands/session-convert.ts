@@ -1,6 +1,6 @@
 import { define } from "gunshi";
-import { exitWithError } from "../lib/errors.ts";
-import { validateRecipeName, validateSessionId } from "../lib/validate.ts";
+import { CliError, errorMessage } from "../lib/errors.ts";
+import { assertCliRecipeName, assertCliSessionId } from "../lib/validate.ts";
 import { runConvert } from "../lib/driver/convert-driver.ts";
 
 // --- Re-exports for backwards compatibility ---
@@ -33,8 +33,8 @@ const sessionConvert = define({
     const recipeName = ctx.values.recipe as string;
     const force = (ctx.values.force as boolean | undefined) ?? false;
     try {
-      validateSessionId(sessionId);
-      validateRecipeName(recipeName);
+      assertCliSessionId(sessionId);
+      assertCliRecipeName(recipeName);
       const result = await runConvert({ sessionId, recipeName, force });
       if (result.kind === "skipped") {
         console.error(`Skipped: ${result.reason} (lineCount=${result.lineCount})`);
@@ -42,7 +42,7 @@ const sessionConvert = define({
         console.log(result.outputFile);
       }
     } catch (err) {
-      exitWithError(err);
+      throw err instanceof CliError ? err : new CliError(errorMessage(err));
     }
   },
 });

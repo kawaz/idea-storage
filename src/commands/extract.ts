@@ -1,7 +1,7 @@
 import { define } from "gunshi";
 import { loadConfig } from "../lib/config.ts";
 import { formatConversationToText } from "../lib/csa/conversation.ts";
-import { exitWithError } from "../lib/errors.ts";
+import { CliError } from "../lib/errors.ts";
 import { UUID_PATTERN, findSessionFile } from "../lib/csa/session-finder.ts";
 
 const extract = define({
@@ -28,7 +28,7 @@ const extract = define({
       const config = await loadConfig();
       const found = await findSessionFile(config.claudeDirs, target);
       if (!found) {
-        exitWithError(`Session not found: ${target}`);
+        throw new CliError(`Session not found: ${target}`);
       }
       filePath = found;
     } else {

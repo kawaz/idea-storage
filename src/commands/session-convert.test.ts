@@ -366,17 +366,17 @@ describe("session-convert", () => {
   });
 
   test("不正な session_id (非UUID) は CLI バリデータで CliError として弾かれる", async () => {
-    const { validateSessionId } = await import("../lib/validate.ts");
+    const { assertCliSessionId } = await import("../lib/validate.ts");
     const { CliError } = await import("../lib/errors.ts");
-    expect(() => validateSessionId("not-a-uuid")).toThrow(CliError);
-    expect(() => validateSessionId("not-a-uuid")).toThrow(/Invalid session ID/);
+    expect(() => assertCliSessionId("not-a-uuid")).toThrow(CliError);
+    expect(() => assertCliSessionId("not-a-uuid")).toThrow(/Invalid session ID/);
   });
 
   test("不正な recipe 名は CLI バリデータで CliError として弾かれる", async () => {
-    const { validateRecipeName } = await import("../lib/validate.ts");
+    const { assertCliRecipeName } = await import("../lib/validate.ts");
     const { CliError } = await import("../lib/errors.ts");
-    expect(() => validateRecipeName("BAD-RECIPE")).toThrow(CliError);
-    expect(() => validateRecipeName("BAD-RECIPE")).toThrow(/Invalid recipe name/);
+    expect(() => assertCliRecipeName("BAD-RECIPE")).toThrow(CliError);
+    expect(() => assertCliRecipeName("BAD-RECIPE")).toThrow(/Invalid recipe name/);
   });
 
   // --- Rate-limit gate tests ---

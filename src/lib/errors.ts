@@ -21,17 +21,3 @@ export class CliError extends Error {
     this.exitCode = exitCode;
   }
 }
-
-/**
- * Print an error message to stderr and exit with code 1.
- * Accepts either an Error/unknown (formatted via errorMessage) or a plain string.
- *
- * WARNING: This calls process.exit(1) which skips finally blocks.
- * In library functions called from session-run (or any context with cleanup),
- * throw CliError instead.
- */
-export function exitWithError(err: unknown): never {
-  const msg = typeof err === "string" ? err : errorMessage(err);
-  console.error(`Error: ${msg}`);
-  process.exit(1);
-}

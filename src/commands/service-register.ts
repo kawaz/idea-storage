@@ -1,7 +1,7 @@
 import { define } from "gunshi";
 import { mkdir } from "node:fs/promises";
 import { generatePlist } from "../lib/service/plist.ts";
-import { exitWithError } from "../lib/errors.ts";
+import { CliError } from "../lib/errors.ts";
 import {
   SERVICE_LABEL,
   getLaunchAgentsDir,
@@ -56,7 +56,7 @@ const register = define({
     const exitCode = await bootstrap.exited;
 
     if (exitCode !== 0) {
-      exitWithError(`launchctl bootstrap failed: ${stderr}`);
+      throw new CliError(`launchctl bootstrap failed: ${stderr}`);
     }
 
     console.log(`Registered: ${SERVICE_LABEL} (interval: 3600s)`);

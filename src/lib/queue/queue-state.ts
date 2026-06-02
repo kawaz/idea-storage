@@ -5,8 +5,8 @@ import {
   getDb,
   lookupRecipePk,
   lookupSessionPk,
-  validateRecipeName,
-  validateSessionId,
+  validateStoredRecipeName,
+  validateStoredSessionId,
 } from "./queue-internal.ts";
 import type { FailedMeta, QueueStatus, RetryOptions, SkippedMeta } from "./queue-internal.ts";
 
@@ -62,8 +62,8 @@ export async function waitForCompletion(
   recipeName: string,
   options: WaitForCompletionOptions = {},
 ): Promise<WaitForCompletionResult> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
   const sleep = options.sleep ?? ((ms: number) => Bun.sleep(ms));
@@ -119,8 +119,8 @@ export async function getDoneLineCount(
   sessionId: string,
   recipeName: string,
 ): Promise<number | null> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);
@@ -151,8 +151,8 @@ export async function isDone(
 }
 
 export async function isQueued(sessionId: string, recipeName: string): Promise<boolean> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);
@@ -175,8 +175,8 @@ export async function isFailed(
   recipeName: string,
   retryOpts?: RetryOptions,
 ): Promise<boolean> {
-  validateSessionId(sessionId);
-  validateRecipeName(recipeName);
+  validateStoredSessionId(sessionId);
+  validateStoredRecipeName(recipeName);
   const db = getDb();
   try {
     const sessionPk = lookupSessionPk(db, sessionId);

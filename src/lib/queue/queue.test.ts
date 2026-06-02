@@ -15,8 +15,8 @@ import {
   retry,
   getStatus,
   cleanup,
-  validateSessionId,
-  validateRecipeName,
+  validateStoredSessionId,
+  validateStoredRecipeName,
   getDb,
   claim,
   waitForCompletion,
@@ -721,29 +721,29 @@ describe("queue", () => {
     });
   });
 
-  describe("validateSessionId", () => {
+  describe("validateStoredSessionId", () => {
     test("accepts valid UUID", () => {
-      expect(() => validateSessionId("550e8400-e29b-41d4-a716-446655440000")).not.toThrow();
+      expect(() => validateStoredSessionId("550e8400-e29b-41d4-a716-446655440000")).not.toThrow();
     });
 
     test("rejects empty string", () => {
-      expect(() => validateSessionId("")).toThrow(/Invalid sessionId/);
+      expect(() => validateStoredSessionId("")).toThrow(/Invalid sessionId/);
     });
 
     test("rejects path traversal", () => {
-      expect(() => validateSessionId("../etc/passwd")).toThrow(/Invalid sessionId/);
+      expect(() => validateStoredSessionId("../etc/passwd")).toThrow(/Invalid sessionId/);
     });
   });
 
-  describe("validateRecipeName", () => {
+  describe("validateStoredRecipeName", () => {
     test("accepts valid recipe names", () => {
-      expect(() => validateRecipeName("diary")).not.toThrow();
-      expect(() => validateRecipeName("my-recipe")).not.toThrow();
-      expect(() => validateRecipeName("my.recipe")).not.toThrow();
+      expect(() => validateStoredRecipeName("diary")).not.toThrow();
+      expect(() => validateStoredRecipeName("my-recipe")).not.toThrow();
+      expect(() => validateStoredRecipeName("my.recipe")).not.toThrow();
     });
 
     test("rejects path traversal", () => {
-      expect(() => validateRecipeName("../etc/passwd")).toThrow(/Invalid recipeName/);
+      expect(() => validateStoredRecipeName("../etc/passwd")).toThrow(/Invalid recipeName/);
     });
   });
 

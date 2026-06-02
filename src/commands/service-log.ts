@@ -1,6 +1,7 @@
 import { define } from "gunshi";
 import { existsSync } from "node:fs";
 import { getStateDir } from "../lib/paths.ts";
+import { CliError } from "../lib/errors.ts";
 import { SERVICE_LABEL } from "../lib/service/service.ts";
 
 const log = define({
@@ -27,14 +28,19 @@ const log = define({
     const follow = ctx.values.follow as boolean;
     const lines = (ctx.values.lines as number | undefined) ?? 50;
     const showStderr = ctx.values.stderr as boolean;
+
+    // DR-0009 Phase 7: validate `lines` so non-integer / non-positive values
+    // never reach `tail -n` (which would error or silently misbehave).
+    if (!Number.isInteger(lines) || lines <= 0) {
+      throw new CliError(`Invalid --lines value: ${lines}. Expected a positive integer.`);
+    }
+
     const stateDir = getStateDir().replace(/\/$/, "");
     const suffix = showStderr ? "stderr" : "stdout";
     const logPath = `${stateDir}/${SERVICE_LABEL}-${suffix}.log`;
 
     if (!existsSync(logPath)) {
-      console.error(`Log file not found: ${logPath}`);
-      console.error("The service may not have run yet.");
-      process.exit(1);
+      throw new CliError(`Log file not found: ${logPath}\nThe service may not have run yet.`);
     }
 
     if (follow) {

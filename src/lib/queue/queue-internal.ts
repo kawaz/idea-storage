@@ -64,13 +64,13 @@ export type HistoryAction =
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RECIPE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-export function validateSessionId(sessionId: string): void {
+export function validateStoredSessionId(sessionId: string): void {
   if (!SESSION_ID_RE.test(sessionId)) {
     throw new Error(`Invalid sessionId: "${sessionId}" (must be UUID format)`);
   }
 }
 
-export function validateRecipeName(recipeName: string): void {
+export function validateStoredRecipeName(recipeName: string): void {
   if (!RECIPE_NAME_RE.test(recipeName)) {
     throw new Error(`Invalid recipeName: "${recipeName}" (must match ${RECIPE_NAME_RE})`);
   }
@@ -124,7 +124,7 @@ function chmodIfExists(path: string, mode: number): void {
 // --- Internal helpers for pk lookup / creation ---
 
 export function getOrCreateSessionPk(db: Database, sessionId: string): number {
-  validateSessionId(sessionId);
+  validateStoredSessionId(sessionId);
   db.run(`INSERT OR IGNORE INTO sessions (uuid) VALUES (?)`, [sessionId]);
   const row = db.query(`SELECT pk FROM sessions WHERE uuid = ?`).get(sessionId) as {
     pk: number;
@@ -133,7 +133,7 @@ export function getOrCreateSessionPk(db: Database, sessionId: string): number {
 }
 
 export function getOrCreateRecipePk(db: Database, recipeName: string): number {
-  validateRecipeName(recipeName);
+  validateStoredRecipeName(recipeName);
   db.run(`INSERT OR IGNORE INTO recipes (name) VALUES (?)`, [recipeName]);
   const row = db.query(`SELECT pk FROM recipes WHERE name = ?`).get(recipeName) as {
     pk: number;

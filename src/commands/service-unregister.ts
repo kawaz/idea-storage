@@ -1,7 +1,7 @@
 import { define } from "gunshi";
 import { unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { exitWithError, errorMessage } from "../lib/errors.ts";
+import { CliError, errorMessage } from "../lib/errors.ts";
 import { SERVICE_LABEL, getLaunchdDomain, getPlistPath } from "../lib/service/service.ts";
 
 const unregister = define({
@@ -23,14 +23,15 @@ const unregister = define({
       if (exitCode !== 0) {
         // Exit code 3 means "no such process" — service was not loaded
         if (!stderr.includes("No such process") && !stderr.includes("Could not find service")) {
-          exitWithError(`launchctl bootout failed: ${stderr}`);
+          throw new CliError(`launchctl bootout failed: ${stderr}`);
         }
         console.log(`Service was not loaded (already unregistered)`);
       } else {
         console.log(`Unloaded: ${SERVICE_LABEL}`);
       }
     } catch (err) {
-      exitWithError(`Failed to bootout service: ${errorMessage(err)}`);
+      if (err instanceof CliError) throw err;
+      throw new CliError(`Failed to bootout service: ${errorMessage(err)}`);
     }
 
     // Remove plist file
