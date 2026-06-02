@@ -88,8 +88,28 @@ Phase 3+4+5 (mock 撤去 + lib/ subdir 化 + テスト責務分割) が main = `
 
 ## Commit 3: Phase 6 機械的部分 (DR-0008 §11 切出 + resolved 更新 + INDEX 整合)
 
-(未着手)
+### 変更内容
 
-## Commit 3: Phase 6 機械的部分 (DR-0008 §11 切出 + resolved 更新 + INDEX 整合)
+- `docs/issue/2026-06-02-skipped-breakdown-30day-window.md` を新規:
+  `getSkippedBreakdown()` が現在 lifetime 全件集計しているのを 30 日窓に
+  絞る issue。
+- `docs/issue/2026-06-02-dispatcher-fallback-and-quality-gate-rates.md` を新規:
+  DR-0008 §11 の `dispatcher fallback rate` / `quality gate rejection rate` /
+  `effective filter pass rate` を `session status` に追加する issue。
+- `DR-0008` 末尾の「mock 撤去は別 PR で対応予定」記述を打ち消し線 +
+  **resolved (DR-0009 Phase 3 step 3-e+f, 2026-06-02)** に更新。
+- `DR-0008` の §11 残課題 (last 30 days 窓 / fallback rate / quality rate /
+  effective filter rate) に 「`docs/issue/2026-06-02-*.md` に切り出し済」と
+  追記。
+- `docs/decisions/INDEX.md` の DR-0008 行に `refactored (2026-06-02)` を追加、
+  上記 mock 撤去解決 + §11 切り出しを 1 行サマリ化。
 
-(未着手)
+### Phase 6 §6 dispatcher 入力スキーマ判断について
+
+未着手。kawaz の判断が必要 (history.dispatch_decided の message JSON を
+専用テーブルに正規化するか継続パースか) なので、本 commit には含めない。
+
+### test 数
+
+- Commit 2 後: 814 pass
+- Commit 3 後: 814 pass (docs のみの変更、テスト影響なし)

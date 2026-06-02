@@ -438,11 +438,18 @@ DR-0008 の §1〜§11 すべて main にマージ済み。Phase 4 (DR-0009 予�
 
 ### スコープ内で残した未完了部分 (運用安定後に別 PR で対応)
 
-- §11 の「last 30 days」時間窓フィルタ (現状は lifetime totals)
+- §11 の「last 30 days」時間窓フィルタ (現状は lifetime totals) →
+  `docs/issue/2026-06-02-skipped-breakdown-30day-window.md` に切り出し済
+  (DR-0009 Phase 6, 2026-06-02)
 - §11 の `dispatcher fallback rate` / `quality gate rejection rate` /
-  `effective filter pass rate` (history.action='dispatch_decided' のパース集計が必要)
-- `session-enqueue.test.ts` で `mock.module("../lib/queue.ts")` を継続使用している点
-  (PR① の「mock 排除」方針との不整合; mock 撤去は別 PR で対応予定)
+  `effective filter pass rate` (history.action='dispatch_decided' のパース集計が必要) →
+  `docs/issue/2026-06-02-dispatcher-fallback-and-quality-gate-rates.md` に
+  切り出し済 (DR-0009 Phase 6, 2026-06-02)
+- ~~`session-enqueue.test.ts` で `mock.module("../lib/queue.ts")` を継続使用している点
+  (PR① の「mock 排除」方針との不整合; mock 撤去は別 PR で対応予定)~~ →
+  **resolved (DR-0009 Phase 3 step 3-e+f, 2026-06-02)**: claude-runner.ts の
+  `mock.module` 撤去 + session-process.test.ts の DI 化により、リポ全体の
+  `mock.module` 件数は 0。
 - `session-process.test.ts` の dispatcher / quality gate / inject_recent
   end-to-end 統合テスト (現状は各単体のみ)
 
