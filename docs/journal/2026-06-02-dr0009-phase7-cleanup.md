@@ -113,3 +113,28 @@ Phase 3+4+5 (mock 撤去 + lib/ subdir 化 + テスト責務分割) が main = `
 
 - Commit 2 後: 814 pass
 - Commit 3 後: 814 pass (docs のみの変更、テスト影響なし)
+
+## Commit 4: Phase 7 B-1 (CI workflow + CSA clone を SHA pin)
+
+### 変更内容
+
+- `.github/workflows/ci.yml` の 3rd-party action 4 件を major tag → 特定 SHA pin に:
+  - `actions/checkout@v4` → `@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1`
+  - `oven-sh/setup-bun@v2` → `@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0`
+  - `actions/cache@v4` → `@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0`
+  - `extractions/setup-just@v3` → `@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0`
+- CSA clone を SHA pin に:
+  - `CSA_REPO` / `CSA_SHA` を env で明示、SHA は `7d29ea0b2e6fd7a2a6983fa8dc3c1e71ceaa1466`
+    (= 2026-06-02 main HEAD)
+  - `git clone --depth 1` 後に `git fetch --depth 1 origin "$CSA_SHA"` + `git checkout`
+  - CSA は release tag 無しのため main HEAD ベース、更新が必要なら手動で SHA を bump
+
+### 動機
+
+- 上流 action の major tag は再 retag 可能 (= 攻撃面)。特定 commit SHA に pin することで
+  supply chain compromise を不可逆な commit hash で検出可能にする
+- CSA は kawaz 個人 OSS だが、CI で main HEAD を盲信するのは同じ supply chain risk
+
+### test 数
+
+- Commit 4 後: 814 pass (CI yml 変更のみ、テスト影響なし)
