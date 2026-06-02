@@ -138,3 +138,41 @@ Phase 3+4+5 (mock 撤去 + lib/ subdir 化 + テスト責務分割) が main = `
 ### test 数
 
 - Commit 4 後: 814 pass (CI yml 変更のみ、テスト影響なし)
+
+## Commit 5: Phase 7 B-2 (recent-outputs 増幅警告 + session-jsonl 行サイズ上限ガード)
+
+### 変更内容
+
+- `src/lib/recipe/recent-outputs.ts`:
+  - `formatInjectedRecent` の jsdoc に **secrets amplification 注意** を明記。
+    N (= 過去出力注入数) を大きくすると過去出力が次プロンプトに再注入される
+    surface が広がり、redact pipeline が捕捉できない novel pattern が無限に
+    propagate するリスクを明文化。defense layer (write 時 redact + 注入時
+    re-redact) も並記、運用上は `n = 3-5` 程度に留めるよう推奨。
+- `src/lib/csa/session-jsonl.ts`:
+  - `MAX_JSONL_LINE_BYTES = 10 * 1024 * 1024` (10 MiB) を export。
+  - `streamSessionLines(filePath, maxLineBytes?)` にオプション引数を追加。
+    test では小さい cap (1 KiB) で挙動を再現、production callers は default を使う。
+  - 1 行の UTF-8 byte 長が cap を超えた場合は `console.warn` + skip。
+    複数行の中で 1 行だけ巨大でも残り行は yield する (= session 全体を捨てない)。
+  - 改行が一切来ない adversarial 入力に対しては「`skipUntilNewline` モード」に
+    切替、buffer を捨てて memory を bounded に保つ。
+  - 末尾 (改行なし最終行) も同様に cap チェック + skip。
+- `src/lib/csa/session-jsonl.test.ts`: 3 ケース追加 (`+3 tests`, 全体 814→817):
+  - oversized 中間行を skip + warn してもその前後の行は yield されること
+  - oversized 末尾行 (no trailing newline) も skip + warn
+  - 改行なし巨大入力で in-progress buffer が bounded に保たれること
+
+### 動機
+
+- session-jsonl は **外部入力** (Claude が書き出した session file)。攻撃シナリオは
+  限定的だが、disk 上で壊れた session file (= cosmic ray / fs bug) や巨大な
+  tool result が含まれる session が来た時に worker process を OOM で落とすのを
+  防ぐ。advisor 助言の通り、**全体停止ではなく skip + warn** が正解 (= 1 行
+  奇形で session 全体を捨てると pipeline が頓挫する)。
+- recent-outputs は code 動作変更なしの jsdoc 強化のみ。コード変更を伴うガードは
+  入れず、設計意図 (= 過去出力増幅は redact 2 段では完全には防げない) を明文化。
+
+### test 数
+
+- Commit 5 後: 817 pass (+3 oversized line ケース)

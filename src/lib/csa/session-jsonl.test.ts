@@ -145,6 +145,82 @@ describe("session-jsonl", () => {
 
       expect(lines).toHaveLength(0);
     });
+
+    test("skips oversized line and continues processing surrounding lines", async () => {
+      // Use a small cap (1 KiB) so we don't have to allocate 10 MiB just to
+      // exercise the guard. The behavior is identical at any threshold.
+      const cap = 1024;
+      // Build a line that exceeds the cap by a wide margin.
+      const huge = '{"data":"' + "x".repeat(cap * 3) + '"}';
+      const path = await writeTempFile(
+        "oversized-middle.jsonl",
+        ['{"n":1}', huge, '{"n":3}'].join("\n"),
+      );
+
+      // Silence the expected console.warn so test output stays clean while
+      // still verifying that exactly one warning fires for the oversized line.
+      const originalWarn = console.warn;
+      let warnCount = 0;
+      console.warn = () => {
+        warnCount++;
+      };
+      try {
+        const lines: unknown[] = [];
+        for await (const line of streamSessionLines(path, cap)) {
+          lines.push(line);
+        }
+        expect(lines).toEqual([{ n: 1 }, { n: 3 }]);
+        expect(warnCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    test("skips oversized trailing line (no closing newline)", async () => {
+      const cap = 1024;
+      const huge = '{"data":"' + "y".repeat(cap * 3) + '"}';
+      const path = await writeTempFile("oversized-tail.jsonl", ['{"n":1}', huge].join("\n"));
+
+      const originalWarn = console.warn;
+      let warnCount = 0;
+      console.warn = () => {
+        warnCount++;
+      };
+      try {
+        const lines: unknown[] = [];
+        for await (const line of streamSessionLines(path, cap)) {
+          lines.push(line);
+        }
+        expect(lines).toEqual([{ n: 1 }]);
+        expect(warnCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    test("bounds memory when oversized line has no newline in sight", async () => {
+      // Adversarial input: a single very long line with no newline. The
+      // in-progress buffer must be dropped, not grown to completion.
+      const cap = 1024;
+      const huge = "z".repeat(cap * 5);
+      const path = await writeTempFile("oversized-no-newline.jsonl", huge);
+
+      const originalWarn = console.warn;
+      let warnCount = 0;
+      console.warn = () => {
+        warnCount++;
+      };
+      try {
+        const lines: unknown[] = [];
+        for await (const line of streamSessionLines(path, cap)) {
+          lines.push(line);
+        }
+        expect(lines).toHaveLength(0);
+        expect(warnCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
   });
 
   describe("countLines", () => {

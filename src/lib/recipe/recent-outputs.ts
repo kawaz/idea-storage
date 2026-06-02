@@ -65,6 +65,22 @@ export async function listRecentOutputs(
 /**
  * Format recent outputs into a markdown block to prepend to a recipe prompt.
  * Empty string when list is empty.
+ *
+ * Security note: The number of past outputs fed back here is controlled by the
+ * caller (see `listRecentOutputs` `n`). A large `n` widens the surface for
+ * accidental secret amplification — every past output is re-injected into the
+ * next prompt, so a single missed secret can propagate forward indefinitely
+ * unless every consumer of past output also redacts.
+ *
+ * Defense layers:
+ *   1. Outputs are redacted at write time (`redactForPrompt` on save path).
+ *   2. This function re-redacts at injection time (`redactForPrompt` on each
+ *      `o.body`) as defense in depth — a missed pattern from an earlier
+ *      version of the redact pipeline would otherwise be re-amplified.
+ *
+ * However the redact pipeline catches known patterns only; novel formats slip
+ * through. Keep `n` small (typically 3-5) unless recipe outputs have been
+ * audited. Do not set `n` based on prompt-fitness alone.
  */
 export function formatInjectedRecent(outputs: RecentOutput[]): string {
   if (outputs.length === 0) return "";
