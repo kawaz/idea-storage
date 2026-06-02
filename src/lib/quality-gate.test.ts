@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { runQualityGate } from "./quality-gate.ts";
+import { judgeQuality } from "./quality-gate.ts";
 
-describe("runQualityGate", () => {
+describe("judgeQuality", () => {
   const baseInput = {
     output: "出力本文 (テスト)\n\nこれは中身のある記事です。",
     recipeName: "diary",
@@ -9,7 +9,7 @@ describe("runQualityGate", () => {
   };
 
   test("LLM が rejected を返したら kind='rejected' + reason", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => JSON.stringify({ kind: "rejected", reason: "テンプレ表現連発" }),
     });
@@ -19,7 +19,7 @@ describe("runQualityGate", () => {
   });
 
   test("LLM が accepted を返したら kind='accepted'", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => JSON.stringify({ kind: "accepted", reason: "新しい気づきあり" }),
     });
@@ -29,7 +29,7 @@ describe("runQualityGate", () => {
   });
 
   test("LLM throw 時は fallback=accepted (= 退避しない、保守的)", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => {
         throw new Error("api timeout");
@@ -40,7 +40,7 @@ describe("runQualityGate", () => {
   });
 
   test("JSON parse 失敗時は fallback=accepted", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => "ごめん JSON 出せませんでした",
     });
@@ -49,7 +49,7 @@ describe("runQualityGate", () => {
   });
 
   test("kind が不明値なら accepted にフォールバック (defensive)", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => JSON.stringify({ kind: "maybe", reason: "曖昧" }),
     });
@@ -59,7 +59,7 @@ describe("runQualityGate", () => {
 
   test("出力本文が prompt に含まれる + recipe 名も伝わる", async () => {
     let captured = "";
-    await runQualityGate({
+    await judgeQuality({
       ...baseInput,
       _runClaude: async (options) => {
         captured = options.prompt;
@@ -72,7 +72,7 @@ describe("runQualityGate", () => {
   });
 
   test("LLM が周囲に説明文を付けてきた場合は {...} を抽出する", async () => {
-    const verdict = await runQualityGate({
+    const verdict = await judgeQuality({
       ...baseInput,
       _runClaude: async () => '判定結果: {"kind":"rejected","reason":"過剰総括"}',
     });
@@ -83,7 +83,7 @@ describe("runQualityGate", () => {
   test("DR-0009 Phase 1 S2: output に含まれる secret は gate LLM への prompt で redact される", async () => {
     const ghToken = "ghp_" + "a".repeat(36);
     let captured = "";
-    await runQualityGate({
+    await judgeQuality({
       output: `生成テキスト token=${ghToken} さらに続く文章`,
       recipeName: "diary",
       guidelines: "GUIDELINES",

@@ -274,7 +274,33 @@ session-convert.ts (63 行) を define() ラッパー ~50 行に縮退、session
 
 **検証**: bun test (828 pass) / tsc clean / just check 全 pass
 
-### Step 3-h: run\* 命名再編 (runDispatcher → decideDispatch 等) (未着手)
+### Step 3-h: run\* 命名再編 ✓
+
+`run*` プレフィックスの意味多重化を解消、3 rename:
+
+| 旧名                            | 新名                     | 意図                                      |
+| ------------------------------- | ------------------------ | ----------------------------------------- |
+| `runDispatcher` (LLM ワーカー)  | `decideDispatch`         | dispatcher は「採否を決める」LLM 判断     |
+| `runQualityGate` (LLM ワーカー) | `judgeQuality`           | quality_gate は「品質を判定する」LLM 判断 |
+| `runDispatcherEntry` (driver)   | `processDispatcherEntry` | dispatcher 処理エントリ                   |
+
+`runProcess` / `runConvert` / `runEnqueue` (= driver) は **そのまま維持** (= driver
+は実際に「処理を実行する」ので run が合う、命名意図と一致)。
+
+**caller 更新箇所**:
+
+- decideDispatch: dispatcher.ts 定義 + driver/dispatcher-entry.ts caller + dispatcher.test.ts 13 occurrences
+- judgeQuality: quality-gate.ts 定義 + session-worker/index.ts caller + redact-pipeline.ts jsdoc + quality-gate.test.ts 10 occurrences
+- processDispatcherEntry: driver/dispatcher-entry.ts 定義 + driver/process-driver.ts caller + commands/session-process.ts re-export 行 + コメント
+
+**慎重に進めた点**: `runDispatcher` と `runDispatcherEntry` の文字列衝突 (= sed
+全置換だと `runDispatcherEntry` も `decideDispatchEntry` に書き換わってしまう)。
+exact-string Edit で 1 つずつ分離して rename。
+
+**検証**: `grep -rn 'runDispatcher\b\|runQualityGate\b\|runDispatcherEntry\b' src/` → 0 件。
+bun test (828 pass) / tsc clean / just check 全 pass。
+
+Phase 3 全 step (a〜h) 完了。次は Phase 4 (test 分割) と Phase 5 (lib/ subdir 化)。
 
 ### Phase 4: test 分割 (未着手)
 

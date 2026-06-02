@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runDispatcher } from "./dispatcher.ts";
+import { decideDispatch } from "./dispatcher.ts";
 import type { Recipe, SessionMeta } from "../types/index.ts";
 
 function makeRecipe(name: string, hint?: string): Recipe {
@@ -27,7 +27,7 @@ function makeMeta(overrides: Partial<SessionMeta> = {}): SessionMeta {
   };
 }
 
-describe("runDispatcher", () => {
+describe("decideDispatch", () => {
   const sessionId = "00000000-0000-4000-a000-000000000001";
   const baseRecipes = [
     makeRecipe("diary", "対話メイン、葛藤や葛藤の解消が含まれるセッション向け"),
@@ -36,7 +36,7 @@ describe("runDispatcher", () => {
   ];
 
   test("LLM が JSON 採用リストを返したら accepted/rejected を partition する", async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -59,7 +59,7 @@ describe("runDispatcher", () => {
   });
 
   test('空配列 {"recipes":[]} は "書かない判断" として全 recipe を rejected に', async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -73,7 +73,7 @@ describe("runDispatcher", () => {
   });
 
   test("存在しない recipe 名は無視され、知ってる名前だけ accepted に", async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -95,7 +95,7 @@ describe("runDispatcher", () => {
   });
 
   test("JSON parse 失敗時は全 recipe accepted の fallback を返す", async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -109,7 +109,7 @@ describe("runDispatcher", () => {
   });
 
   test("空文字列出力でも fallback が走る", async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -122,7 +122,7 @@ describe("runDispatcher", () => {
   });
 
   test("LLM が周囲に説明文を付けてきた場合は {...} を抽出して parse する", async () => {
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,
@@ -137,7 +137,7 @@ describe("runDispatcher", () => {
 
   test("LLM が throw したら caller (markFailed → retry) に伝播", async () => {
     await expect(
-      runDispatcher({
+      decideDispatch({
         sessionId,
         meta: makeMeta(),
         recipes: baseRecipes,
@@ -151,7 +151,7 @@ describe("runDispatcher", () => {
 
   test("recipe.hint がない場合は (no hint) としてプロンプトに含む", async () => {
     let capturedPrompt = "";
-    await runDispatcher({
+    await decideDispatch({
       sessionId,
       meta: makeMeta({ effectiveUserTurns: 5 }),
       recipes: [makeRecipe("hinted", "ある hint"), makeRecipe("no_hint")],
@@ -171,7 +171,7 @@ describe("runDispatcher", () => {
   test("DR-0009 Phase 1 S2: project に含まれる secret は dispatcher prompt で redact される", async () => {
     const ghToken = "ghp_" + "a".repeat(36);
     let capturedPrompt = "";
-    await runDispatcher({
+    await decideDispatch({
       sessionId,
       meta: makeMeta({ project: `/tmp/repo-${ghToken}` }),
       recipes: baseRecipes,
@@ -188,7 +188,7 @@ describe("runDispatcher", () => {
   test("DR-0009 Phase 1 S2: recipe.hint に含まれる secret も dispatcher prompt で redact される", async () => {
     const akia = "AKIAIOSFODNN7EXAMPLE";
     let capturedPrompt = "";
-    await runDispatcher({
+    await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: [makeRecipe("leaky", `普通の hint key=${akia}`)],
@@ -204,7 +204,7 @@ describe("runDispatcher", () => {
 
   test("DR-0009 Phase 1 S2: json parse 失敗時の raw_excerpt も redact される (history DB 永続化前)", async () => {
     const ghToken = "ghp_" + "a".repeat(36);
-    const decision = await runDispatcher({
+    const decision = await decideDispatch({
       sessionId,
       meta: makeMeta(),
       recipes: baseRecipes,

@@ -111,7 +111,7 @@ function parseVerdictOutput(raw: string): VerdictJson | null {
  * transient failures both fall back to `accepted` so the main output path
  * is not blocked by the gate's reliability.
  */
-export async function runQualityGate(input: QualityGateInput): Promise<QualityVerdict> {
+export async function judgeQuality(input: QualityGateInput): Promise<QualityVerdict> {
   const guidelines = input.guidelines ?? (await loadQualityGuidelines());
   // Defense in depth: even though processSession redacts the timeline before
   // generation, the LLM output itself can re-introduce secrets (verbatim

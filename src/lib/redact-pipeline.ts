@@ -54,7 +54,7 @@ export function redactForOutput(text: string): string {
 
 /**
  * Redact for LLM input (recent-outputs body inject, dispatcher raw_excerpt,
- * runQualityGate input). No length cap.
+ * judgeQuality input). No length cap.
  *
  * Today this is identical to redactForOutput. Kept as a separate function so
  * Phase 7 prompt-only filters (e.g. drop literal API key var names that

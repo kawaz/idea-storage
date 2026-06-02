@@ -8,7 +8,7 @@ import {
   markSkipped,
   recordDispatchDecision,
 } from "../queue.ts";
-import { runDispatcher } from "../dispatcher.ts";
+import { decideDispatch } from "../dispatcher.ts";
 import { log, logError } from "../logging.ts";
 import type { Recipe } from "../../types/index.ts";
 import type { ProcessResult, RunProcessOptions } from "./process-driver.ts";
@@ -19,7 +19,7 @@ import type { ProcessResult, RunProcessOptions } from "./process-driver.ts";
  * enqueueBatch / markSkipped, records the decision in history, and marks
  * the dispatcher entry itself done.
  */
-export async function runDispatcherEntry(args: {
+export async function processDispatcherEntry(args: {
   sessionId: string;
   key: string;
   sessionFile: string;
@@ -50,7 +50,7 @@ export async function runDispatcherEntry(args: {
 
   let decision;
   try {
-    decision = await runDispatcher({
+    decision = await decideDispatch({
       sessionId,
       meta,
       recipes: matched,

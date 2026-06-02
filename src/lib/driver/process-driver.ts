@@ -13,7 +13,7 @@ import {
 import { log } from "../logging.ts";
 import { findSessionFile } from "../session-finder.ts";
 import { processSession } from "../session-worker/index.ts";
-import { runDispatcherEntry } from "./dispatcher-entry.ts";
+import { processDispatcherEntry } from "./dispatcher-entry.ts";
 
 export type ProcessResult = "processed" | "failed" | "empty";
 
@@ -48,7 +48,7 @@ export async function runProcess(options: RunProcessOptions = {}): Promise<Proce
   // Phase 2: dispatcher entry is a recipe-less control row. Handle it before
   // any per-recipe lookup or processSession call.
   if (recipeName === DISPATCHER_RECIPE_NAME) {
-    return await runDispatcherEntry({ sessionId, key, sessionFile, recipes, options });
+    return await processDispatcherEntry({ sessionId, key, sessionFile, recipes, options });
   }
 
   const recipe = findRecipeByName(recipes, recipeName);

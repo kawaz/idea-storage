@@ -157,7 +157,7 @@ function parseDispatcherOutput(raw: string): DispatcherJsonOutput | null {
  * retry mechanism takes over. Structural failures (bad JSON) are *not*
  * thrown — they resolve to a fallback decision with all recipes accepted.
  */
-export async function runDispatcher(input: DispatcherInput): Promise<DispatcherDecision> {
+export async function decideDispatch(input: DispatcherInput): Promise<DispatcherDecision> {
   const template = input.promptTemplate ?? (await loadDispatcherPrompt());
   const fullPrompt = `${template.trim()}\n\n${buildDispatcherInputBlock(input)}\n`;
 

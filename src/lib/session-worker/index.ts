@@ -7,7 +7,7 @@ import {
   isValidCsaTimeline,
 } from "../csa.ts";
 import { type ClaudeRunner, runClaude, ClaudeTimeoutError } from "../claude-runner.ts";
-import { runQualityGate } from "../quality-gate.ts";
+import { judgeQuality } from "../quality-gate.ts";
 import { getClaudeMeta } from "../claude-meta.ts";
 import { listRecentOutputs, formatInjectedRecent } from "../recent-outputs.ts";
 import { splitTimeline } from "../chunker.ts";
@@ -64,7 +64,7 @@ export interface ProcessSessionInput {
   /**
    * Override runClaude for tests (DR-0009 Phase 3 step 3-e). When set, this
    * replaces runClaude across all three LLM sinks invoked by processSession:
-   * the single-pass call, processChunked, and runQualityGate. Production code
+   * the single-pass call, processChunked, and judgeQuality. Production code
    * leaves this undefined; tests use it instead of `mock.module()` to avoid
    * the dynamic-import mock leak documented in
    * `docs/journal/2026-05-31-mock-removal-real-cause.md`.
@@ -269,7 +269,7 @@ ${timelineText}`;
   // DR-0008 §8: quality gate before persisting. Gate is conservative — any
   // LLM unreachability or parse failure falls back to accepted (don't block
   // the main path on the gate's own reliability).
-  const verdict = await runQualityGate({
+  const verdict = await judgeQuality({
     output,
     recipeName,
     timeoutMs: taskTimeoutMs,

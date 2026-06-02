@@ -6,7 +6,7 @@ import { runProcess } from "../lib/driver/process-driver.ts";
 // The library responsibilities (prompt building, fork trimming, chunked
 // runner, frontmatter assembly, persistence, processSession orchestrator)
 // moved to src/lib/session-worker/ in DR-0009 Phase 3 step 3-c, and the
-// driver entry points (runProcess / runDispatcherEntry) moved to
+// driver entry points (runProcess / processDispatcherEntry) moved to
 // src/lib/driver/ in step 3-d. We keep re-exports here so existing
 // imports (tests + session-run) don't break until step 3-g fully retires
 // this command file.
@@ -18,7 +18,7 @@ export { processChunked } from "../lib/session-worker/chunked-runner.ts";
 
 export { runProcess } from "../lib/driver/process-driver.ts";
 export type { ProcessResult, RunProcessOptions } from "../lib/driver/process-driver.ts";
-export { runDispatcherEntry } from "../lib/driver/dispatcher-entry.ts";
+export { processDispatcherEntry } from "../lib/driver/dispatcher-entry.ts";
 
 const sessionProcess = define({
   name: "process",
