@@ -347,19 +347,93 @@ Phase 3 全 step (a〜h) 完了。次は Phase 4 (test 分割) と Phase 5 (lib/
 
 **検証**: bun test (828 pass) / bunx tsc --noEmit (clean) / just check (全 pass)
 
-### Phase 5: lib/ 副ディレクトリ化 (未着手)
+### Phase 5: lib/ 副ディレクトリ化 ✓
 
-- `lib/queue/` / `lib/rate-limit/` / `lib/csa/` / `lib/claude/` / `lib/recipe/` /
-  `lib/article/` / `lib/service/` / `lib/session-worker/` (Phase 3 で新設済) /
-  `lib/driver/` (Phase 3 で新設済)
-- import 全件追従
+lib/ 配下のフラット 70+ ファイルをドメイン別 subdir に再編。
 
-### Phase 5: lib/ 副ディレクトリ化 (未着手)
+**新規 subdir** (7 個):
 
-- `lib/queue/` / `lib/rate-limit/` / `lib/csa/` / `lib/claude/` / `lib/recipe/` /
-  `lib/article/` / `lib/service/` / `lib/session-worker/` (Phase 3 で新設済) /
-  `lib/driver/` (Phase 3 で新設済)
-- import 全件追従
+| subdir            | ファイル数 (test 含む)                                                           |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `lib/queue/`      | 9 (queue + queue-internal + queue-schema + queue-state + migrate-queue + 4 test) |
+| `lib/rate-limit/` | 6 (judge + parser + store + 3 test)                                              |
+| `lib/csa/`        | 6 (csa + conversation + session-jsonl + session-finder + 2 test)                 |
+| `lib/claude/`     | 3 (claude-runner + claude-meta + 1 test)                                         |
+| `lib/recipe/`     | 8 (recipe + dispatcher + quality-gate + recent-outputs + 4 test)                 |
+| `lib/article/`    | 2 (article-format + test)                                                        |
+| `lib/service/`    | 3 (service + plist + plist.test)                                                 |
+
+session-worker/ / driver/ は Phase 3 新設済、touch せず。
+
+**lib/ 直下に残った 22 ファイル** (= 真の横断 primitive):
+errors / logging / paths / config / constants / help / validate / format / chunker /
+frontmatter / redact / redact-pipeline / spawn-env / spawn-timeout / timeout-error /
+dir-exists / lockfile / test-fixtures + 各 .test.ts
+
+**import 更新 100 箇所 (2-pass)**:
+
+- pass 1 (67 箇所 / 26 files): commands / driver / session-worker / lib 直下 test
+  から `from "../lib/X.ts"` → `from "../lib/<subdir>/X.ts"`
+- pass 2 (33 箇所 / 17 files): 新 subdir 内ファイル間の相互参照 + `../types/index.ts`
+  の階層調整
+
+**設計ハマり所**:
+
+- `service.ts` の `import.meta.dir` 階層ずれ (= advisor 事前警告): `src/lib/service.ts`
+  → `src/lib/service/service.ts` で `../..` → `../../..` に。tsc / test では発覚しない
+  runtime-only な hazard。`bun -e` で実体 path resolve 検証、CLAUDE.md も同時更新
+- 2-pass 必要: 外部 caller 更新と内部相互参照は性質が違い、`path.relative()` で
+  機械的に正解を出す script を書いた
+
+**検証**: bun test (828 pass) / tsc clean / bun test --isolate (828 pass) /
+oxlint + oxfmt clean / `just run --help` OK / `getProgramPath()` runtime OK
+
+## 完了サマリ (Phase 3+4+5 同 PR チェーン全 9 commit)
+
+| Phase | Step                               | commit    |
+| ----- | ---------------------------------- | --------- |
+| 3     | 3-a (csa 集約)                     | `16e7470` |
+| 3     | 3-b (recipe 統合)                  | `e15d8d3` |
+| 3     | 3-c (session-worker 分解)          | `57efdcc` |
+| 3     | 3-d (driver 分離)                  | `1c2ace2` |
+| 3     | 3-e+f (DI 統一 + mock.module 撤去) | `c957059` |
+| 3     | 3-g (session-convert 縮退)         | `cb30ba0` |
+| 3     | 3-h (run\* 命名再編)               | `8066624` |
+| 4     | test 分割 (5 + 3 ファイル)         | `34360af` |
+| 5     | lib/ subdir 化 (7 subdir)          | `52681c9` |
+
+**Phase 3 達成**:
+
+- `commands/session-process.ts` 850 → 31 行 (-96%)
+- `lib/session-worker/` 7 ファイル + `lib/driver/` 4 ファイル新設
+- LLM DI を `ClaudeRunner` 統一 (= dispatcher / quality-gate / chunked / single-pass)
+- `mock.module("../lib/claude-runner.ts")` リポ全体で 0 件
+- run\* 命名再編 (decideDispatch / judgeQuality / processDispatcherEntry)
+
+**Phase 4 達成**:
+
+- session-process.test.ts 1399 → 208 行 (5 分割)
+- queue.test.ts 1349 → 928 行 (3 分割)
+- writeSessionFixture 拡張で createSessionFile 重複解消
+
+**Phase 5 達成**:
+
+- lib/ 直下 70+ → 22 (= 横断のみ)
+- 新規 7 subdir でドメイン境界を明示
+- import 100 箇所追従
+
+全 commit で `bun test` 828 pass / tsc clean / just check 全 pass を維持。
+CI 連続 green。
+
+## 残課題 (= DR-0009 のうち未着手)
+
+- Phase 6 (DR 整合): kawaz 判断必須 (DR-0008 §6 amend vs 拡張)
+- Phase 7 残り: 型 colocate (`types/index.ts` 廃止) / `QueueDirs` 廃止 /
+  `validate` 命名衝突解消 / `errors.ts:exitWithError` 廃止 /
+  config.ts dynamic import 制限 / CI SHA pin / recent-outputs N 拡大警告 /
+  session-jsonl 1 行 size 上限ガード / service-log lines 数値型バリデーション
+- Phase 7 部分着手済: redact pattern 拡充 (Slack / Stripe / OpenAI 新 / PAT /
+  loose env)、CSA env allowlist (= Phase 1 補強で前倒し済)
 
 ## 関連
 
