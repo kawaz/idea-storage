@@ -288,6 +288,28 @@ more debug
       }
     });
 
+    test("tail 境界で secret が分断されても断片が漏れない (redact してから切る)", async () => {
+      // tail を先に切ると secret がパターン境界で分断され、断片 (token 後半)
+      // が redact パターンにマッチせず生き残る。全文 redact → tail の順を保証。
+      const ghToken = "ghp_" + "b".repeat(36);
+      // tail(-1000) の境界が token の途中に来る配置:
+      // 全長 1522、境界は位置 522 = token (位置 501-540) の 22 文字目。
+      const polluted = "x".repeat(500) + " " + ghToken + " " + "y".repeat(980);
+      try {
+        await runClaude({
+          prompt: "unused",
+          captureUsage: true,
+          _spawnOverride: () => {
+            return Bun.spawn(["printf", "%s", polluted], { stdout: "pipe", stderr: "pipe" });
+          },
+        });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        const msg = (err as Error).message;
+        expect(msg).not.toContain("b".repeat(20));
+      }
+    });
+
     test("throws instead of returning raw stdout when no result JSON is found", async () => {
       // ANTHROPIC_LOG=debug の生ログだけで result JSON が無い場合、raw stdout を
       // 本文として返すと debug ログがそのまま記事として保存されてしまう

@@ -2,7 +2,7 @@ import {
   parseRateLimitHeaders,
   type RateLimitObservation,
 } from "../rate-limit/rate-limit-parser.ts";
-import { redactForLog } from "../redact-pipeline.ts";
+import { redactForOutput } from "../redact-pipeline.ts";
 import { BaseTimeoutError } from "../timeout-error.ts";
 
 export class ClaudeTimeoutError extends BaseTimeoutError {
@@ -128,6 +128,16 @@ export function extractResultFromJsonOutput(stdout: string): string | null {
   return null;
 }
 
+/**
+ * Redact the whole text first, then take the last `maxLen` characters.
+ * Truncating before redaction would split secrets across the cut and let the
+ * surviving fragment slip past the redaction patterns.
+ */
+function redactedTail(text: string, maxLen: number): string {
+  const redacted = redactForOutput(text);
+  return redacted.length > maxLen ? "..." + redacted.slice(-maxLen) : redacted;
+}
+
 export async function runClaude(options: ClaudeRunOptions): Promise<string> {
   // Check if already aborted before spawning
   if (options.signal?.aborted) {
@@ -207,10 +217,10 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
       // result が取れないのに raw stdout を返すと debug ログがそのまま記事
       // として保存される (silent corruption)。throw して failed/retry に乗せる。
       // メッセージは markFailed の reason として queue.db / log に永続化される
-      // ため、stdout 断片は redact してから埋め込む。
-      const tail = stdout.length > 1000 ? "..." + stdout.slice(-1000) : stdout;
+      // ため stdout 断片は redact して埋め込む。先に tail を切ると secret が
+      // パターン境界で分断され redact をすり抜けるので、全文 redact → tail の順。
       throw new Error(
-        `claude --output-format json: no result JSON found in stdout. tail: ${redactForLog(tail, { maxLength: 1000 })}`,
+        `claude --output-format json: no result JSON found in stdout. tail: ${redactedTail(stdout, 1000)}`,
       );
     }
     return result;
@@ -223,12 +233,12 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
    */
   function buildExitError(exitCode: number | null, stdout: string, stderr: string): Error {
     // メッセージは markFailed の reason として queue.db / log に永続化される
-    // ため、stdout/stderr 断片は redact してから埋め込む。
-    const tail = stdout.length > 2000 ? "..." + stdout.slice(-2000) : stdout;
-    const stderrMsg = stderr.trim();
+    // ため、stdout/stderr 断片は redact してから埋め込む (切断は redact 後)。
+    const tail = redactedTail(stdout, 2000);
+    const stderrMsg = redactedTail(stderr.trim(), 2000);
     const parts: string[] = [`claude exited with code ${exitCode}`];
-    if (stderrMsg) parts.push(`stderr: ${redactForLog(stderrMsg, { maxLength: 2000 })}`);
-    if (tail.trim()) parts.push(`stdout tail: ${redactForLog(tail, { maxLength: 2000 })}`);
+    if (stderrMsg) parts.push(`stderr: ${stderrMsg}`);
+    if (tail.trim()) parts.push(`stdout tail: ${tail}`);
     return new Error(parts.join(" | "));
   }
 
