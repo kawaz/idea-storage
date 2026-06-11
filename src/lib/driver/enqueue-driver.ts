@@ -11,6 +11,7 @@ import {
   markSkipped,
 } from "../queue/queue.ts";
 import { CliError } from "../errors.ts";
+import { MAX_CONSECUTIVE_FAILURES } from "../constants.ts";
 import { dirExists } from "../dir-exists.ts";
 import { log, logError } from "../logging.ts";
 import { UUID_JSONL_PATTERN } from "../csa/session-finder.ts";
@@ -37,6 +38,8 @@ export async function runEnqueue(): Promise<void> {
   // Load queue state once upfront (readdir x3 instead of per-entry file checks)
   const state = await loadQueueState();
 
+  let consecutiveMetaFailures = 0;
+
   const pending: Array<{ sessionId: string; recipeName: string; lineCount: number }> = [];
   // DR-0008 §5: effectiveUserTurns=0 のセッションは全 recipe を skipped(no_effective_turn) で
   // 記録する。後で session に追記されて effectiveUserTurns >= 1 になったら、queue.ts の
@@ -56,13 +59,23 @@ export async function runEnqueue(): Promise<void> {
       const filePath = join(projectsDir, relativePath);
       // 1 session の meta 取得失敗 (CSA spawn 失敗 / Session not found 等) で
       // 走査全体を道連れにしない。失敗分は log に残して次の file へ。
+      // ただし連続失敗は CSA scope と claudeDirs の不整合等の系統的失敗なので、
+      // 黙って全 session を skip して成功と報告せず bail して fail させる。
       let meta;
       try {
         meta = await getSessionMeta(filePath);
       } catch (err) {
         logError({ msg: "session_meta_failed", filePath, error: String(err) });
+        consecutiveMetaFailures++;
+        if (consecutiveMetaFailures >= MAX_CONSECUTIVE_FAILURES) {
+          throw new CliError(
+            `getSessionMeta failed ${consecutiveMetaFailures} times in a row (last: ${filePath}). ` +
+              `Likely a systemic failure (e.g. claudeDirs outside CSA's discovery scope): ${String(err)}`,
+          );
+        }
         continue;
       }
+      consecutiveMetaFailures = 0;
 
       // Age check (skip only too-young sessions; no upper limit)
       if (meta.ageSec < minAgeSec) continue;

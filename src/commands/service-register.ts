@@ -24,6 +24,13 @@ const register = define({
       exitTimeOut: 3600,
       environmentVariables: {
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        // launchd 環境には CLAUDE_CONFIG_DIR が無く、worker が spawn する
+        // claude CLI が ~/.claude を作ろうとして失敗する環境がある
+        // (kawaz 環境では ~/.claude は意図的に regular file)。register 実行時の
+        // 値を焼き込んで、サービスでも同じ設定面を使わせる。
+        ...(process.env.CLAUDE_CONFIG_DIR
+          ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }
+          : {}),
       },
     });
 

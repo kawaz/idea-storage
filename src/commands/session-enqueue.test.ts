@@ -337,6 +337,51 @@ describe("session-enqueue", () => {
     });
   });
 
+  test("meta 取得が連続で失敗する場合は系統的失敗として bail し enqueue を fail させる", async () => {
+    // claudeDirs を CSA の探索 scope (= HOME / CLAUDE_CONFIG_DIR 配下) の外に
+    // 向けると全 session が "Session not found" になる。これは設定不整合で、
+    // 黙って全 skip して成功と報告してはいけない (連続失敗 bail で fail)。
+    const outside = await mkdtemp(join(tmpdir(), "enqueue-outside-"));
+    try {
+      for (let i = 0; i < 5; i++) {
+        await writeSessionFixture(outside, {
+          sessionId: `cccccccc-cccc-4ccc-9ccc-${String(i).repeat(12)}`,
+          projectSlug: `p${i}`,
+          ageMs: 3 * 60 * 60 * 1000,
+        });
+      }
+      await expect(runEnqueueIsolated({ claudeDirs: [outside] })).rejects.toThrow(
+        /failed 5 times in a row/,
+      );
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("散発的な meta 取得失敗は log して続行し、残りのセッションを enqueue する", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "enqueue-outside-"));
+    try {
+      // scope 外 1 件 (失敗) + 正常 1 件: 失敗は連続せず bail に達しない。
+      await writeSessionFixture(outside, {
+        sessionId: "dddddddd-dddd-4ddd-9ddd-dddddddddddd",
+        ageMs: 3 * 60 * 60 * 1000,
+      });
+      const goodSid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+      await createSessionFile(join(claudeDir, "projects"), goodSid);
+
+      await runEnqueueIsolated({ claudeDirs: [outside, dotClaude] });
+
+      await inspect(async () => {
+        const good = await readEntries(goodSid);
+        expect(good).toHaveLength(1);
+        expect(good[0]!.recipeName).toBe("dispatcher");
+        expect(good[0]!.status).toBe("queued");
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   test("effectiveUserTurns=0 セッションは全 matchesRecipe について markSkipped(no_effective_turn) を記録する", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
