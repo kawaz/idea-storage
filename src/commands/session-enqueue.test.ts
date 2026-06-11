@@ -358,6 +358,36 @@ describe("session-enqueue", () => {
     }
   });
 
+  test("壊れた claudeDir で bail しても他の正常な claudeDir は enqueue され、最後に fail を報告する", async () => {
+    // 先頭 root が系統的失敗 (5 連続) でも、bail はその root の走査中断に留め、
+    // 後続 root の enqueue は完了させる。その上で全体としては fail を報告する。
+    const outside = await mkdtemp(join(tmpdir(), "enqueue-outside-"));
+    try {
+      for (let i = 0; i < 5; i++) {
+        await writeSessionFixture(outside, {
+          sessionId: `cccccccc-cccc-4ccc-9ccc-${String(i).repeat(12)}`,
+          projectSlug: `p${i}`,
+          ageMs: 3 * 60 * 60 * 1000,
+        });
+      }
+      const goodSid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+      await createSessionFile(join(claudeDir, "projects"), goodSid);
+
+      await expect(runEnqueueIsolated({ claudeDirs: [outside, dotClaude] })).rejects.toThrow(
+        /failed 5 times in a row/,
+      );
+
+      await inspect(async () => {
+        const good = await readEntries(goodSid);
+        expect(good).toHaveLength(1);
+        expect(good[0]!.recipeName).toBe("dispatcher");
+        expect(good[0]!.status).toBe("queued");
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   test("散発的な meta 取得失敗は log して続行し、残りのセッションを enqueue する", async () => {
     const outside = await mkdtemp(join(tmpdir(), "enqueue-outside-"));
     try {

@@ -38,7 +38,10 @@ export async function runEnqueue(): Promise<void> {
   // Load queue state once upfront (readdir x3 instead of per-entry file checks)
   const state = await loadQueueState();
 
-  let consecutiveMetaFailures = 0;
+  // 系統的な meta 取得失敗 (CSA scope と claudeDirs の不整合等) で bail した
+  // root。bail はその root の走査中断に留め、他 root の enqueue は完了させた
+  // 上で最後に fail として報告する (黙って成功と報告しない)。
+  const bailedDirs: Array<{ claudeDir: string; lastError: string }> = [];
 
   const pending: Array<{ sessionId: string; recipeName: string; lineCount: number }> = [];
   // DR-0008 §5: effectiveUserTurns=0 のセッションは全 recipe を skipped(no_effective_turn) で
@@ -52,6 +55,8 @@ export async function runEnqueue(): Promise<void> {
 
     if (!(await dirExists(projectsDir))) continue;
 
+    let consecutiveMetaFailures = 0;
+
     for await (const relativePath of glob.scan(projectsDir)) {
       const filename = relativePath.split("/").pop() ?? "";
       if (!UUID_JSONL_PATTERN.test(filename)) continue;
@@ -59,8 +64,8 @@ export async function runEnqueue(): Promise<void> {
       const filePath = join(projectsDir, relativePath);
       // 1 session の meta 取得失敗 (CSA spawn 失敗 / Session not found 等) で
       // 走査全体を道連れにしない。失敗分は log に残して次の file へ。
-      // ただし連続失敗は CSA scope と claudeDirs の不整合等の系統的失敗なので、
-      // 黙って全 session を skip して成功と報告せず bail して fail させる。
+      // ただし root 内の連続失敗は系統的失敗なので、その root の走査を打ち切る
+      // (他の root は影響を受けず処理を続ける)。
       let meta;
       try {
         meta = await getSessionMeta(filePath);
@@ -68,10 +73,9 @@ export async function runEnqueue(): Promise<void> {
         logError({ msg: "session_meta_failed", filePath, error: String(err) });
         consecutiveMetaFailures++;
         if (consecutiveMetaFailures >= MAX_CONSECUTIVE_FAILURES) {
-          throw new CliError(
-            `getSessionMeta failed ${consecutiveMetaFailures} times in a row (last: ${filePath}). ` +
-              `Likely a systemic failure (e.g. claudeDirs outside CSA's discovery scope): ${String(err)}`,
-          );
+          logError({ msg: "claude_dir_bailed", claudeDir, consecutiveMetaFailures });
+          bailedDirs.push({ claudeDir, lastError: String(err) });
+          break;
         }
         continue;
       }
@@ -141,5 +145,15 @@ export async function runEnqueue(): Promise<void> {
     msg: "enqueue_done",
     count: pending.length,
     skipped_no_effective: noEffectiveSkips.length,
+    bailed_dirs: bailedDirs.length,
   });
+
+  // bail した root があれば、他 root の enqueue を完了させた上で fail を報告する。
+  if (bailedDirs.length > 0) {
+    const detail = bailedDirs.map((b) => `${b.claudeDir} (last error: ${b.lastError})`).join("; ");
+    throw new CliError(
+      `getSessionMeta failed ${MAX_CONSECUTIVE_FAILURES} times in a row in: ${detail}. ` +
+        `Likely a systemic failure (e.g. claudeDirs outside CSA's discovery scope).`,
+    );
+  }
 }
