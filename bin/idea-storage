@@ -7,7 +7,10 @@
 # zsh プラグイン (idea-storage.plugin.zsh) から alias で指す形でも、
 # launchd plist から直接呼ぶ形でも、自分のパスから src を解決する。
 
-__here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# symlink 経由 (例: ~/.local/bin/idea-storage → ここ) でも実体の場所から
+# src を解決できるよう、自分自身のパスの symlink を解決してから dirname を取る。
+__self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+__here="$(cd "$(dirname "$__self")" && pwd)"
 __src="${__here}/../src/index.ts"
 
 if command -v bun >/dev/null 2>&1; then
