@@ -245,6 +245,49 @@ more debug
   });
 
   describe("runClaude captureUsage: result extraction failure", () => {
+    test("no-result throw のメッセージは redact される (debug stdout の secret が漏れない)", async () => {
+      // throw メッセージは markFailed の reason として queue.db / log に永続化
+      // されるため、ANTHROPIC_LOG=debug の stdout 断片を生で含めてはいけない。
+      const ghToken = "ghp_" + "a".repeat(36);
+      const polluted = `[log_1] sending request { headers: { authorization: "${ghToken}" } }`;
+      try {
+        await runClaude({
+          prompt: "unused",
+          captureUsage: true,
+          _spawnOverride: () => {
+            return Bun.spawn(["printf", "%s", polluted], { stdout: "pipe", stderr: "pipe" });
+          },
+        });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        const msg = (err as Error).message;
+        expect(msg).not.toContain(ghToken);
+        expect(msg).toContain("[REDACTED:GITHUB_TOKEN]");
+      }
+    });
+
+    test("非ゼロ exit のエラーメッセージも redact される (stdout/stderr の secret が漏れない)", async () => {
+      const ghToken = "ghp_" + "b".repeat(36);
+      try {
+        await runClaude({
+          prompt: "unused",
+          captureUsage: true,
+          _spawnOverride: () => {
+            return Bun.spawn(["sh", "-c", `printf '%s' 'token=${ghToken}'; exit 1`], {
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+          },
+        });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        const msg = (err as Error).message;
+        expect(msg).toContain("exited with code 1");
+        expect(msg).not.toContain(ghToken);
+        expect(msg).toContain("[REDACTED:GITHUB_TOKEN]");
+      }
+    });
+
     test("throws instead of returning raw stdout when no result JSON is found", async () => {
       // ANTHROPIC_LOG=debug の生ログだけで result JSON が無い場合、raw stdout を
       // 本文として返すと debug ログがそのまま記事として保存されてしまう

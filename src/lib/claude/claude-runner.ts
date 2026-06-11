@@ -2,6 +2,7 @@ import {
   parseRateLimitHeaders,
   type RateLimitObservation,
 } from "../rate-limit/rate-limit-parser.ts";
+import { redactForLog } from "../redact-pipeline.ts";
 import { BaseTimeoutError } from "../timeout-error.ts";
 
 export class ClaudeTimeoutError extends BaseTimeoutError {
@@ -205,8 +206,12 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
       // captureUsage モードの stdout は ANTHROPIC_LOG=debug で汚染されている。
       // result が取れないのに raw stdout を返すと debug ログがそのまま記事
       // として保存される (silent corruption)。throw して failed/retry に乗せる。
+      // メッセージは markFailed の reason として queue.db / log に永続化される
+      // ため、stdout 断片は redact してから埋め込む。
       const tail = stdout.length > 1000 ? "..." + stdout.slice(-1000) : stdout;
-      throw new Error(`claude --output-format json: no result JSON found in stdout. tail: ${tail}`);
+      throw new Error(
+        `claude --output-format json: no result JSON found in stdout. tail: ${redactForLog(tail, { maxLength: 1000 })}`,
+      );
     }
     return result;
   }
@@ -217,11 +222,13 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
    * ANTHROPIC_LOG=debug mode may have written structured error JSON instead).
    */
   function buildExitError(exitCode: number | null, stdout: string, stderr: string): Error {
+    // メッセージは markFailed の reason として queue.db / log に永続化される
+    // ため、stdout/stderr 断片は redact してから埋め込む。
     const tail = stdout.length > 2000 ? "..." + stdout.slice(-2000) : stdout;
     const stderrMsg = stderr.trim();
     const parts: string[] = [`claude exited with code ${exitCode}`];
-    if (stderrMsg) parts.push(`stderr: ${stderrMsg}`);
-    if (tail.trim()) parts.push(`stdout tail: ${tail}`);
+    if (stderrMsg) parts.push(`stderr: ${redactForLog(stderrMsg, { maxLength: 2000 })}`);
+    if (tail.trim()) parts.push(`stdout tail: ${redactForLog(tail, { maxLength: 2000 })}`);
     return new Error(parts.join(" | "));
   }
 
