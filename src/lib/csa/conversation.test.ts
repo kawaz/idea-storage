@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extractConversation, formatConversationToText } from "./conversation.ts";
 import { getSessionMeta, getSessionMetaBatch } from "./csa.ts";
@@ -488,16 +488,42 @@ describe("conversation", () => {
       });
     });
 
-    test("getSessionMeta throws when the session id has no JSONL on disk", async () => {
+    test("getSessionMeta throws when the session id is outside CSA's discovery scope", async () => {
       await withFixture(async (base) => {
         // Write a stub file in our normal tmpDir so the path exists on disk,
-        // but never create a matching JSONL inside the CSA base. CSA will
-        // return no record and the function must throw.
+        // but never create a matching JSONL inside the CSA base. CSA itself
+        // exits 1 ("Session not found") — this is an environment mismatch
+        // (claudeDirs vs CSA scope), so it must surface as a throw.
         const sid = "d4e5f6a7-b8c9-0123-defa-234567890123";
         const path = join(tmpDir, `${sid}.jsonl`);
         await Bun.write(path, "stub");
 
         await expect(withIsolatedClaudeEnv(base, () => getSessionMeta(path))).rejects.toThrow();
+      });
+    });
+
+    test("getSessionMeta returns a synthetic empty meta for a snapshot-only JSONL (no conversation records)", async () => {
+      await withFixture(async (base) => {
+        // file-history-snapshot 行のみの jsonl: 非空だが CSA は session として
+        // 認識せず record を emit しない。throw せず skip 経路 (lineCount 0)
+        // に乗ることを保証する。
+        const sid = "c3d4e5f6-a7b8-9012-cdef-345678901234";
+        const projDir = join(base, "projects", "snapshot-only");
+        await mkdir(projDir, { recursive: true });
+        const path = join(projDir, `${sid}.jsonl`);
+        const line = JSON.stringify({
+          type: "file-history-snapshot",
+          messageId: "m1",
+          snapshot: { messageId: "m1", trackedFileBackups: {} },
+        });
+        await Bun.write(path, line + "\n");
+
+        const meta = await withIsolatedClaudeEnv(base, () => getSessionMeta(path));
+        expect(meta.id).toBe(sid);
+        expect(meta.filePath).toBe(path);
+        expect(meta.lineCount).toBe(0);
+        expect(meta.userTurns).toBe(0);
+        expect(meta.effectiveUserTurns).toBe(0);
       });
     });
 
@@ -542,22 +568,29 @@ describe("conversation", () => {
       expect(map.size).toBe(0);
     });
 
-    test("getSessionMetaBatch throws when a requested session is missing from CSA output", async () => {
+    test("getSessionMetaBatch fills a synthetic empty meta for in-scope sessions CSA emits no record for", async () => {
       await withFixture(async (base) => {
         const sidA = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-        // sidB never written into the fixture → CSA returns no record for it.
+        // sidB は探索範囲内だが snapshot 行のみ → CSA exit 0 で record なし。
         const sidB = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 
         const pathA = await writeSessionFixture(base, {
           sessionId: sidA,
           userTurns: 1,
         });
-        const pathB = join(tmpDir, `${sidB}.jsonl`);
-        await Bun.write(pathB, "stub");
+        const projDir = join(base, "projects", "snapshot-only-batch");
+        await mkdir(projDir, { recursive: true });
+        const pathB = join(projDir, `${sidB}.jsonl`);
+        await Bun.write(
+          pathB,
+          JSON.stringify({ type: "file-history-snapshot", messageId: "m1", snapshot: {} }) + "\n",
+        );
 
-        await expect(
-          withIsolatedClaudeEnv(base, () => getSessionMetaBatch([pathA, pathB])),
-        ).rejects.toThrow();
+        const map = await withIsolatedClaudeEnv(base, () => getSessionMetaBatch([pathA, pathB]));
+        expect(map.size).toBe(2);
+        expect(map.get(sidA)!.userTurns).toBe(1);
+        expect(map.get(sidB)!.lineCount).toBe(0);
+        expect(map.get(sidB)!.effectiveUserTurns).toBe(0);
       });
     });
   });

@@ -19,7 +19,7 @@ import { stat } from "node:fs/promises";
 import { buildCsaEnv } from "../spawn-env.ts";
 import { spawnWithTimeout, SpawnTimeoutError } from "../spawn-timeout.ts";
 import { CSA_TIMEOUT_MS } from "../constants.ts";
-import { logError } from "../logging.ts";
+import { log, logError } from "../logging.ts";
 
 export interface SessionMeta {
   /** UUID */
@@ -169,27 +169,27 @@ export async function getSessionMetaBatch(filePaths: string[]): Promise<Map<stri
     const fileStat = await stat(filePath);
     const ageSec = Math.max(0, Math.floor((Date.now() - fileStat.mtimeMs) / 1000));
     if (!rec) {
-      // Design rationale: CSA は空 file (0 byte) に対して何も emit しない (header もない
-      // ため "session" として認識されない)。一方 idea-storage の pipeline は
-      // 「empty session = lineCount 0 として markSkipped」と扱う前提で processSession の
-      // 早期 return を組んでいる (session-process.ts の `meta.lineCount === 0` 分岐参照)。
-      // CSA 移行前は jsonl 直読で lineCount=0 を返していたが、CSA 委譲後はその経路が
-      // 失われた。空 file は throw せず合成 meta を返すことで旧挙動を保つ。
-      // 非空なのに CSA が record を返さないケースは真の不整合なので従来通り throw する。
-      if (fileStat.size === 0) {
-        result.set(id, {
-          id,
-          filePath,
-          project: "",
-          lineCount: 0,
-          ageSec,
-          startTime: new Date(0),
-          userTurns: 0,
-          effectiveUserTurns: 0,
-        });
-        continue;
-      }
-      throw new Error(`claude-session-analysis returned no record for session ${id}`);
+      // Design rationale: CSA は実会話 record を含まない file を session として
+      // emit しない (0 byte だけでなく、file-history-snapshot 等のメタ行のみの
+      // 非空 jsonl も同様)。一方 idea-storage の pipeline は「実会話なし =
+      // lineCount 0 として skip」と扱う前提で早期 return を組んでいる
+      // (session-worker の `meta.lineCount === 0` 分岐参照)。ここで throw すると
+      // 呼び出し元の走査全体が 1 file で停止するため、合成 meta で skip 経路に
+      // 乗せる。後で実会話が追記されれば lineCount が増えて自動で復帰する。
+      // なお id 自体が CSA の探索範囲に無い場合は runCsaSessions が exit 1 で
+      // throw する (= 環境不整合は隠さない)。
+      log({ msg: "csa_no_record_fallback", sessionId: id });
+      result.set(id, {
+        id,
+        filePath,
+        project: "",
+        lineCount: 0,
+        ageSec,
+        startTime: new Date(0),
+        userTurns: 0,
+        effectiveUserTurns: 0,
+      });
+      continue;
     }
     result.set(id, toSessionMeta(filePath, rec, ageSec));
   }

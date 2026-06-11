@@ -12,7 +12,7 @@ import {
 } from "../queue/queue.ts";
 import { CliError } from "../errors.ts";
 import { dirExists } from "../dir-exists.ts";
-import { log } from "../logging.ts";
+import { log, logError } from "../logging.ts";
 import { UUID_JSONL_PATTERN } from "../csa/session-finder.ts";
 
 export async function runEnqueue(): Promise<void> {
@@ -54,7 +54,15 @@ export async function runEnqueue(): Promise<void> {
       if (!UUID_JSONL_PATTERN.test(filename)) continue;
 
       const filePath = join(projectsDir, relativePath);
-      const meta = await getSessionMeta(filePath);
+      // 1 session の meta 取得失敗 (CSA spawn 失敗 / Session not found 等) で
+      // 走査全体を道連れにしない。失敗分は log に残して次の file へ。
+      let meta;
+      try {
+        meta = await getSessionMeta(filePath);
+      } catch (err) {
+        logError({ msg: "session_meta_failed", filePath, error: String(err) });
+        continue;
+      }
 
       // Age check (skip only too-young sessions; no upper limit)
       if (meta.ageSec < minAgeSec) continue;

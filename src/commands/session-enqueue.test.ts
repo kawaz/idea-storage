@@ -308,6 +308,35 @@ describe("session-enqueue", () => {
     });
   });
 
+  test("snapshot-only jsonl (実会話なし・非空) が混ざっていても enqueue は完走し他セッションを処理する", async () => {
+    const projectsDir = join(claudeDir, "projects");
+    const goodSid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const snapSid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    await createSessionFile(projectsDir, goodSid);
+
+    // file-history-snapshot 行のみの jsonl: CSA は session として認識しない。
+    // glob 順で good より先に来るよう project dir 名を昇順先頭にする。
+    const snapDir = join(projectsDir, "a-snapshot-only");
+    await mkdir(snapDir, { recursive: true });
+    await Bun.write(
+      join(snapDir, `${snapSid}.jsonl`),
+      JSON.stringify({ type: "file-history-snapshot", messageId: "m1", snapshot: {} }) + "\n",
+    );
+    // minAge を越えた mtime にして age チェックより先で弾かれないようにする
+    const { utimes } = await import("node:fs/promises");
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await utimes(join(snapDir, `${snapSid}.jsonl`), old, old);
+
+    await runEnqueueIsolated();
+
+    await inspect(async () => {
+      const good = await readEntries(goodSid);
+      expect(good).toHaveLength(1);
+      expect(good[0]!.recipeName).toBe("dispatcher");
+      expect(good[0]!.status).toBe("queued");
+    });
+  });
+
   test("effectiveUserTurns=0 セッションは全 matchesRecipe について markSkipped(no_effective_turn) を記録する", async () => {
     const projectsDir = join(claudeDir, "projects");
     const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
