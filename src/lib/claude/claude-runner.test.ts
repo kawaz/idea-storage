@@ -226,6 +226,43 @@ more debug
 `;
       expect(extractResultFromJsonOutput(input)).toBe("ok");
     });
+
+    test("extracts .result from a single-line JSON array (claude >= 2.1.x format)", () => {
+      // claude 2.1.172 の --output-format json は message record の単一行
+      // JSON 配列を出す。result は配列内の type:"result" 要素に入る。
+      const input = `[log_1] sending request {
+  method: "post",
+}
+[{"type":"system","subtype":"init","session_id":"s1"},{"type":"result","subtype":"success","is_error":false,"result":"array format answer","usage":{}}]
+`;
+      expect(extractResultFromJsonOutput(input)).toBe("array format answer");
+    });
+
+    test("returns null for a JSON array without a result element", () => {
+      const input = `[{"type":"system","subtype":"init"}]`;
+      expect(extractResultFromJsonOutput(input)).toBeNull();
+    });
+  });
+
+  describe("runClaude captureUsage: result extraction failure", () => {
+    test("throws instead of returning raw stdout when no result JSON is found", async () => {
+      // ANTHROPIC_LOG=debug の生ログだけで result JSON が無い場合、raw stdout を
+      // 本文として返すと debug ログがそのまま記事として保存されてしまう
+      // (2026-06-11 に実際に発生)。fallback せず throw して failed/retry に乗せる。
+      await expect(
+        runClaude({
+          prompt: "unused",
+          captureUsage: true,
+          _spawnOverride: () => {
+            const proc = Bun.spawn(["echo", "[log_1] sending request { method: 'post' }"], {
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            return proc;
+          },
+        }),
+      ).rejects.toThrow(/result JSON/);
+    });
   });
 
   describe("ClaudeTimeoutError", () => {
@@ -586,17 +623,19 @@ more debug
       expect(result).toBe("ok");
     });
 
-    test("falls back to raw stdout when JSON result line cannot be found", async () => {
+    test("throws (instead of falling back to raw stdout) when JSON result line cannot be found", async () => {
+      // raw stdout fallback は ANTHROPIC_LOG=debug のログを記事として保存する
+      // silent corruption を起こすため廃止 (2026-06-11 実害発生)。
       const brokenOutput = `some garbage\nno JSON here at all\n`;
-      const result = await runClaude({
-        prompt: "test",
-        captureUsage: true,
-        _spawnOverride: () => {
-          return Bun.spawn(["printf", "%s", brokenOutput], { stdout: "pipe", stderr: "pipe" });
-        },
-      });
-      // Fallback: return raw stdout instead of throwing/returning empty
-      expect(result).toBe(brokenOutput);
+      await expect(
+        runClaude({
+          prompt: "test",
+          captureUsage: true,
+          _spawnOverride: () => {
+            return Bun.spawn(["printf", "%s", brokenOutput], { stdout: "pipe", stderr: "pipe" });
+          },
+        }),
+      ).rejects.toThrow(/no result JSON found/);
     });
   });
 });

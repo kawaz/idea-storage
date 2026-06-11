@@ -96,23 +96,29 @@ export function buildClaudeEnv(options?: { captureUsage?: boolean }): Record<str
  * string from the last JSON result line, or null if not found.
  *
  * Design rationale: `--output-format json` always emits a single-line JSON at
- * the end, even when debug logs pollute stdout. We walk lines from bottom up to
- * find the last parseable JSON whose `type === "result"`.
+ * the end, even when debug logs pollute stdout. The shape is version-dependent:
+ * claude <= 2.0.x emits a bare result object `{"type":"result",...}`, while
+ * claude >= 2.1.x emits an array of message records
+ * `[{"type":"system",...},...,{"type":"result",...}]`. We walk lines from
+ * bottom up and accept both shapes.
  */
 export function extractResultFromJsonOutput(stdout: string): string | null {
+  const isResultRecord = (obj: unknown): obj is { result: string } =>
+    !!obj &&
+    typeof obj === "object" &&
+    (obj as { type?: unknown }).type === "result" &&
+    typeof (obj as { result?: unknown }).result === "string";
+
   const lines = stdout.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
-    if (!line.startsWith("{")) continue;
+    if (!line.startsWith("{") && !line.startsWith("[")) continue;
     try {
-      const obj = JSON.parse(line);
-      if (
-        obj &&
-        typeof obj === "object" &&
-        obj.type === "result" &&
-        typeof obj.result === "string"
-      ) {
-        return obj.result as string;
+      const parsed = JSON.parse(line);
+      if (isResultRecord(parsed)) return parsed.result;
+      if (Array.isArray(parsed)) {
+        const rec = parsed.find(isResultRecord);
+        if (rec) return rec.result;
       }
     } catch {
       // not JSON; continue
@@ -195,9 +201,14 @@ export async function runClaude(options: ClaudeRunOptions): Promise<string> {
     }
 
     const result = extractResultFromJsonOutput(stdout);
-    // Fallback: if JSON result not found (unexpected), return raw stdout so
-    // caller at least sees *something* instead of empty string.
-    return result ?? stdout;
+    if (result === null) {
+      // captureUsage モードの stdout は ANTHROPIC_LOG=debug で汚染されている。
+      // result が取れないのに raw stdout を返すと debug ログがそのまま記事
+      // として保存される (silent corruption)。throw して failed/retry に乗せる。
+      const tail = stdout.length > 1000 ? "..." + stdout.slice(-1000) : stdout;
+      throw new Error(`claude --output-format json: no result JSON found in stdout. tail: ${tail}`);
+    }
+    return result;
   }
 
   /**
