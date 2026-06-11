@@ -170,9 +170,9 @@ describe("session-enqueue", () => {
       recipes?: RecipeFixtureSpec[];
       setup?: () => Promise<void>;
     } = {},
-  ): Promise<void> {
+  ): Promise<import("../lib/driver/enqueue-driver.ts").EnqueueResult> {
     const recipes = opts.recipes ?? [{ name: "diary" }];
-    await withIsolatedIdeaStorageEnv(tempDir, async () => {
+    return await withIsolatedIdeaStorageEnv(tempDir, async () => {
       await writeConfigFixture(tempDir, {
         claudeDirs: opts.claudeDirs ?? [dotClaude],
         minAgeMinutes: opts.minAgeMinutes ?? 120,
@@ -180,7 +180,7 @@ describe("session-enqueue", () => {
       await writeRecipeFixtures(tempDir, recipes);
       if (opts.setup) await opts.setup();
       const { runEnqueue } = await import("./session-enqueue.ts");
-      await runEnqueue();
+      return await runEnqueue();
     });
   }
 
@@ -350,17 +350,17 @@ describe("session-enqueue", () => {
           ageMs: 3 * 60 * 60 * 1000,
         });
       }
-      await expect(runEnqueueIsolated({ claudeDirs: [outside] })).rejects.toThrow(
-        /failed 5 times in a row/,
-      );
+      const result = await runEnqueueIsolated({ claudeDirs: [outside] });
+      expect(result.bailedDirs).toHaveLength(1);
+      expect(result.bailedDirs[0]!.claudeDir).toBe(outside);
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
   });
 
-  test("壊れた claudeDir で bail しても他の正常な claudeDir は enqueue され、最後に fail を報告する", async () => {
+  test("壊れた claudeDir で bail しても他の正常な claudeDir は enqueue され、bail が結果に載る", async () => {
     // 先頭 root が系統的失敗 (5 連続) でも、bail はその root の走査中断に留め、
-    // 後続 root の enqueue は完了させる。その上で全体としては fail を報告する。
+    // 後続 root の enqueue は完了させる。bail した root は戻り値で報告される。
     const outside = await mkdtemp(join(tmpdir(), "enqueue-outside-"));
     try {
       for (let i = 0; i < 5; i++) {
@@ -373,9 +373,9 @@ describe("session-enqueue", () => {
       const goodSid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
       await createSessionFile(join(claudeDir, "projects"), goodSid);
 
-      await expect(runEnqueueIsolated({ claudeDirs: [outside, dotClaude] })).rejects.toThrow(
-        /failed 5 times in a row/,
-      );
+      const result = await runEnqueueIsolated({ claudeDirs: [outside, dotClaude] });
+      expect(result.bailedDirs).toHaveLength(1);
+      expect(result.bailedDirs[0]!.claudeDir).toBe(outside);
 
       await inspect(async () => {
         const good = await readEntries(goodSid);

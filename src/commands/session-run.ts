@@ -1,6 +1,7 @@
 import { define } from "gunshi";
 import { join } from "node:path";
 import { runEnqueue } from "./session-enqueue.ts";
+import { formatBailedDirsError } from "../lib/driver/enqueue-driver.ts";
 import { runProcess } from "./session-process.ts";
 import { acquireLock } from "../lib/lockfile.ts";
 import { getStateDir } from "../lib/paths.ts";
@@ -68,7 +69,10 @@ const sessionRun = define({
         log({ msg: "migrated_queue", entries: migrated });
       }
 
-      await runEnqueue();
+      // enqueue が一部 root で bail しても worker 処理は続行し、queued 済みの
+      // work を消化し切ってから最後に fail として報告する (即 throw すると
+      // 正常 root 分の queued work まで処理されずに終わってしまう)。
+      const { bailedDirs } = await runEnqueue();
 
       // Cleanup old rate-limit observations on worker startup
       try {
@@ -111,6 +115,11 @@ const sessionRun = define({
         } else {
           consecutiveFailures = 0;
         }
+      }
+
+      // Worker 処理を終えた後に enqueue の部分失敗を fail として報告する。
+      if (bailedDirs.length > 0) {
+        throw new CliError(formatBailedDirsError(bailedDirs));
       }
     } catch (err) {
       if (err instanceof CliError) {

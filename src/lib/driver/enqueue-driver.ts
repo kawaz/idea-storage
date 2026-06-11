@@ -16,7 +16,30 @@ import { dirExists } from "../dir-exists.ts";
 import { log, logError } from "../logging.ts";
 import { UUID_JSONL_PATTERN } from "../csa/session-finder.ts";
 
-export async function runEnqueue(): Promise<void> {
+/** claudeDir (root) 単位で系統的 meta 失敗により走査を打ち切った記録。 */
+export interface BailedDir {
+  claudeDir: string;
+  lastError: string;
+}
+
+export interface EnqueueResult {
+  bailedDirs: BailedDir[];
+}
+
+/**
+ * Format bailed roots into a user-facing error message. Callers decide the
+ * failure policy (throw immediately for the one-shot enqueue command, defer
+ * until after worker processing for `session run`).
+ */
+export function formatBailedDirsError(bailedDirs: BailedDir[]): string {
+  const detail = bailedDirs.map((b) => `${b.claudeDir} (last error: ${b.lastError})`).join("; ");
+  return (
+    `getSessionMeta failed ${MAX_CONSECUTIVE_FAILURES} times in a row in: ${detail}. ` +
+    `Likely a systemic failure (e.g. claudeDirs outside CSA's discovery scope).`
+  );
+}
+
+export async function runEnqueue(): Promise<EnqueueResult> {
   const config = await loadConfig();
   let recipes;
   try {
@@ -40,8 +63,8 @@ export async function runEnqueue(): Promise<void> {
 
   // 系統的な meta 取得失敗 (CSA scope と claudeDirs の不整合等) で bail した
   // root。bail はその root の走査中断に留め、他 root の enqueue は完了させた
-  // 上で最後に fail として報告する (黙って成功と報告しない)。
-  const bailedDirs: Array<{ claudeDir: string; lastError: string }> = [];
+  // 上で戻り値で報告する (黙って成功と報告しない)。
+  const bailedDirs: BailedDir[] = [];
 
   const pending: Array<{ sessionId: string; recipeName: string; lineCount: number }> = [];
   // DR-0008 §5: effectiveUserTurns=0 のセッションは全 recipe を skipped(no_effective_turn) で
@@ -148,12 +171,5 @@ export async function runEnqueue(): Promise<void> {
     bailed_dirs: bailedDirs.length,
   });
 
-  // bail した root があれば、他 root の enqueue を完了させた上で fail を報告する。
-  if (bailedDirs.length > 0) {
-    const detail = bailedDirs.map((b) => `${b.claudeDir} (last error: ${b.lastError})`).join("; ");
-    throw new CliError(
-      `getSessionMeta failed ${MAX_CONSECUTIVE_FAILURES} times in a row in: ${detail}. ` +
-        `Likely a systemic failure (e.g. claudeDirs outside CSA's discovery scope).`,
-    );
-  }
+  return { bailedDirs };
 }
