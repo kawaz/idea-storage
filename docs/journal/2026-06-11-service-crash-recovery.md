@@ -1,7 +1,7 @@
 # 変換サービス全停止 (5/30〜) の復旧
 
 「変換動いてる?」の確認から始まり、launchd サービスが 5/30 頃から毎時クラッシュ
-し続けていたのを発見・復旧した記録。問題は 3 層重なっていた。
+し続けていたのを発見・復旧した記録。問題は 4 層重なっていた。
 
 ## 症状
 
@@ -49,6 +49,31 @@ exit 1 → bail_out。launchd の plist には PATH しか焼き込まれてお�
 **修正** (`fix(enqueue/service)`): `service register` 時の
 `CLAUDE_CONFIG_DIR` を plist の EnvironmentVariables に焼き込む。
 
+## 原因 4: claude 2.1.x の JSON 出力形式変更で debug ログが記事として保存
+
+パイプライン復旧後に生成された 8 件の中身が markdown でなく
+`[log_xxx] sending request {...}` という API リクエストの debug ダンプに
+なっていた (kawaz が発見、サービス一時停止)。
+
+メカニズムは 2 段の fallback の積み重ね:
+
+1. `captureUsage` モードは `ANTHROPIC_LOG=debug` + `--output-format json` で
+   claude を呼び、stdout 末尾の result JSON から本文を抽出する。claude CLI
+   2.1.x で出力が `{"type":"result",...}` 単体行から
+   `[{"type":"system",...},...,{"type":"result",...}]` の**単一行 JSON 配列**に
+   変わり、`line.startsWith("{")` の抽出条件にマッチせず抽出失敗
+2. 抽出失敗時の「raw stdout を返す」fallback により、debug ログ全体が
+   記事本文として保存された。quality gate も汚染応答の parse 失敗 →
+   accepted fallback (DR-0008 の意図的設計) で素通し
+
+**修正** (`fix(claude-runner)`): 配列形式対応 + raw stdout fallback を廃止して
+throw (failed/retry に乗せる)。result 不在の captureUsage stdout はほぼ確実に
+ゴミなので、「何か見える方がまし」より silent corruption 防止を優先。
+
+**汚染ファイルの復旧**: 8 件とも末尾の JSON 配列内に正しい記事 (`result`
+フィールド) が残っていたため、再生成せず one-off スクリプトで frontmatter を
+維持したまま本文をサルベージ (redactForOutput 経由) した。
+
 ## 教訓的メモ (運用観点)
 
 - launchd サービスは「コード修正 + push」だけでは直らない。plist が指す
@@ -59,3 +84,8 @@ exit 1 → bail_out。launchd の plist には PATH しか焼き込まれてお�
   全停止 or 系統的失敗の隠蔽のどちらかに倒れる)
 - サービス監視: last exit code / runs は `launchctl print` で見える。
   stdout log の `enqueue_done` / `bail_out` が生存確認の起点
+- 外部 CLI の出力形式は version で変わる。「parse 失敗 → 入力をそのまま使う」
+  系の fallback は silent corruption の温床 (失敗は失敗として fail させ、
+  retry 機構に乗せる方が復旧可能性が高い)
+- 「exit 0 で生成物が置かれた」は正常性の証明にならない。生成物の
+  中身レベルの検証 (形式 / 汚染マーカーの grep) まで見て初めて復旧完了
